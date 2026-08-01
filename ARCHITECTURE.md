@@ -155,4 +155,96 @@ Rollback behavior:
 Research reference:
 ```
 
-*(Empty — populate as parameters are formally defined.)*
+The entries below authorize EXP-001 configuration only. They do **not** authorize live automatic actuation. General backend ranges remain documentation-supported until direct contract tests verify them.
+
+### metric_type
+Type: Enum
+Default: No hidden default; EXP-001 runs separate `L2` and `COSINE` collections.
+Valid range: EXP-001 allowlist `{L2, COSINE}`.
+Validation rule: Collection metric, FLAT metric, HNSW metric, query metric, independent-oracle function, and threshold-direction rule must match exactly. Reject mixed metrics before collection creation.
+Dependencies: Determines valid `radius`/`range_filter` ordering and oracle calculation.
+Risk level: HIGH — a mismatch silently invalidates recall and threshold semantics.
+Rollback behavior: Drop the invalid experiment-scoped collection and recreate it with the recorded metric; never mutate metric identity in place.
+Research reference: ADR-001; EXP-001 Query contract; [Milvus metric types](https://milvus.io/docs/metric.md).
+
+### index_type
+Type: Enum
+Default: No hidden default; EXP-001 tracks are `FLAT` and `HNSW`.
+Valid range: EXP-001 allowlist `{FLAT, HNSW}`.
+Validation rule: FLAT is the exact reference track; HNSW is the approximate track. IVF and all other index families are rejected for EXP-001.
+Dependencies: HNSW requires `M`, `efConstruction`, and query-time `ef`; FLAT accepts none of those parameters.
+Risk level: HIGH — mixing index tracks invalidates attribution.
+Rollback behavior: Drop and recreate the experiment-scoped collection/index from DATASET-001 artifacts.
+Research reference: ADR-001 Chosen solution; EXP-001 Index tracks; [Milvus index overview](https://milvus.io/docs/index.md).
+
+### radius
+Type: Float
+Default: Required; no implicit default. Values are calibrated and frozen from DATASET-001's 50 calibration queries before measured queries.
+Valid range: L2 `(0, +inf)`; COSINE `[-1.0, 1.0)` for EXP-001.
+Validation rule: L2 uses `0.0 <= distance < radius`; COSINE uses `radius < score <= 1.0`. Reject NaN, infinities, out-of-range cosine values, and values not present in the immutable run manifest.
+Dependencies: `metric_type`, `range_filter`, threshold-calibration artifact, numeric comparison tolerance.
+Risk level: HIGH — threshold errors directly invalidate the primary research construct.
+Rollback behavior: Restore the last manifest-approved query configuration; no index rebuild is required.
+Research reference: ADR-001; EXP-001 Query contract; [Milvus range search](https://milvus.io/docs/range-search.md).
+
+### range_filter
+Type: Float
+Default: L2 `0.0`; COSINE `1.0`.
+Valid range: EXP-001 fixed mapping `{L2: 0.0, COSINE: 1.0}`.
+Validation rule: For L2 require `range_filter < radius`; for COSINE require `radius < range_filter <= 1.0`. Reject any value differing from the fixed EXP-001 mapping.
+Dependencies: `metric_type`, `radius`.
+Risk level: HIGH — reversed bounds can create empty or semantically inverted results.
+Rollback behavior: Restore the metric-specific fixed value in the next request; no index rebuild is required.
+Research reference: ADR-001; EXP-001 Query contract; [Milvus range search](https://milvus.io/docs/range-search.md).
+
+### limit
+Type: Integer
+Default: `100`.
+Valid range: EXP-001 fixed allowlist `{100}`; broader Milvus limits are out of contract.
+Validation rule: Require exactly `100`; require HNSW `ef >= limit`; report full oracle cardinality and whether the returned result was capped.
+Dependencies: `ef`, recall@threshold definition, result-cardinality metrics.
+Risk level: HIGH — changing the cap changes the recall denominator and workload semantics.
+Rollback behavior: Restore `100` in the next request; invalidate mixed-limit measurements rather than combining them.
+Research reference: ADR-001 Tradeoffs accepted; EXP-001 Query contract and Metrics measured.
+
+### consistency_level
+Type: Enum
+Default: `Strong` for EXP-001.
+Valid range: EXP-001 allowlist `{Strong}`.
+Validation rule: Set explicitly for every collection/query path where supported; do not rely on a server default. Begin measurements only after entity counts, index state, and load state are verified.
+Dependencies: Completed ingestion, loaded collection, identical setting across FLAT and HNSW tracks.
+Risk level: HIGH — stale/inconsistent reads can masquerade as ANN recall loss.
+Rollback behavior: Abort the run and restart from clean experiment-scoped collections using `Strong` consistency.
+Research reference: EXP-001 Execution protocol; [Milvus consistency](https://milvus.io/docs/consistency.md).
+
+### HNSW.M
+Type: Integer
+Default: `16` for EXP-001.
+Valid range: EXP-001 fixed allowlist `{16}`; documented backend range `[2, 2048]` is not an EXP-001 sweep.
+Validation rule: Require exactly `16` in index metadata before measurements. Any change requires a new experiment ID and index rebuild.
+Dependencies: `index_type=HNSW`; index construction.
+Risk level: HIGH — changing graph degree changes memory, build cost, latency, and recall.
+Rollback behavior: No in-place rollback. Recreate a clean HNSW collection with `M=16`; live automatic actuation is prohibited.
+Research reference: ADR-001; EXP-001 Index tracks; [Milvus HNSW](https://milvus.io/docs/hnsw.md).
+
+### HNSW.efConstruction
+Type: Integer
+Default: `200` for EXP-001.
+Valid range: EXP-001 fixed allowlist `{200}`; other positive backend-supported values are outside this contract.
+Validation rule: Require exactly `200` in index metadata before measurements. Any change requires a new experiment ID and index rebuild.
+Dependencies: `index_type=HNSW`; `HNSW.M`; index construction.
+Risk level: HIGH — changing construction breadth changes graph quality and invalidates cross-run comparison.
+Rollback behavior: No in-place rollback. Recreate a clean HNSW collection with `efConstruction=200`; live automatic actuation is prohibited.
+Research reference: ADR-001; EXP-001 Index tracks; [Milvus HNSW](https://milvus.io/docs/hnsw.md).
+
+### HNSW.ef
+Type: Integer
+Default: No hidden default; every HNSW query must provide an explicit value.
+Valid range: EXP-001 sweep allowlist `{100, 200, 400, 800, 1600}`.
+Validation rule: Require membership in the allowlist and `ef >= limit`. Reject booleans, non-integers, and out-of-contract values before sending a request. Verify index identity is unchanged before and after the sweep.
+Dependencies: `index_type=HNSW`; `limit=100`; loaded HNSW index.
+Risk level: HIGH for EXP-001; CRITICAL if later permitted for live automatic actuation.
+Rollback behavior: Restore the last-known-good explicit `ef` in the next request; no index rebuild is permitted or expected. Automatic rollback remains unauthorized until the safe-actuation layer is verified.
+Research reference: ADR-001; EXP-001 Index tracks; [Milvus HNSW](https://milvus.io/docs/hnsw.md).
+
+EXP-001 controls that are experiment metadata rather than database tunables remain governed by `EXPERIMENT_LOG.md`: DATASET-001, seed `20260801`, 50 calibration queries, 200 measured queries, five repetitions, deterministic ordering, one synchronous client, concurrency 1, warm-up protocol, timing boundaries, metrics, artifact paths, and failure checks.

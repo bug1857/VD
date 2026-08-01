@@ -56,7 +56,61 @@ Checksum:
 
 **Never benchmark against an undocumented dataset.** If a dataset changes, it gets a new DATASET ID.
 
-*(Empty — populate as datasets are selected, e.g. SIFT1M/GIST1M subsets, synthetic drift generator output.)*
+### DATASET-001: Deterministic synthetic range-query smoke dataset
+
+Source: Locally generated with NumPy `Generator(PCG64(seed))` from independent standard-normal samples; no external source data.
+License: Internal research use. No external copyright-bearing data is included. Public redistribution is blocked until the repository has an explicit license or the human assigns a dataset license.
+Dimensions: 128
+Embedding model: None — synthetic vectors, not model embeddings.
+Number of vectors: 10,000 base vectors; 250 query vectors split into 50 calibration and 200 measured queries; separate deterministic boundary-fixture micro-dataset.
+Metadata schema: Integer vector ID; split (`base`, `calibration_query`, `measured_query`, `boundary_fixture`); generation seed; generator/version metadata. No payload attributes are used by EXP-001.
+Ground truth method: Independent NumPy exact L2 and cosine computation with float64 accumulation over stored little-endian float32 vectors, cross-checked against Milvus FLAT using the same metric, threshold bounds, ordering, and result cap.
+Version: `DATASET-001-v1` contract; primary seed `20260801`; NumPy version will be added to the immutable generation manifest.
+Checksum: Pending generation. SHA-256 is required for every vector/query artifact and the manifest before ingestion; EXP-001 execution is blocked until populated.
+Used by: EXP-001 contract in `EXPERIMENT_LOG.md`.
+
+---
+
+## EXPERIMENT ENVIRONMENT REGISTRY
+
+### ENV-001: Milvus range-query smoke environment
+
+Status: PINNED TARGET — NOT PROVISIONED OR VERIFIED
+As-of date: 2026-08-01
+Compatibility policy: Pin the latest stable release of every component requested by the human. Because Milvus 3.0.0's stock Compose asset uses older etcd and MinIO releases, ENV-001 is not executable until a provisioning check proves the selected latest upstream dependencies are compatible. A compatibility failure blocks EXP-001 and requires an explicit ENV revision; it must not be patched around silently.
+
+| Component | Executable pin | Immutable artifact | Selection basis |
+|---|---|---|---|
+| Milvus | `3.0.0` | `milvusdb/milvus:v3.0.0@sha256:49371c30af46b1013e4d3e0b980e691d81376d69cdbe1b372725baf1d7255862` (`linux/arm64`: `sha256:bfab7739a0479cd81ffdf5e473f88c5b143678c2520a06a19f86f35ecd586cad`) | Latest non-prerelease Milvus release; published 2026-07-29. |
+| PyMilvus | `3.0.1` | Python requirement `pymilvus==3.0.1`; lockfile hash pending environment provisioning | Latest non-prerelease SDK release; release notes identify it as recommended for Milvus 3.0; Python >=3.9 required. |
+| Docker Desktop | `4.84.0` | Installer checksum pending installation; installation is blocked unless the vendor checksum is recorded | Latest stable Docker Desktop release; published 2026-07-27. |
+| Docker Engine | `29.6.2` | Bundled/runtime version must equal `29.6.2` and be captured by `docker version` | Latest stable Engine release available as of the pin date; published 2026-07-16. |
+| Docker Compose | `5.3.1` | CLI version must equal `v5.3.1` and be captured by `docker compose version` | Latest stable Compose release available as of the pin date. |
+| etcd | `3.7.1` | `gcr.io/etcd-development/etcd:v3.7.1@sha256:a9983dd6d9283138ab926daa307c6c25623636703ecf5645d5df4d666ce9eba2` (`linux/arm64`: `sha256:9ca5d60a9ce95ef4b131064c999f60a18126118122237b106b9a17e52e9f107d`) | Latest non-prerelease upstream etcd release; published 2026-07-23. Milvus compatibility is unverified. |
+| MinIO | `RELEASE.2025-10-15T17-29-55Z` | Source tag commit `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a`; resulting `linux/arm64` image digest must be recorded after a reproducible source build | Latest non-prerelease upstream MinIO release. The release does not publish this tag on Docker Hub and directs container users to build from source; Milvus compatibility is unverified. |
+| Vendor Compose baseline | Milvus `v3.0.0` standalone CPU asset | SHA-256 `4518b95ddd719542558f48d84e9a53a5910099888b8ef985ab122524db7d97d1`; references etcd `3.5.25` and MinIO `RELEASE.2024-05-28T17-19-04Z` | Official comparison baseline. ENV-001 must start from this file, override only the dependency pins, and preserve the diff as an experiment artifact. |
+
+Target platform and resource pins:
+
+- Host baseline: Apple M1, `arm64`, 8 logical cores, 8 GiB RAM, macOS 26.5.2 (build 25F84). Record again at execution; hardware/OS changes create a new ENV ID.
+- Container platform: `linux/arm64`; architecture-specific digests above must match after pull.
+- Docker Desktop VM allocation: 6 vCPU, 6 GiB RAM, 2 GiB swap.
+- Milvus container limit: 4 CPU, 4 GiB RAM.
+- etcd container limit: 1 CPU, 512 MiB RAM.
+- MinIO container limit: 1 CPU, 1 GiB RAM.
+- Persist separate named/bind volumes for Milvus, etcd, and MinIO. Start every valid smoke run from explicitly empty experiment-scoped volumes.
+- Docker was not installed when ENV-001 was recorded (`docker: command not found`). Provisioning must reproducibly build and digest-pin MinIO, verify Milvus startup and persistence against etcd 3.7.1 and the selected MinIO release, and then verify all versions, digests, limits, health checks, and the Compose checksum before EXP-001 can run.
+
+Version sources:
+
+- [Milvus 3.0.0 release](https://github.com/milvus-io/milvus/releases/tag/v3.0.0)
+- [PyMilvus 3.0.1 release](https://github.com/milvus-io/pymilvus/releases/tag/v3.0.1)
+- [Docker Desktop release notes](https://docs.docker.com/desktop/release-notes/)
+- [Docker Engine 29 release notes](https://docs.docker.com/engine/release-notes/29/)
+- [Docker Compose releases](https://github.com/docker/compose/releases/tag/v5.3.1)
+- [Milvus 3.0.0 standalone Compose asset](https://github.com/milvus-io/milvus/releases/download/v3.0.0/milvus-standalone-docker-compose.yml)
+- [etcd 3.7.1 upstream release](https://github.com/etcd-io/etcd/releases/tag/v3.7.1)
+- [MinIO upstream stable release](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z)
 
 ---
 

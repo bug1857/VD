@@ -33,7 +33,7 @@ A phase cannot be marked complete until: objectives met, tests complete, benchma
 | Drift detector | not started | CRITICAL | |
 | Tuning policy | not started | CRITICAL | |
 | Safe actuation layer | not started | CRITICAL | |
-| Benchmark harness | not started | — | |
+| Benchmark harness | not started | HIGH | EXP-001 contract, DATASET-001, ENV-001, and configuration registry are defined; implementation is next. |
 
 ---
 
@@ -53,4 +53,6 @@ Estimated effort to resolve:
 
 ## NEXT HIGHEST-PRIORITY TASK
 
-Select the primary backend (Qdrant vs Milvus). Compare both options on research fit, range/threshold-query support, available tuning controls, safe actuation and rollback feasibility, benchmarkability, operational complexity, scalability, memory, and research support; recommend one with explicit advantages, disadvantages, complexity, scalability, memory, latency, and research rationale before implementation.
+ADR-001 is accepted: Milvus is the selected primary backend, so backend selection is complete.
+
+Next: design and implement the EXP-001 benchmark harness and independent NumPy oracle against the immutable contract in `EXPERIMENT_LOG.md`. Provision and verify ENV-001 first, then implement only deterministic DATASET-001 generation, FLAT/HNSW semantic checks, the approved `ef` sweep, required metrics/artifacts, and deliberate failure tests. Workload drift, tuning policy, IVF, and safe live actuation are not part of this next task.
