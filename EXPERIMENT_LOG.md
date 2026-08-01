@@ -324,3 +324,98 @@ Ran 20 tests in 0.052s
 
 OK
 ```
+
+### EXP-003: EXP-001 live smoke execution — environment-noise inconclusive
+
+Status: **INCONCLUSIVE — PERFORMANCE INTERPRETATION PROHIBITED**
+Date: 2026-08-01
+Risk level: HIGH (live benchmark evidence with failed variance acceptance criterion and uncontrolled host workloads)
+
+Objective:
+
+Execute the EXP-001 range/threshold-query smoke contract against the verified Milvus 3.0.0 stack using the fixed Milvus adapter at commit `9f233e9bca598b5707d8dbdc7703be86fa3c3ad2`. Preserve the completed run even if an acceptance criterion fails; do not overwrite EXP-001 or the EXP-002 harness record.
+
+Hypothesis:
+
+The H4 reproducibility hypothesis is not supported by this run: 16 of 36 configurations exceeded the contract's maximum 20% p95-latency coefficient of variation. H1–H3 are not promoted to VERIFIED by this entry. Semantic and integrity observations remain preserved for review, but performance interpretation is prohibited.
+
+Configuration:
+
+- EXP-001's unchanged 36-configuration matrix: L2 and COSINE; thresholds `target-005`, `target-025`, and `target-075`; FLAT plus HNSW with `M=16`, `efConstruction=200`, and `ef in [100, 200, 400, 800, 1600]`.
+- `limit=100`, `Strong` consistency, one synchronous client, 50 unmeasured warm-up queries per configuration, five measured repetitions, and 200 measured queries per repetition in the manifest-recorded deterministic randomized order.
+- Milvus `3.0.0`, PyMilvus `3.0.1`, NumPy `2.5.1`, CPython `3.14.5`; Milvus image `milvusdb/milvus:v3.0.0@sha256:49371c30af46b1013e4d3e0b980e691d81376d69cdbe1b372725baf1d7255862`; etcd image `quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366`; MinIO image `minio/minio:RELEASE.2024-05-28T17-19-04Z@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08`.
+- Docker Desktop `4.84.0`, Docker Engine `29.6.2`, Docker Compose `v5.3.1`; Docker VM limited to 6 vCPU, 6 GiB RAM, and 2 GiB swap; service limits remained those recorded by ENV-001.
+- Manifest timestamp: `2026-08-01T15:43:56.078229+00:00` (`2026-08-01 21:13:56.078229 +05:30`). Manifest-recorded argv: `-c run --repository . --dataset-dir artifacts/exp-001/dataset --run-dir artifacts/exp-001/run-20260801T154343Z --collection-prefix exp001_20260801T154343Z`.
+
+Dataset ID:
+
+`DATASET-001-v1`: 10,000 base vectors; 50 calibration and 200 measured queries; 128-dimensional little-endian `float32`; NumPy `Generator(PCG64(20260801))`; independent standard-normal project-generated data. The run manifest embeds the verified dataset manifest and artifact SHA-256 values.
+
+Hardware:
+
+Apple M1 `arm64`, 8 logical CPU cores, 8 GiB host RAM, internal Apple SSD, macOS `26.5.2` build `25F84`, Darwin `25.5.0`. The host was not quiescent during this run.
+
+Git commit:
+
+`9f233e9bca598b5707d8dbdc7703be86fa3c3ad2`. The manifest records `dirty: true` because experiment/evidence paths were untracked; no tracked source modification was used for the run.
+
+Random seed:
+
+Primary seed `20260801`; realized configuration/query ordering and derived seeds are preserved in `run_manifest.json`.
+
+Metrics measured:
+
+The EXP-001 contract metrics for all 36 configurations: capped recall@threshold, per-repetition p50/p95 client latency, QPS, result cardinality, failed-query and threshold-violation diagnostics, p95 coefficient of variation, and five-repetition confidence intervals. Boundary semantics and per-segment/final index identity were also checked.
+
+Raw output location:
+
+`artifacts/exp-001/run-20260801T154343Z/` is preserved and was not overwritten or discarded.
+
+- `run_manifest.json`: SHA-256 `975097ade292537bc69234a1712c9053c99570d4d584e72fa998b28eee8e31d9`
+- `boundary_results.json`: SHA-256 `ce248654c0bd7027b68c01256f4826f98854fa988ae1d06a70a9a5ddc2e5d321`
+- `raw_queries.jsonl`: SHA-256 `dc950432eb6bcd3712e38a907a8fc547fceb2d269541834dead8b18ea1fe5dbf`
+- `summary.json`: SHA-256 `c913c0b976fd096b54860b3f44b5e8838f1c4309f06694818c2dc2ef93760529`
+
+Result:
+
+**INCONCLUSIVE.** The contract requires p95-latency coefficient of variation at or below 20% for every configuration. Sixteen of 36 configurations violated that criterion: **44.44%** of the matrix.
+
+| Configuration | p95 coefficient of variation |
+|---|---:|
+| `COSINE:target-005:HNSW:ef=1600` | 33.5032% |
+| `COSINE:target-025:HNSW:ef=100` | 22.9807% |
+| `COSINE:target-025:HNSW:ef=200` | 26.8506% |
+| `COSINE:target-025:HNSW:ef=400` | 31.0222% |
+| `COSINE:target-025:HNSW:ef=800` | 39.4551% |
+| `COSINE:target-075:HNSW:ef=800` | 38.1726% |
+| `COSINE:target-075:HNSW:ef=1600` | 21.3579% |
+| `L2:target-005:FLAT:ef=none` | 35.3366% |
+| `L2:target-005:HNSW:ef=1600` | 20.4075% |
+| `L2:target-025:HNSW:ef=100` | 22.2272% |
+| `L2:target-025:HNSW:ef=200` | 26.5429% |
+| `L2:target-025:HNSW:ef=400` | 38.4593% |
+| `L2:target-025:HNSW:ef=1600` | 47.2053% |
+| `L2:target-075:HNSW:ef=100` | 24.9446% |
+| `L2:target-075:HNSW:ef=400` | 24.8700% |
+| `L2:target-075:HNSW:ef=1600` | 21.0112% |
+
+The run otherwise recorded zero failed measured queries, zero threshold violations, valid QPS comparisons for all 36 configurations, no per-segment or final HNSW index-identity mismatch, and FLAT/oracle agreement for every measured query. These are preserved observations, not a VERIFIED experiment status and not authority for latency/QPS comparisons.
+
+Environment-noise audit:
+
+- The committed pre-run resource snapshot was captured at `2026-08-01T14:25:06Z`, **78 minutes 50 seconds before** the run manifest timestamp. It honestly disclosed that the machine was not quiescent and explicitly prohibited latency interpretation until workloads were stabilized or re-disclosed immediately before execution. It was therefore honest as a timestamped preliminary disclosure, but it was not a valid snapshot of this specific run.
+- No comprehensive host-process, browser, load, or thermal snapshot was taken immediately before or after this run. The specific run conditions were under-disclosed at execution time.
+- A post-run audit of the macOS unified log for `2026-08-01 21:13:50` through `21:18:00 +05:30` proves that Google Chrome, Safari, Codex, Docker Desktop, Amphetamine, and a clipboard application were active. Chrome was actively playing media during the benchmark: playback was reported `Playing` at `21:14:45`, changed between paused/playing, and was again `Playing` at `21:17:19`. Safari held foreground/network-process assertions. Docker Desktop and the benchmark's Docker VM/services were necessarily active.
+- The same log-window query found no ChatGPT or Antigravity event. Absence from the filtered unified log is not proof that every unlisted process was absent.
+- No thermal/performance-warning event appeared in the audited window, and `pmset -g therm` shortly after the run reported no recorded warning. Because no run-adjacent temperature, frequency, fan, or thermal-pressure telemetry was captured, the actual thermal state remains **unknown** and cannot be treated as nominal evidence.
+
+Conclusion:
+
+EXP-003 is retained as an **INCONCLUSIVE** live run. It is not VERIFIED and is not discarded. The 44.44% configuration-level CV violation, confirmed concurrent browser/media activity, stale pre-run snapshot, and missing run-adjacent resource/thermal evidence prohibit performance interpretation, backend-tuning conclusions, or claims of superiority/optimality. The semantic and index-integrity outputs remain reviewable evidence only.
+
+Follow-up actions:
+
+1. Do not rerun until separately authorized.
+2. Define and enforce a quiescence procedure: stop browser media and nonessential applications, disclose all retained workloads, and verify background indexing/update activity.
+3. Capture immediate pre-run and post-run process, load, container CPU/RAM, power-source, and thermal-pressure snapshots tied to the next immutable run ID.
+4. Repeat the unchanged EXP-001 contract under a new EXP ID and run directory; never overwrite `artifacts/exp-001/run-20260801T154343Z/` or this entry.
