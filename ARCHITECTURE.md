@@ -128,6 +128,221 @@ Research references:
 
 ---
 
+### ADR-002: Define drift-detector and HNSW tuning-policy contracts
+
+Status: Proposed — design review required before implementation
+Date: 2026-08-01
+Risk level: CRITICAL
+Evidence status: INFERRED design contract. EXP-001 verifies the Milvus HNSW `ef` measurement values and their smoke-scale recall/latency tradeoff; ADR-002 narrows that measured set before actuation. EXP-001 does not verify this detector, policy, safety thresholds, rollback behavior, or production readiness.
+
+Problem:
+
+The Core system must detect workload drift in range/threshold queries and decide whether to change Milvus HNSW query-time `ef`. “Drift” cannot mean any unexplained metric movement: query-distribution change, threshold/selectivity change, ANN quality loss, backend failure, and index/data replacement have different causes and require different responses. A vague trigger would make both research claims and live actuation unfalsifiable.
+
+This ADR defines the contracts before implementation. It does not authorize automatic tuning. Drift-trigger logic and live actuation are CRITICAL under `AGENTS.md`; implementation requires a separate reviewed experiment contract, rollback test, failure test, and explicit human approval.
+
+Scope:
+
+- Core: L2 and COSINE range/threshold queries on the ADR-001 Milvus HNSW backend, using query-time `ef` only.
+- Excluded: changing thresholds, `limit`, metric, index type, `M`, `efConstruction`, collection/data identity, or consistency level; IVF, k-NN/ANN, hybrid, multi-tenant, and multi-backend policy transfer.
+- The numerical gates below are proposed research-profile defaults. They are precise enough to test but are not VERIFIED findings and must not be silently retuned after evaluation begins.
+
+Decision drivers:
+
+1. Separate observable workload change from ANN/backend quality degradation.
+2. Make every positive decision reproducible from immutable observations and explicit statistics.
+3. Control family-wise false positives across multiple signals.
+4. Fail closed when exact audit evidence or environment identity is missing.
+5. Limit policy actions to the EXP-001-verified `ef` sweep and make rollback a request-configuration restore, never an index rebuild.
+6. Satisfy the `AGENTS.md` safety gates: health checks, failure detection, validation, hard step limits, dry-run mode, audit logging, and tested rollback.
+
+Alternatives considered:
+
+| Criterion | Option A — operational signals only | Option B — composite statistical detector plus exact shadow audit | Option C — learned multivariate detector/policy | Assessment |
+|---|---|---|---|---|
+| Signals | Threshold and returned-cardinality shifts. | Query-vector, threshold, exact-cardinality, and fixed-`ef` recall signals, with input and quality drift separated. | A learned representation combines query and runtime telemetry. | B observes both workload geometry and realized quality without conflating their labels. |
+| Advantages | Simple, low-cost, explainable. | Falsifiable, attribution-aware, auditable, and directly tied to range-query behavior. | May detect nonlinear interactions and gradual drift. | B best matches the current research question. |
+| Disadvantages | Misses geometry changes and cardinality saturation at `limit`; cannot measure real recall. | Shadow FLAT/oracle work adds compute and storage cost; fixed tests may miss novel drift. | Requires representative labels/training data and introduces calibration and explanation risk. | A is underpowered; C adds unjustified scope before a baseline exists. |
+| Complexity | Low. | Medium. | High. | B is acceptable for a CRITICAL module because its state is inspectable. |
+| Scalability | High, but weak signal quality. | Audit sampling bounds exact-computation cost; metric strata can be processed independently. | Inference can scale, but retraining and feature-version governance are substantial. | B has an explicit cost control. |
+| Memory | Window summaries plus 200 observations. | Two 200-query windows per metric plus 50 audited outcomes per window. | Model state, training sets, and feature history. | B is bounded and modest at Core scale. |
+| Latency impact | Negligible. | No timed foreground-path oracle work; shadow auditing consumes asynchronous capacity. | Low inference latency but potentially high feature/training cost. | B must remain shadowed and rate-limited. |
+| Research support | Standard control-chart style monitoring, but incomplete for vector geometry. | Kernel two-sample testing, two-sample distribution testing, multiplicity control, and exact recall auditing are established, independently testable tools. | Plausible Future Work after labeled drift scenarios exist. | Choose B as the interpretable baseline. |
+
+Chosen solution:
+
+Choose **Option B**: a metric-stratified composite detector with distinct `INPUT_DRIFT` and `QUALITY_DRIFT` classifications, followed by a constrained, safety-gated `ef` policy. The detector emits one of three evidence states—`NO_DRIFT`, `DRIFT`, or `INSUFFICIENT_EVIDENCE`—rather than treating missing evidence as no drift.
+
+#### 1. Workload-drift definition
+
+Unit of evaluation:
+
+- Evaluate L2 and COSINE independently. Never pool their vectors, thresholds, cardinalities, recall, p-values, or decisions.
+- A reference window `R_m` and each current window `C_m,t` contain exactly 200 eligible queries for metric `m`. Current windows are ordered, non-overlapping, and compared to the same immutable reference until an approved rebaseline.
+- An eligible query must have the same collection/data version, vector dimension, metric, index identity/build parameters, `limit=100`, and consistency contract as the reference. A change to any identity field is a configuration/data event, not workload drift, and yields `INSUFFICIENT_EVIDENCE` until separately validated and rebaselined.
+- The reference window is accepted only after health, semantic, and audit checks pass. It cannot update automatically after a drift alarm; that would allow adaptation of the baseline to hide persistent drift.
+
+Observable signals for each metric stratum:
+
+| Signal | Observable and statistic | Minimum effect-size gate | Classification |
+|---|---|---:|---|
+| Query-vector distribution | Unbiased squared maximum mean discrepancy (`MMD²`) between 200 reference and 200 current vectors using the Gaussian RBF kernel `k(x,y)=exp(-||x-y||²/(2*sigma²))`. COSINE vectors are L2-normalized; L2 vectors are standardized with reference-window per-dimension mean and standard deviation. Zero-variance dimensions remain zero. `sigma` is the median non-zero pairwise Euclidean distance in the reference window. The p-value comes from 9,999 deterministic label permutations whose seed is stored in the detector manifest. | `MMD² >= 0.01` | `INPUT_DRIFT` |
+| Threshold distribution | Two-sided two-sample Kolmogorov–Smirnov statistic on the 200 explicit `radius` values. Metric stratification makes cross-metric normalization unnecessary. The p-value comes from the same deterministic permutation procedure. | `D >= 0.20` | `INPUT_DRIFT` |
+| Exact result-cardinality distribution | Two-sided two-sample Kolmogorov–Smirnov statistic on full, uncapped threshold-eligible cardinalities from the deterministic audit sample. Returned HNSW cardinality is telemetry only and cannot substitute because `limit=100` censors it. The p-value comes from the same deterministic permutation procedure. | `D >= 0.20` | `INPUT_DRIFT` |
+| Recall at fixed search effort | Absolute decrease `delta_recall = mean_recall(R_m, ef=100) - mean_recall(C_m,t, ef=100)` in capped recall@threshold, measured against the independent exact oracle and checked against FLAT semantics. The one-sided p-value comes from 9,999 deterministic permutations. The serving `ef` does not replace this sentinel measurement. | `delta_recall >= 0.02` | `QUALITY_DRIFT` |
+
+Audit sampling:
+
+- Exactly 50 of each 200-query window (25%) are selected by ranking a stable keyed hash of `(detector_seed, metric, window_id, query_id)` and taking the lowest 50 hashes. The seed and selected IDs are persisted.
+- Each selected query is shadowed through FLAT, HNSW at sentinel `ef=100`, and the independent float64 oracle. Shadow work is excluded from foreground latency and may not delay the serving response.
+- FLAT and oracle must agree on metric-specific threshold validity and capped ordered IDs before HNSW recall is accepted. The oracle also records uncapped exact cardinality. Any disagreement makes the window `INSUFFICIENT_EVIDENCE` and raises a correctness alarm outside the drift classifier.
+
+Statistical decision rule:
+
+1. Compute the four raw p-values above for each complete metric/window evaluation. Each permutation p-value is `(1 + count(permuted_statistic >= observed_statistic)) / 10,000` over 9,999 label permutations; use the absolute KS statistic, MMD², and the one-sided positive recall decrease as their respective statistics. Derive and persist a distinct permutation seed for every `(detector_seed, metric, window_id, signal)` tuple.
+2. Apply Holm’s step-down correction to that four-test family with family-wise `alpha=0.01`.
+3. A signal breaches only when its Holm-adjusted p-value is `<= 0.01` **and** its minimum effect-size gate is met. Statistical significance without the effect floor, or effect size without corrected significance, is not a breach.
+4. `INPUT_DRIFT` requires the same input signal to breach in two consecutive complete windows. `QUALITY_DRIFT` requires the recall signal to breach in two consecutive complete windows. A single breached window is `INSUFFICIENT_EVIDENCE` with reason `PENDING_CONFIRMATION`, not `DRIFT`.
+5. If both classifications qualify, emit `INPUT_AND_QUALITY_DRIFT`. Quality drift alone does not prove workload causation: backend health, data/index identity, and semantic checks must remain explicit possible causes.
+
+This definition is falsifiable: for any retained pair of windows, another evaluator can reproduce the eligibility decision, audit sample, test statistics, corrected p-values, effect gates, consecutive-window history, and final state.
+
+False-positive target:
+
+- Target: at most **1% false `DRIFT` decisions per complete metric-stratum detector decision** under stationary replay. A false positive is a `DRIFT` emitted when reference and current windows are sampled from the same frozen stationary workload and environment contract.
+- Holm correction controls the within-window four-signal family at `0.01`; the two-window rule adds persistence filtering. No independence assumption is used to claim the operational target.
+- Before acceptance, a dedicated stationary-replay experiment must show a false-positive point estimate `<= 1%` and a one-sided 95% exact binomial upper confidence bound `<= 1%`. With zero false positives this requires at least 299 complete decisions. Until that evidence exists, detector output is research evidence only and policy mode is `DRY_RUN`/`RECOMMEND`.
+
+#### 2. Drift Detector input/output contract
+
+Inputs:
+
+- Versioned detector configuration and deterministic seeds.
+- Immutable reference-window ID and the two most recent complete current-window IDs for one metric.
+- Per query: stable query ID, event time/order, exact query vector, explicit `radius`, `range_filter`, `limit`, metric, served `ef`, returned IDs/count, client latency, and failure/timeout/threshold-violation status.
+- For each audited query: FLAT IDs/distances, sentinel-HNSW (`ef=100`) IDs/distances, oracle capped IDs/distances, oracle uncapped cardinality, and semantic-agreement status.
+- Environment identity: collection/data version, index identity and build parameters, consistency level, server/client versions, and health state.
+
+Outputs:
+
+- `state`: exactly one of `NO_DRIFT | DRIFT | INSUFFICIENT_EVIDENCE`.
+- `classification`: `NONE | INPUT_DRIFT | QUALITY_DRIFT | INPUT_AND_QUALITY_DRIFT`; it is `NONE` unless `state=DRIFT`.
+- `signal_evidence`: for every signal, sample count, statistic, raw and Holm-adjusted p-values, effect value, effect floor, gate ratio (`effect/floor`), current-window breach, previous-window breach, and consecutive qualification.
+- `decision_confidence`: for a `DRIFT`, the minimum of `1 - adjusted_p` across the two qualifying windows for the triggering signal; therefore a valid trigger is at least `0.99`. This is an evidence score, not a posterior probability. It is null for `NO_DRIFT` and `INSUFFICIENT_EVIDENCE`, because failure to reject is not proof of stationarity.
+- `drift_magnitude`: the triggering signal’s minimum gate ratio across its two qualifying windows; report all per-signal raw magnitudes as well. A valid trigger has magnitude at least `1.0`.
+- Audit coverage, baseline/window/configuration identifiers, deterministic seeds, reason codes, and an immutable decision/audit-log identifier.
+
+State semantics:
+
+- `NO_DRIFT`: all 200 observations and 50 audits are complete and valid, no signal is pending or consecutively qualified, and all identity/health/semantic prerequisites pass.
+- `DRIFT`: at least one signal satisfies corrected significance, effect size, and the two-consecutive-window rule.
+- `INSUFFICIENT_EVIDENCE`: fewer than 200 eligible observations, fewer than 50 valid audits, a first unconfirmed breach, missing/invalid metadata, health failure, FLAT/oracle disagreement, identity change, or statistical computation failure. It must never be coerced to `NO_DRIFT`.
+
+#### 3. Tuning Policy contract
+
+Policy inputs:
+
+- A complete detector output and its immutable evidence record.
+- Current explicit HNSW `ef`, last-known-good `ef`, metric stratum, and current/reference window IDs.
+- The candidate response estimates for capped recall and client p95 latency, including uncertainty and evidence provenance.
+- Pre-action health/configuration/index-identity checks, rollback readiness, current policy mode, and the experiment ID authorizing the action class.
+- The research-profile SLOs and action limits defined below.
+
+Policy output:
+
+- One decision: `NO_CHANGE`, `RECOMMEND_EF`, `START_CANARY`, or `ROLLBACK`.
+- Current, candidate, and last-known-good `ef`; expected recall and p95 latency; predicted improvement; reason; detector confidence/magnitude; safety-gate results; mode; and immutable audit ID.
+- The policy proposes an action. A separate safe-actuation boundary validates and applies it. No detector or policy component may call PyMilvus directly.
+
+Action space and transition rules:
+
+- EXP-001's verified measurement sweep remains `{100, 200, 400, 800, 1600}`, but the actuation and last-known-good ladder is the strict subset `{200, 400, 800, 1600}`. `ef=100` is excluded from serving-policy actuation and retained only as the fixed shadow sentinel for `delta_recall` so that quality drift is always measured at constant search effort.
+- Resolution rationale: EXP-001 measured aggregate mean recall `0.895965` at `ef=100`, and all six metric/threshold configurations were below the `0.95` recall floor (`0.852422` to `0.947203`). Lowering the floor would weaken the safety objective to admit a setting already shown to miss it. At `ef=200`, aggregate mean recall was `0.970187`, and all six configurations exceeded the floor (`0.959667` to `0.983986`), making `ef=200` the lowest empirically eligible actuation value. These smoke measurements justify exclusion, not production readiness; every live candidate must still pass the ADR-002 shadow/canary gates.
+- A normal decision may move by at most one adjacent actuation value: `200 <-> 400 <-> 800 <-> 1600`. Direct jumps are invalid. Emergency rollback may restore the persisted last-known-good actuation value directly. If serving configuration is `ef=100`, automatic actuation cannot bootstrap itself: remain in `DRY_RUN`, emit a configuration/SLO alert, and require an explicitly approved initialization at an eligible value followed by last-known-good qualification.
+- `INSUFFICIENT_EVIDENCE` or `NO_DRIFT` produces `NO_CHANGE` for this drift-triggered policy.
+- `QUALITY_DRIFT` may recommend only the next higher adjacent `ef`, because its immediate objective is recall recovery. At `ef=1600`, it emits `NO_CHANGE` plus an unsatisfied-SLO alert.
+- **Documented quality-recovery exception:** L2 `target-075`, `ef=400 -> 800`, may use a relative p95 canary ceiling of `1.50 *` last-known-good instead of `1.25 *`, but only for `QUALITY_DRIFT` or `INPUT_AND_QUALITY_DRIFT`. EXP-001 measured this transition at `3.465897 ms -> 4.860332 ms` (`1.402330 *`), so the standard ceiling would reject its only adjacent upward recovery step before judging recall recovery. The `1.50 *` cap admits the measured transition with about 7% multiplicative headroom while preserving the absolute `10.0 ms` ceiling. To use the exception, canary mean recall must remain `>= 0.95` and improve by at least `0.005` absolute over paired last-known-good recall; EXP-001 observed `0.989706 -> 0.997350` (`+0.007643`) for this transition. It is not available to input-drift/latency-optimization actions, does not permit a non-adjacent jump, and requires a dedicated EXP entry to authorize this exact transition under drift; EXP-001 supplies the conflict evidence only.
+- `INPUT_DRIFT` without quality drift may recommend one adjacent value in either direction only when a separately validated response model predicts the change will satisfy both SLOs and the minimum-improvement gate. Without that model/evidence it remains `RECOMMEND_EF` in dry-run mode.
+- When both classifications occur, the quality rule dominates: only an upward adjacent candidate is eligible.
+- The policy may not alter `radius`, `range_filter`, `limit`, metric, index/build parameters, data, collection, or consistency level.
+
+Minimum predicted improvement:
+
+- If current mean capped recall is below the recall floor, the candidate must predict at least `+0.01` absolute mean recall and remain within the latency ceilings.
+- If current recall already satisfies the floor, a lower-`ef` candidate must predict at least a `5%` p95-latency reduction while preserving the recall floor and all safety ceilings.
+- These predictions do not authorize actuation unless a prior dedicated EXP entry supports this action class. EXP-001 alone is insufficient because it did not test drift-triggered decisions or rollback.
+
+#### 4. Safety, bad-decision detection, and rollback contract
+
+Research-profile SLOs:
+
+- **Recall floor:** audited mean capped recall@threshold must be `>= 0.95`. A candidate also may not reduce paired mean recall by more than `0.01` absolute versus the last-known-good `ef` on the same audited queries.
+- **Latency ceiling:** foreground client p95 latency must be `<= 10.0 ms` and, by default, `<= 1.25 *` the last-known-good p95 measured on the same canary interval. The sole proposed exception is the documented L2 `target-075`, `ef=400 -> 800` quality-recovery transition, whose relative ceiling is `1.50 *`; both ceilings remain mandatory, so the exception never overrides `10.0 ms`.
+- These values apply only to the pinned single-client/concurrency-1 Core research profile. A deployment with a different latency objective must supply and validate a stricter or explicitly superseding SLO before actuation; missing SLOs force dry-run mode.
+
+Last-known-good contract:
+
+- Persist the current explicit `ef`, configuration/index/data identity, SLO evidence, and audit ID before any canary.
+- Only `ef in {200, 400, 800, 1600}` can become last-known-good. `ef=100` can never qualify, regardless of a particular window's observed recall, because its sole ADR-002 role is the fixed sentinel.
+- An eligible `ef` becomes last-known-good only after two complete 200-query windows pass health, correctness, recall, and latency SLOs with no rollback condition.
+- Last-known-good state must survive process restart and be readable before actuation. If absent, stale, or identity-mismatched, actuation is prohibited.
+
+Pre-action and staged-exposure gates:
+
+1. Default mode is `DRY_RUN`; recommendation and actuation logs are mandatory.
+2. Validate candidate membership, adjacent-step limit, metric/threshold/limit/index identity, applicable relative-latency ceiling, detector confidence `>= 0.99`, drift magnitude `>= 1.0`, minimum predicted improvement, prior EXP authorization, and tested rollback for that exact transition. Fail closed to the standard `1.25 *` ceiling if exception identity or authorization is missing.
+3. Require Milvus, etcd, and MinIO health; zero current query failures/threshold violations; loaded collection; unchanged HNSW identity; and an available last-known-good record.
+4. Shadow the candidate and last-known-good `ef` on the same 50 audited queries before serving the candidate. Both are compared to FLAT/oracle; failure blocks the canary.
+5. If shadow checks pass, expose the candidate to at most 10% of eligible foreground traffic until 50 candidate queries have completed, while retaining last-known-good service for the remainder and collecting paired shadow evidence.
+
+A policy decision is bad, and rollback is mandatory, when any of the following occurs:
+
+- Immediate hard failure: any failed/timeout candidate query, threshold violation, FLAT/oracle disagreement, unhealthy required service, unloaded collection, configuration-validation failure, index-identity change, missing audit record, or actuation exception.
+- Recall failure after the 50-query canary: mean capped recall `< 0.95` or paired mean recall more than `0.01` below last-known-good on the same audited queries. For the L2 `target-075`, `ef=400 -> 800` quality-recovery exception, paired mean recall improvement `< 0.005` is also a rollback trigger.
+- Latency failure after the 50-query canary: candidate p95 `> 10.0 ms` or above the applicable relative ceiling on the same canary interval—`1.25 *` by default, or `1.50 *` only for the authorized L2 `target-075`, `ef=400 -> 800` quality-recovery exception.
+
+Rollback behavior:
+
+1. Stop assigning new queries to the candidate and restore the persisted last-known-good explicit `ef` on the next request. Rollback must not rebuild or replace the HNSW index.
+2. Record trigger, affected query IDs, old/candidate/restored values, timestamps, health, index identity, SLO evidence, and outcome in an append-only audit record.
+3. Re-run health/configuration checks and a 50-query FLAT/oracle audit at the restored value. Failure escalates to operator intervention; the policy remains disabled.
+4. Enter `DRY_RUN`, prohibit further automatic actions for at least two complete 200-query windows, and require explicit human approval to leave the cooldown.
+5. If restoration cannot be confirmed, fail closed: keep automatic actuation disabled and alert. Never advance to another candidate in response to a failed rollback.
+
+Automatic actuation remains unauthorized until every `AGENTS.md` decision-gate condition is backed by reviewed evidence: confidence calibration, minimum-improvement validation, pre-action health checks, hard bounds, dry-run behavior, audit completeness, deliberate failures, and transition-specific rollback across process restart.
+
+Consequences and tradeoffs accepted:
+
+- Exact auditing increases background compute but prevents capped result counts from masquerading as true cardinality and supplies real recall.
+- Two 200-query windows delay detection by at least 400 eligible queries; this is accepted to reduce transient false alarms. Extreme correctness or health failures bypass drift classification and trigger safety handling immediately.
+- Fixed effect floors and SLOs improve falsifiability but may be suboptimal. Changing them after experiments begin requires a new experiment contract and, once this ADR is accepted, a superseding ADR—not an undocumented configuration edit.
+- MMD and KS identify distribution change but do not identify its business cause. Detector evidence supports a tuning decision, not a causal claim.
+- `QUALITY_DRIFT` may arise without workload drift. The separate label prevents the research report from claiming workload causation when only fixed-effort recall changed.
+- The policy is intentionally conservative: it can miss short-lived drift, decline to act on incomplete evidence, and take multiple windows to traverse the `ef` ladder.
+
+Benchmark and verification plan required before implementation acceptance:
+
+1. Pre-register stationary, abrupt, gradual, vector-only, threshold-only, cardinality-only, quality-only, mixed, and recovery scenarios under new experiment IDs.
+2. Verify each statistic, Holm adjustment, effect gate, window/hysteresis transition, deterministic audit sample, and three-state output against boundary fixtures.
+3. Demonstrate the stationary false-positive target, including the exact binomial upper bound, without tuning thresholds on the evaluation replay.
+4. Measure detection delay, false-negative rate, classification accuracy, shadow overhead, and sensitivity to audit rate.
+5. Test missing audits, metric mixing, identity changes, DB unavailability, semantic disagreement, extreme drift, invalid candidates, stale last-known-good state, actuation failure, rollback failure, and restart persistence.
+6. Run every adjacent actuation transition in `{200, 400, 800, 1600}` in dry-run and canary mode, deliberately violate each recall/latency/hard-failure guardrail, and show raw rollback evidence. Validate both sides of the L2 `target-075`, `ef=400 -> 800` exception (`1.50 *` passes only with recall recovery; a higher ratio or failed recovery rolls back). Validate `ef=100` separately as a non-actuating sentinel and as a rejected last-known-good candidate.
+7. Require manual architecture review and explicit human approval before changing status from Proposed or enabling implementation/live actuation.
+
+Modules affected:
+
+Workload observation port; exact-audit sampler; drift detector; detector evidence store; tuning policy; response model; safe-actuation boundary; health/failure monitor; last-known-good store; audit log; experiment harness.
+
+Research references:
+
+- Gretton et al., [“A Kernel Two-Sample Test”](https://www.jmlr.org/papers/v13/gretton12a.html), JMLR 13 (2012), for MMD-based distribution comparison.
+- Holm, [“A Simple Sequentially Rejective Multiple Test Procedure”](https://doi.org/10.2307/4615733), Scandinavian Journal of Statistics 6 (1979), for family-wise multiplicity control.
+- ADR-001 and EXP-001/EXP-004 for verified Milvus range semantics, fixed HNSW build identity, and the `ef in {100, 200, 400, 800, 1600}` smoke measurement surface from which ADR-002 derives its narrower actuation ladder.
+- `AGENTS.md` Risk Classification, Safety Rules, Configuration Governance, Testing Policy, and Failure Policy.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
