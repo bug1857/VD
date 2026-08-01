@@ -1,0 +1,125 @@
+name: vd-exp001
+services:
+  etcd:
+    cpus: 1
+    command:
+      - etcd
+      - -advertise-client-urls=http://etcd:2379
+      - -listen-client-urls
+      - http://0.0.0.0:2379
+      - --data-dir
+      - /etcd
+    container_name: milvus-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    healthcheck:
+      test:
+        - CMD
+        - etcdctl
+        - endpoint
+        - health
+      timeout: 20s
+      interval: 30s
+      retries: 3
+    image: quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366
+    mem_limit: "536870912"
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: /Users/rudrapratapsingh/Desktop/VD/artifacts/exp-001/environment/volumes/etcd
+        target: /etcd
+        bind: {}
+  minio:
+    cpus: 1
+    command:
+      - minio
+      - server
+      - /minio_data
+      - --console-address
+      - :9001
+    container_name: milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    healthcheck:
+      test:
+        - CMD
+        - mc
+        - ready
+        - local
+      timeout: 20s
+      interval: 30s
+      retries: 3
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08
+    mem_limit: "1073741824"
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 9001
+        published: "9001"
+        protocol: tcp
+      - mode: ingress
+        target: 9000
+        published: "9000"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /Users/rudrapratapsingh/Desktop/VD/artifacts/exp-001/environment/volumes/minio
+        target: /minio_data
+        bind: {}
+  standalone:
+    cpus: 4
+    command:
+      - milvus
+      - run
+      - standalone
+    container_name: milvus-standalone
+    depends_on:
+      etcd:
+        condition: service_started
+        required: true
+      minio:
+        condition: service_started
+        required: true
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_REGION: us-east-1
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9091/healthz
+      timeout: 20s
+      interval: 30s
+      retries: 3
+      start_period: 1m30s
+    image: milvusdb/milvus:v3.0.0@sha256:49371c30af46b1013e4d3e0b980e691d81376d69cdbe1b372725baf1d7255862
+    mem_limit: "4294967296"
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 19530
+        published: "19530"
+        protocol: tcp
+      - mode: ingress
+        target: 9091
+        published: "9091"
+        protocol: tcp
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - type: bind
+        source: /Users/rudrapratapsingh/Desktop/VD/artifacts/exp-001/environment/volumes/milvus
+        target: /var/lib/milvus
+        bind: {}
+networks:
+  default:
+    name: milvus

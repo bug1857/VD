@@ -1,0 +1,18 @@
+{
+  "base_prefix": "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14",
+  "environment_kind": "persistent dedicated EXP-001 benchmark virtual environment",
+  "executable": "/Users/rudrapratapsingh/Desktop/VD/.venv-exp001/bin/python",
+  "machine": "arm64",
+  "numpy_version": "2.5.1",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "prefix": "/Users/rudrapratapsingh/Desktop/VD/.venv-exp001",
+  "pymilvus_version": "3.0.1",
+  "python_build": [
+    "main",
+    "May 10 2026 10:21:34"
+  ],
+  "python_implementation": "CPython",
+  "python_version": "3.14.5",
+  "sysconfig_platform": "macosx-26.0-arm64",
+  "uv_version": "0.10.4"
+}

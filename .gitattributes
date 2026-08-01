@@ -1,0 +1,2 @@
+# Preserve the stock image configuration byte-for-byte, including upstream EOL spaces.
+artifacts/exp-001/environment/benchmark/milvus.v3.0.0.yaml whitespace=-blank-at-eol,-blank-at-eof

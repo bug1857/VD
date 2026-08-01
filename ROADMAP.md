@@ -33,7 +33,7 @@ A phase cannot be marked complete until: objectives met, tests complete, benchma
 | Drift detector | not started | CRITICAL | |
 | Tuning policy | not started | CRITICAL | |
 | Safe actuation layer | not started | CRITICAL | |
-| Benchmark harness | in progress | HIGH | EXP-002 harness code and 20 passing offline unit tests are committed; DATASET-001 production artifacts are generated and checksum-verified; live Milvus execution remains. |
+| Benchmark harness | in progress | HIGH | Harness, DATASET-001, dedicated Python lock/export, host/config checksums, and pre-run resource evidence exist; host background load is disclosed; live execution and post-run evidence remain. |
 
 ---
 
@@ -55,4 +55,4 @@ Estimated effort to resolve:
 
 ADR-001 is accepted: Milvus is the selected primary backend, so backend selection is complete.
 
-Next: complete the remaining runtime checklist and, only after separate authorization, execute EXP-002 against verified ENV-001 using the immutable DATASET-001 artifacts. Do not interpret H1–H4 or mark the harness verified until the live run and raw evidence are reviewed. Workload drift, tuning policy, IVF, and safe live actuation remain out of scope.
+Next: stabilize or re-disclose host background workloads immediately before execution and, only after separate authorization, run EXP-002 against verified ENV-001 using the immutable DATASET-001 artifacts. The run must capture realized ordering seeds, collection/index/query metadata, execution Git state, and post-run health/resources. Do not interpret H1–H4 or mark the harness verified until raw evidence is reviewed. Workload drift, tuning policy, IVF, and safe live actuation remain out of scope.
