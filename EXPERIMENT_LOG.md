@@ -420,3 +420,72 @@ Follow-up actions:
 2. Define and enforce a quiescence procedure: stop browser media and nonessential applications, disclose all retained workloads, and verify background indexing/update activity.
 3. Capture immediate pre-run and post-run process, load, container CPU/RAM, power-source, and thermal-pressure snapshots tied to the next immutable run ID.
 4. Repeat the unchanged EXP-001 contract under a new EXP ID and run directory; never overwrite `artifacts/exp-001/run-20260801T154343Z/` or this entry.
+
+### EXP-004: EXP-001 verification decision
+
+Status: **VERIFIED — EXP-001 LIVE SMOKE ACCEPTANCE PASSED**
+Date: 2026-08-01
+Risk level: HIGH (research-validity gate; verification is limited to the frozen smoke contract)
+
+Objective:
+
+Review the completed live evidence against EXP-001's frozen dataset, index, search, measurement, and revised p95-latency CV acceptance criteria, then record the current verification status without rewriting the original contract entry or EXP-003's separate INCONCLUSIVE historical result.
+
+Evidence run:
+
+`artifacts/exp-001/run-20260801T161924Z/`
+
+Authoritative summary:
+
+`artifacts/exp-001/run-20260801T161924Z/summary.json` — SHA-256 `f3c14c5708de0b67d5d7ecbd5fb54a3988ca9dcb9be9364cb68a152eec4a609b`.
+
+Configuration and provenance:
+
+- `DATASET-001-v1`, seed `20260801`, 10,000 base vectors, 50 calibration queries, 200 measured queries, 128-dimensional little-endian `float32`, L2 and COSINE.
+- FLAT plus HNSW (`M=16`, `efConstruction=200`), `ef in [100, 200, 400, 800, 1600]`, three frozen thresholds per metric, `limit=100`, `Strong` consistency, one synchronous client, five measured repetitions.
+- Milvus `3.0.0`, PyMilvus `3.0.1`, NumPy `2.5.1`, CPython `3.14.5`, Docker Desktop `4.84.0`; ENV-001 image digests and resource controls are embedded in the immutable run manifest.
+- Apple M1 `arm64`, 8 logical CPU cores, 8 GiB RAM, macOS `26.5.2`; Git commit `d2e27c33187454ddd785fabe87daf68136908333`, with the manifest's dirty flag attributable to preserved untracked experiment artifacts.
+
+Hypothesis evaluation:
+
+- **H1 — SUPPORTED:** `validate_flat_semantics` completed all 1,200 pre-timing checks (six FLAT metric/threshold configurations × 200 measured queries) without an ordered-ID or threshold-validity disagreement. All six deterministic boundary fixtures also matched their expected IDs.
+- **H2 — SUPPORTED:** aggregate HNSW results exhibited the hypothesized tradeoff as `ef` increased:
+
+  | `ef` | Mean recall@threshold | Mean p95 latency |
+  |---:|---:|---:|
+  | 100 | `0.895965` | `3.1604 ms` |
+  | 200 | `0.970187` | `3.6582 ms` |
+  | 400 | `0.993641` | `4.0113 ms` |
+  | 800 | `0.998954` | `4.6551 ms` |
+  | 1600 | `0.999817` | `5.0889 ms` |
+
+  These are equal-weight aggregates over the six HNSW metric/threshold configurations at each `ef`; every configuration has the same query/repetition count. This smoke result supports the existence of a recall/latency tradeoff but does not select an optimal `ef`.
+- **H3 — SUPPORTED:** the raw stream contains 152 `index_identity_unchanged` records (150 measured HNSW configuration segments plus two final metric checks) and no HNSW identity mismatch.
+- **H4 — SUPPORTED:** all 36 configurations met the reviewed p95-latency CV ceiling of 30%. The maximum was `26.023708345393032%` for `L2:target-075:HNSW:ef=800`.
+
+Acceptance evidence:
+
+- Zero failed measured queries.
+- Zero threshold violations.
+- Valid QPS comparisons for all 36 configurations.
+- FLAT/oracle agreement on all 1,200 measured-query preflight checks.
+- No per-segment or final HNSW index-identity mismatch.
+- Maximum configuration-level p95-latency CV `26.0237%`, below the reviewed 30% ceiling.
+- Immediate pre-run and post-run resource/process snapshots are preserved in the evidence directory. The post-run snapshot disclosed one 0%-CPU WhatsApp service extension; this shared-host limitation is retained as evidence and does not alter the observed CV acceptance result.
+
+Result:
+
+**VERIFIED.** EXP-001 passed its reviewed live smoke acceptance criteria using `run-20260801T161924Z` as the verifying evidence run. H1, H2, H3, and H4 are SUPPORTED at smoke-test scope.
+
+Historical-record isolation:
+
+EXP-003 and `artifacts/exp-001/run-20260801T154343Z/` remain **INCONCLUSIVE** and unchanged. This verification decision neither overwrites nor reclassifies that earlier noisy run.
+
+Conclusion:
+
+The Milvus range/threshold-query semantics, HNSW query-time `ef` tradeoff, index-identity stability, and harness reproducibility gate are verified for the frozen EXP-001 contract. This result does not establish optimality, adaptive behavior under drift, production readiness, or superiority over another backend.
+
+Follow-up actions:
+
+1. Use EXP-001 only as the validated smoke foundation for the next Phase 1 research task.
+2. Keep all future performance or adaptation claims under new experiment IDs with their own immutable evidence directories.

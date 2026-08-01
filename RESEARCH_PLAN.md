@@ -161,6 +161,25 @@ Version sources:
 
 ---
 
+## EXPERIMENT VERIFICATION REGISTRY
+
+### EXP-001: Milvus range/threshold-query smoke benchmark
+
+Status: **VERIFIED — LIVE SMOKE ACCEPTANCE PASSED 2026-08-01**
+
+Verifying evidence: `artifacts/exp-001/run-20260801T161924Z/`; authoritative summary: `artifacts/exp-001/run-20260801T161924Z/summary.json`, SHA-256 `f3c14c5708de0b67d5d7ecbd5fb54a3988ca9dcb9be9364cb68a152eec4a609b`. The verification decision and hypothesis evaluation are recorded by EXP-004 in `EXPERIMENT_LOG.md` so the original contract and the separate `run-20260801T154343Z` INCONCLUSIVE record remain append-only historical evidence.
+
+Hypothesis disposition from the verifying run:
+
+- **H1 — SUPPORTED:** Milvus FLAT and the independent oracle agreed on all 1,200 measured-query preflight checks (six metric/threshold FLAT configurations × 200 measured queries).
+- **H2 — SUPPORTED:** aggregate HNSW recall increased from `0.8960` at `ef=100` to `0.9998` at `ef=1600`, while aggregate p95 latency increased from `3.1604 ms` to `5.0889 ms`; the run therefore exhibited the hypothesized recall/latency tradeoff.
+- **H3 — SUPPORTED:** all 150 per-segment checks and both final metric checks reported unchanged HNSW index identity; no mismatch was recorded.
+- **H4 — SUPPORTED:** every configuration satisfied the reviewed p95-latency CV ceiling of 30%; the maximum was `26.0237%` for `L2:target-075:HNSW:ef=800`.
+
+The verifying run recorded zero failed measured queries, zero threshold violations, and valid QPS comparisons for all 36 configurations. Verification is limited to the EXP-001 smoke contract; it does not establish optimal tuning, production readiness, workload-drift adaptation, or backend superiority.
+
+---
+
 ## PUBLICATION TRACKER
 
 - **Research gap:** see Related Work above.
