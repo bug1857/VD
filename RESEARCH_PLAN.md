@@ -75,15 +75,15 @@ Used by: EXP-001 contract in `EXPERIMENT_LOG.md`.
 
 ### ENV-001: Milvus range-query smoke environment
 
-Status: PINNED TARGET — NOT PROVISIONED OR VERIFIED
+Status: VERIFIED — PERSISTENCE AND HEALTH GATES PASSED 2026-08-01
 As-of date: 2026-08-01
 Compatibility policy: The official Milvus 3.0.0 `milvus-standalone-docker-compose.yml` release asset is the source of truth for Milvus, etcd, and MinIO versions. Preserve its service versions and effective configuration unless a specific incompatibility or security issue is demonstrated. Any deviation requires an ENV-001 deviation record stating the evidence, risk, rollback, and human approval before use.
 
 | Component | Executable pin | Immutable artifact | Selection basis |
 |---|---|---|---|
 | Milvus | `3.0.0` | `milvusdb/milvus:v3.0.0@sha256:49371c30af46b1013e4d3e0b980e691d81376d69cdbe1b372725baf1d7255862` (`linux/arm64`: `sha256:bfab7739a0479cd81ffdf5e473f88c5b143678c2520a06a19f86f35ecd586cad`) | Latest non-prerelease Milvus release; published 2026-07-29. |
-| PyMilvus | `3.0.1` | Python requirement `pymilvus==3.0.1`; lockfile hash pending environment provisioning | Latest non-prerelease SDK release; release notes identify it as recommended for Milvus 3.0; Python >=3.9 required. |
-| Docker Desktop | `4.84.0` | Installer checksum pending installation; installation is blocked unless the vendor checksum is recorded | Latest stable Docker Desktop release; published 2026-07-27. |
+| PyMilvus | `3.0.1` | Python requirement `pymilvus==3.0.1`; lockfile hash deferred to the EXP-001 harness environment | Latest non-prerelease SDK release; release notes identify it as recommended for Milvus 3.0; Python >=3.9 required. |
+| Docker Desktop | `4.84.0` | Apple Silicon installer build `234817`; SHA-256 `ed9e93bf2b71c53492eb80ef35e722e131222018cba8157973dfe3bb717952dd` | Latest stable Docker Desktop release; published 2026-07-27. |
 | Docker Engine | `29.6.2` | Bundled/runtime version must equal `29.6.2` and be captured by `docker version` | Latest stable Engine release available as of the pin date; published 2026-07-16. |
 | Docker Compose | `5.3.1` | CLI version must equal `v5.3.1` and be captured by `docker compose version` | Latest stable Compose release available as of the pin date. |
 | etcd | `3.5.25` | Compose-specified tag `quay.io/coreos/etcd:v3.5.25`; resolved index digest `sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366`; `linux/arm64` digest `sha256:8da34a9df5dc1bd879bea716a301113c4e49b6bbdbe5778214707c6043ccf65d` | Exact version from the official Milvus 3.0.0 standalone Compose asset. |
@@ -99,7 +99,7 @@ Target platform and resource pins:
 - etcd container limit: 1 CPU, 512 MiB RAM.
 - MinIO container limit: 1 CPU, 1 GiB RAM.
 - Persist separate named/bind volumes for Milvus, etcd, and MinIO. Start every valid smoke run from explicitly empty experiment-scoped volumes.
-- Docker was not installed when ENV-001 was recorded (`docker: command not found`). Provisioning must verify the stock Compose versions, resolved image digests, limits, health checks, and Compose checksum before EXP-001 can run.
+- Docker was not installed when ENV-001 was first recorded (`docker: command not found`). Provisioning completed on 2026-08-01; the stock Compose versions, resolved image digests, limits, health checks, Compose checksum, and persistence-across-restart probe are captured in `artifacts/exp-001/environment/ENV-001_PROVISIONING.md`.
 
 Documented deviations from the stock Compose asset:
 
@@ -111,17 +111,17 @@ No etcd or MinIO version, command, health check, endpoint, credential, or storag
 
 Environment pinning checklist:
 
-- [ ] Fetch the CPU Compose asset only from the Milvus `v3.0.0` GitHub release URL recorded below.
-- [ ] Verify the Compose SHA-256 equals `4518b95ddd719542558f48d84e9a53a5910099888b8ef985ab122524db7d97d1` before use.
-- [ ] Verify the file names exactly `milvusdb/milvus:v3.0.0`, `quay.io/coreos/etcd:v3.5.25`, and `minio/minio:RELEASE.2024-05-28T17-19-04Z`.
-- [ ] Resolve each tag and verify its index digest and `linux/arm64` platform digest against the table above.
-- [ ] Apply only the three documented deviations; preserve and checksum the resulting Compose diff.
-- [ ] Reject any etcd or MinIO version override unless an ENV-001 deviation record contains evidence, risk, rollback, and explicit human approval.
-- [ ] Verify Docker Desktop `4.84.0`, Docker Engine `29.6.2`, and Docker Compose `5.3.1` from command output.
-- [ ] Verify the Apple M1 `arm64` host baseline and all Docker VM/container CPU and RAM limits.
-- [ ] Start from empty experiment-scoped Milvus, etcd, and MinIO volumes.
-- [ ] Capture service version output, image IDs/digests, effective Compose config, health checks, and pre-run resource snapshots in the EXP artifact manifest.
-- [ ] Mark ENV-001 VERIFIED only after Milvus starts, persists a probe record across restart, and all services pass health checks with the stock dependency versions.
+- [x] Fetch the CPU Compose asset only from the Milvus `v3.0.0` GitHub release URL recorded below.
+- [x] Verify the Compose SHA-256 equals `4518b95ddd719542558f48d84e9a53a5910099888b8ef985ab122524db7d97d1` before use.
+- [x] Verify the file names exactly `milvusdb/milvus:v3.0.0`, `quay.io/coreos/etcd:v3.5.25`, and `minio/minio:RELEASE.2024-05-28T17-19-04Z`.
+- [x] Resolve each tag and verify its index digest and `linux/arm64` platform digest against the table above.
+- [x] Apply only the three documented deviations; preserve and checksum the resulting Compose diff.
+- [x] Reject any etcd or MinIO version override unless an ENV-001 deviation record contains evidence, risk, rollback, and explicit human approval.
+- [x] Verify Docker Desktop `4.84.0`, Docker Engine `29.6.2`, and Docker Compose `5.3.1` from command output.
+- [x] Verify the Apple M1 `arm64` host baseline and all Docker VM/container CPU and RAM limits.
+- [x] Start from empty experiment-scoped Milvus, etcd, and MinIO volumes.
+- [x] Capture service version output, image IDs/digests, effective Compose config, health checks, and pre-run resource snapshots in the EXP artifact manifest.
+- [x] Mark ENV-001 VERIFIED only after Milvus starts, persists a probe record across restart, and all services pass health checks with the stock dependency versions.
 
 Version sources:
 

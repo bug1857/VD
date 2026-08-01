@@ -2,9 +2,9 @@
 
 Captured: `2026-08-01T11:54:39Z`
 
-Outcome: Docker Desktop and the Milvus standalone stack are provisioned and runtime-conformant with ENV-001. All three stock service health checks pass. No benchmark harness code was written and no benchmark was run.
+Outcome: Docker Desktop and the Milvus standalone stack are provisioned and runtime-conformant with ENV-001. All three stock service health checks pass, and a fixed Milvus record persisted across a full `docker compose down` / `up` cycle. No benchmark harness code was written and no benchmark was run.
 
-Formal ENV-001 status is not changed in `RESEARCH_PLAN.md`: its final VERIFIED gate also requires a persisted Milvus probe across restart, which was intentionally not performed in this provisioning-only step.
+Formal ENV-001 status was changed to VERIFIED after the persistence and post-restart health gates passed on 2026-08-01. The probe collection remains in the ENV-001 evidence volumes; EXP-001 must use new, explicitly empty experiment-scoped volumes.
 
 ## Docker Desktop installation
 
@@ -290,6 +290,118 @@ Pages copy-on-write:                        45539919.
 Pages zero filled:                        2328624934.
 Pages reactivated:                         666201230.
 ```
+
+## Persistence-across-restart verification
+
+Captured: `2026-08-01T12:06:06Z`
+
+Probe contract:
+
+- Collection: `env001_persistence_probe_20260801`
+- Primary key: `1001`
+- Marker: `ENV001-PERSIST-20260801-001`
+- Vector: `[0.125, 0.25, 0.5, 1.0]`
+- Pass condition: the exact primary key and marker are queryable before and after a full Compose teardown/recreation, followed by all three stock health checks reporting healthy.
+
+### Write and pre-restart read
+
+```console
+$ curl -sS -X POST http://localhost:19530/v2/vectordb/collections/list -H 'Content-Type: application/json' -d '{}'
+{"code":0,"data":[]}
+$ curl --fail-with-body -sS -X POST http://localhost:19530/v2/vectordb/collections/create \
+  -H 'Content-Type: application/json' \
+  -d '{"collectionName":"env001_persistence_probe_20260801","dimension":4,"metricType":"COSINE","primaryFieldName":"id","vectorFieldName":"vector"}'
+{"code":0,"data":{}}
+$ curl --fail-with-body -sS -X POST http://localhost:19530/v2/vectordb/entities/insert \
+  -H 'Content-Type: application/json' \
+  -d '{"collectionName":"env001_persistence_probe_20260801","data":[{"id":1001,"vector":[0.125,0.25,0.5,1.0],"marker":"ENV001-PERSIST-20260801-001"}]}'
+{"code":0,"cost":0,"data":{"insertCount":1,"insertIds":[1001]}}
+$ curl --fail-with-body -sS -X POST http://localhost:19530/v2/vectordb/entities/query \
+  -H 'Content-Type: application/json' \
+  -d '{"collectionName":"env001_persistence_probe_20260801","filter":"id == 1001","outputFields":["id","marker"]}'
+{"code":0,"cost":0,"data":[{"id":1001,"marker":"ENV001-PERSIST-20260801-001"}]}
+```
+
+### Full stack teardown and recreation
+
+```console
+$ export ENV001_VOLUME_ROOT=/Users/rudrapratapsingh/Desktop/VD/artifacts/exp-001/environment/volumes
+$ docker compose -p vd-exp001 \
+  -f infra/milvus/env-001/compose.vendor.yml \
+  -f infra/milvus/env-001/compose.override.yml \
+  down
+time="2026-08-01T17:34:56+05:30" level=warning msg="/Users/rudrapratapsingh/Desktop/VD/infra/milvus/env-001/compose.vendor.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Container milvus-standalone Stopping
+ Container milvus-standalone Stopped
+ Container milvus-standalone Removing
+ Container milvus-standalone Removed
+ Container milvus-etcd Stopping
+ Container milvus-minio Stopping
+ Container milvus-minio Stopped
+ Container milvus-minio Removing
+ Container milvus-minio Removed
+ Container milvus-etcd Stopped
+ Container milvus-etcd Removing
+ Container milvus-etcd Removed
+ Network milvus Removing
+ Network milvus Removed
+$ docker ps -a --filter name=milvus --format 'table {{.Names}}\t{{.Status}}'
+NAMES     STATUS
+$ docker compose -p vd-exp001 \
+  -f infra/milvus/env-001/compose.vendor.yml \
+  -f infra/milvus/env-001/compose.override.yml \
+  up -d
+time="2026-08-01T17:34:58+05:30" level=warning msg="/Users/rudrapratapsingh/Desktop/VD/infra/milvus/env-001/compose.vendor.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Network milvus Creating
+ Network milvus Created
+ Container milvus-etcd Creating
+ Container milvus-minio Creating
+ Container milvus-minio Created
+ Container milvus-etcd Created
+ Container milvus-standalone Creating
+ Container milvus-standalone Created
+ Container milvus-minio Starting
+ Container milvus-etcd Starting
+ Container milvus-etcd Started
+ Container milvus-minio Started
+ Container milvus-standalone Starting
+ Container milvus-standalone Started
+```
+
+### Post-restart health and persisted read
+
+```console
+$ wait for all stock health checks after restart (up to 240 seconds)
+t=+010s milvus-etcd=starting milvus-minio=starting milvus-standalone=starting
+t=+020s milvus-etcd=starting milvus-minio=starting milvus-standalone=healthy
+t=+030s milvus-etcd=starting milvus-minio=starting milvus-standalone=healthy
+t=+040s milvus-etcd=healthy milvus-minio=healthy milvus-standalone=healthy
+$ curl --fail-with-body -sS -X POST http://localhost:19530/v2/vectordb/collections/list \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+{"code":0,"data":["env001_persistence_probe_20260801"]}
+$ curl --fail-with-body -sS -X POST http://localhost:19530/v2/vectordb/entities/query \
+  -H 'Content-Type: application/json' \
+  -d '{"collectionName":"env001_persistence_probe_20260801","filter":"id == 1001","outputFields":["id","marker"]}'
+{"code":0,"cost":0,"data":[{"id":1001,"marker":"ENV001-PERSIST-20260801-001"}]}
+$ docker exec milvus-etcd etcdctl endpoint health
+127.0.0.1:2379 is healthy: successfully committed proposal: took = 1.113875ms
+$ docker exec milvus-minio mc ready local
+The cluster is ready
+$ docker exec milvus-standalone curl -fsS http://localhost:9091/healthz
+OK
+$ docker compose -p vd-exp001 \
+  -f infra/milvus/env-001/compose.vendor.yml \
+  -f infra/milvus/env-001/compose.override.yml \
+  ps
+time="2026-08-01T17:35:53+05:30" level=warning msg="/Users/rudrapratapsingh/Desktop/VD/infra/milvus/env-001/compose.vendor.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+NAME                IMAGE                                                                                                              COMMAND                  SERVICE      CREATED          STATUS                    PORTS
+milvus-etcd         quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366                "etcd -advertise-cli…"   etcd         55 seconds ago   Up 54 seconds (healthy)   2379-2380/tcp
+milvus-minio        minio/minio:RELEASE.2024-05-28T17-19-04Z@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08   "/usr/bin/docker-ent…"   minio        55 seconds ago   Up 54 seconds (healthy)   0.0.0.0:9000-9001->9000-9001/tcp, [::]:9000-9001->9000-9001/tcp
+milvus-standalone   milvusdb/milvus:v3.0.0@sha256:49371c30af46b1013e4d3e0b980e691d81376d69cdbe1b372725baf1d7255862                     "/tini -- milvus run…"   standalone   55 seconds ago   Up 54 seconds (healthy)   0.0.0.0:9091->9091/tcp, [::]:9091->9091/tcp, 0.0.0.0:19530->19530/tcp, [::]:19530->19530/tcp
+```
+
+Result: **PASS**. The exact record survived container and network removal/recreation through the unchanged experiment-scoped Milvus, etcd, and MinIO bind volumes, and every stock service health check returned healthy afterward.
 
 ## Rollback / stop command
 
