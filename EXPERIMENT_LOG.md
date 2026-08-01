@@ -122,20 +122,22 @@ TBD at execution. Record host model, CPU model/architecture, physical/logical co
 
 Environment pinning checklist:
 
-- [ ] Milvus server version recorded exactly.
-- [ ] PyMilvus version recorded exactly and confirmed compatible with the server version.
-- [ ] Milvus Docker image tag and immutable digest recorded.
-- [ ] etcd image tag, immutable digest, and effective configuration recorded.
-- [ ] MinIO image tag, immutable digest, and effective configuration recorded.
-- [ ] Docker Engine/Desktop and Docker Compose versions recorded.
+- [x] Milvus server version recorded exactly.
+- [x] PyMilvus version recorded exactly and confirmed compatible with the server version.
+- [x] Milvus Docker image tag and immutable digest recorded.
+- [x] etcd image tag, immutable digest, and effective configuration recorded.
+- [x] MinIO image tag, immutable digest, and effective configuration recorded.
+- [x] Docker Engine/Desktop and Docker Compose versions recorded.
 - [ ] Compose file, Milvus configuration, and environment-file SHA-256 checksums recorded.
-- [ ] Container CPU quota/cpuset and RAM limit recorded for Milvus, etcd, and MinIO.
+- [x] Container CPU quota/cpuset and RAM limit recorded for Milvus, etcd, and MinIO.
 - [ ] Host CPU model/architecture, core counts, RAM, storage, OS, and kernel recorded.
 - [ ] Python and NumPy versions plus complete lockfile/environment export recorded.
 - [ ] Dataset seed `20260801`, derived ordering seeds, generator algorithm, and artifact checksums recorded.
 - [ ] Milvus collection schema, consistency level, metric, index parameters, query parameters, and result `limit` recorded.
 - [ ] Background workloads disabled or disclosed; container health and resource snapshots captured before and after the run.
 - [ ] Git commit hash and clean/dirty working-tree state recorded.
+
+Checklist audit (2026-08-01): checked items are backed by the ENV-001 provisioning transcript and the pinned vendor/override Compose files, with PyMilvus compatibility established by the isolated probe appended to that transcript. Remaining unchecked items require run-time artifacts that do not yet exist: standalone Milvus/environment-file checksums; host storage and kernel details; the benchmark Python/NumPy lock/export; generated DATASET-001 checksums and derived seeds; the immutable collection/query run manifest; background-workload disclosure plus post-run resources; and the execution commit/dirty-state capture. The temporary PyMilvus compatibility environment is not the benchmark lockfile and does not satisfy that separate checklist item.
 
 Git commit:
 

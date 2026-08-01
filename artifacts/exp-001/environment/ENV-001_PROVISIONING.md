@@ -235,6 +235,46 @@ License: GNU AGPLv3 - https://www.gnu.org/licenses/agpl-3.0.html
 Copyright: 2015-2024 MinIO, Inc.
 ```
 
+## PyMilvus compatibility verification
+
+Captured: `2026-08-01T12:57:59Z`
+
+PyMilvus was absent from the host Python environment. The already pinned `pymilvus==3.0.1` was installed into an isolated temporary virtual environment and exercised read-only against the recorded ENV-001 endpoint. This confirms that the pinned client can connect to Milvus `3.0.0` and execute the control-plane calls needed by the future EXP-001 harness. The temporary environment is not the benchmark dependency lock/export.
+
+```console
+$ python3 --version
+Python 3.14.5
+$ /tmp/vd-env001-pymilvus-compat.G6sKog/venv/bin/python -m pip --disable-pip-version-check show pymilvus
+Name: pymilvus
+Version: 3.0.1
+Summary: Python SDK for Milvus
+Home-page: https://milvus.io
+Author:
+Author-email: PyMilvus Team <pymilvus@zilliz.com>
+License:
+Location: /private/tmp/vd-env001-pymilvus-compat.G6sKog/venv/lib/python3.14/site-packages
+Requires: cachetools, grpcio, orjson, pandas, protobuf, python-dotenv, requests
+Required-by:
+$ /tmp/vd-env001-pymilvus-compat.G6sKog/venv/bin/python - <<'PY'
+import pymilvus
+from pymilvus import MilvusClient
+
+uri = "http://localhost:19530"
+client = MilvusClient(uri=uri)
+print(f"pymilvus_version={pymilvus.__version__}")
+print(f"uri={uri}")
+print(f"server_version={client.get_server_version()}")
+print(f"collections={client.list_collections()}")
+client.close()
+print("compatibility_probe=PASS")
+PY
+pymilvus_version=3.0.1
+uri=http://localhost:19530
+server_version=3.0.0
+collections=['env001_persistence_probe_20260801']
+compatibility_probe=PASS
+```
+
 ## Resolved immutable digests
 
 ```console
