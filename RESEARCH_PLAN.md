@@ -58,15 +58,15 @@ Checksum:
 
 ### DATASET-001: Deterministic synthetic range-query smoke dataset
 
-Source: Locally generated with NumPy `Generator(PCG64(seed))` from independent standard-normal samples; no external source data.
-License: Internal research use. No external copyright-bearing data is included. Public redistribution is blocked until the repository has an explicit license or the human assigns a dataset license.
-Dimensions: 128
+Source: Deterministic synthetic independent standard-normal samples generated locally with NumPy `Generator(PCG64(20260801))`; no external source data.
+License: Project-generated data. No external copyright-bearing data is included. Public redistribution is blocked until the repository has an explicit license or the human assigns a dataset license.
+Dimensions: 128; little-endian IEEE-754 `float32`.
 Embedding model: None — synthetic vectors, not model embeddings.
 Number of vectors: 10,000 base vectors; 250 query vectors split into 50 calibration and 200 measured queries; separate deterministic boundary-fixture micro-dataset.
 Metadata schema: Integer vector ID; split (`base`, `calibration_query`, `measured_query`, `boundary_fixture`); generation seed; generator/version metadata. No payload attributes are used by EXP-001.
 Ground truth method: Independent NumPy exact L2 and cosine computation with float64 accumulation over stored little-endian float32 vectors, cross-checked against Milvus FLAT using the same metric, threshold bounds, ordering, and result cap.
 Version: `DATASET-001-v1` contract; primary seed `20260801`; NumPy version will be added to the immutable generation manifest.
-Checksum: Pending generation. SHA-256 is required for every vector/query artifact and the manifest before ingestion; EXP-001 execution is blocked until populated.
+Checksum: Pending generation. Before ingestion, compute and record SHA-256 separately for the base vectors, calibration queries, measured queries, frozen thresholds, and immutable generation manifest. Record the artifact filenames, byte sizes, and hashes in that manifest; EXP-001 execution is blocked until every required checksum is populated and reverified.
 Used by: EXP-001 contract in `EXPERIMENT_LOG.md`.
 
 ---
