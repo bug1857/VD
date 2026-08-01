@@ -1,0 +1,14 @@
+{
+  "AutoStart": false,
+  "Cpus": 6,
+  "DisplayedOnboarding": true,
+  "DockerAppLaunchPath": "/Applications/Docker.app",
+  "EnableDockerAI": true,
+  "LastContainerdSnapshotterEnable": 1785584646,
+  "LicenseTermsVersion": 2,
+  "MemoryMiB": 6144,
+  "SettingsVersion": 45,
+  "ShowInstallScreen": false,
+  "SwapMiB": 2048,
+  "UseContainerdSnapshotter": true
+}
