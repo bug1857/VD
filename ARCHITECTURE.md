@@ -197,6 +197,45 @@ Audit sampling:
 - Each selected query is shadowed through FLAT, HNSW at sentinel `ef=100`, and the independent float64 oracle. Shadow work is excluded from foreground latency and may not delay the serving response.
 - FLAT and oracle must agree on metric-specific threshold validity and capped ordered IDs before HNSW recall is accepted. The oracle also records uncapped exact cardinality. Any disagreement makes the window `INSUFFICIENT_EVIDENCE` and raises a correctness alarm outside the drift classifier.
 
+##### Normative implementation conventions
+
+These conventions are part of the ADR-002 contract; conforming implementations may not substitute language-default hashing, process-randomized hashes, another RNG, another floating-point width, or an implicit numerical fallback.
+
+Canonical tuple serialization:
+
+- Every tuple used for seed derivation or keyed hashing has a fixed field order defined by this ADR. Normalize textual identifiers to Unicode NFC before UTF-8 encoding. Encode integers as minimal base-10 ASCII (`0` for zero; no leading zeroes or leading `+`). Use the exact uppercase contract spellings `L2`, `COSINE`, `QUERY_VECTOR`, `THRESHOLD`, `CARDINALITY`, and `RECALL` for metric and signal fields.
+- Serialize a tuple as a 4-byte unsigned big-endian field count followed, for each field, by an 8-byte unsigned big-endian byte length and the field's normalized UTF-8 bytes. Field positions have fixed schema types, so an integer field and textual field are never interchangeable. Reject values that cannot be represented canonically; do not fall back to `repr`, locale-dependent formatting, or platform-native byte order.
+
+Seed and randomness contract:
+
+- For each permutation family, serialize `(detector_seed, metric, window_id, signal)` exactly in that order, compute SHA-256 over the serialized bytes, take digest bytes `[0:8]`, and decode them as one unsigned big-endian 64-bit integer.
+- Construct `NumPy Generator(PCG64(seed_u64))` from that integer. All random permutations in ADR-002 use this generator. The generator name, derived integer seed, and full SHA-256 digest must be persisted with the signal evidence.
+- Exactly 9,999 label permutations are generated for each signal/window test. They may be evaluated in deterministic batches without changing their generator order. No global NumPy RNG state, operating-system entropy, or process hash seed may affect the result.
+
+Audit-ranking hash contract:
+
+- Derive the 32-byte BLAKE2b key as `SHA256(serialize((detector_seed,)))`. For each query, compute keyed BLAKE2b with `digest_size=32` over `serialize((metric, window_id, query_id))`.
+- Sort ascending by the 32 digest bytes interpreted lexicographically as unsigned bytes, then by the canonical serialized `query_id` bytes as the deterministic tie-break. Query IDs must be unique within the 200-query window; duplicates, fewer or more than 200 eligible IDs, or an encoding failure make the sample `INSUFFICIENT_EVIDENCE`.
+- Select exactly the first 50 ranked query IDs and persist each ID and digest. This construction is the exact implementation of the earlier shorthand keyed hash over `(detector_seed, metric, window_id, query_id)`; `detector_seed` is represented by the derived BLAKE2b key rather than repeated in the message.
+
+Floating-point and preprocessing contract:
+
+- Convert all statistical inputs to IEEE-754 float64 before validation or arithmetic, and retain float64 throughout statistics, kernel construction, effect sizes, and permutation evaluation.
+- For L2, compute reference-window per-dimension mean and population standard deviation with `ddof=0`. Transform both the true reference and true current windows with those reference statistics. Where reference standard deviation is exactly zero, set that coordinate to exactly `0.0` in both transformed windows; do not divide by a replacement epsilon.
+- For COSINE, L2-normalize every true reference and true current vector independently in float64. Any non-finite component or zero-norm vector makes the affected window `INSUFFICIENT_EVIDENCE`.
+- Compute standardization, normalization, the reference-only median-heuristic `sigma`, transformed arrays, and the combined Gaussian-kernel matrix once from the true-labeled reference/current split. Hold all of them fixed across the 9,999 label permutations; a permutation changes only membership in the reference-sized and current-sized groups. Never recompute preprocessing statistics or `sigma` from permuted labels.
+- Compute `sigma` as the median of finite, strictly positive pairwise Euclidean distances from the transformed true reference window, excluding the diagonal. If that set is empty, its median is non-finite, or the resulting `sigma <= 0`, the query-vector signal is `INSUFFICIENT_EVIDENCE`. No epsilon, unit-sigma, or other computed fallback is permitted.
+
+Recall-signal permutation input and completeness contract:
+
+- The true reference input and true current input are separate float64 arrays of shape exactly `(50,)`, one capped recall@threshold value per persisted audit-selected query for the same metric. Values must be finite and in `[0.0, 1.0]`. They are two samples from different 200-query windows, not paired observations across windows.
+- Each array is complete only when all 50 expected unique audit IDs are present exactly once; every value was produced by sentinel HNSW `ef=100`; corresponding FLAT and independent-oracle capped IDs agree; metric, `limit=100`, collection/data identity, and index-build identity match the reference contract; and no audited query failed, timed out, or violated its threshold. Any failed condition makes the window `INSUFFICIENT_EVIDENCE`; do not calculate or impute a p-value.
+- The observed one-sided statistic is `mean(reference_recall) - mean(current_recall)`. Concatenate the two arrays into 100 fixed values. For each permutation, use the signal's PCG64 generator to permute indices `0..99`, assign the first 50 indices to the permuted reference group and the remaining 50 to the permuted current group, and recompute only the difference of means. Calculate the p-value with the ADR-002 `(1 + exceedance_count) / 10,000` rule, where an exceedance is a permuted statistic greater than or equal to the observed statistic.
+
+Governance status:
+
+- ADR-002 remains **Proposed — design review required before implementation**. Adding these conventions resolves implementation ambiguity but is not final sign-off, does not change the evidence status, and does not authorize detector implementation or policy actuation.
+
 Statistical decision rule:
 
 1. Compute the four raw p-values above for each complete metric/window evaluation. Each permutation p-value is `(1 + count(permuted_statistic >= observed_statistic)) / 10,000` over 9,999 label permutations; use the absolute KS statistic, MMD², and the one-sided positive recall decrease as their respective statistics. Derive and persist a distinct permutation seed for every `(detector_seed, metric, window_id, signal)` tuple.
