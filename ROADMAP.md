@@ -17,7 +17,7 @@ Governed by rules in `AGENTS.md`. This file is a **living document** — update 
 9. Documentation
 10. Publication
 
-**Current phase:** *(update here)*
+**Current phase:** Phase 1 — Research
 
 ### Phase exit criteria
 
@@ -53,4 +53,4 @@ Estimated effort to resolve:
 
 ## NEXT HIGHEST-PRIORITY TASK
 
-*(Update at the end of every session, per State Sync in `AGENTS.md`.)*
+Select the primary backend (Qdrant vs Milvus). Compare both options on research fit, range/threshold-query support, available tuning controls, safe actuation and rollback feasibility, benchmarkability, operational complexity, scalability, memory, and research support; recommend one with explicit advantages, disadvantages, complexity, scalability, memory, latency, and research rationale before implementation.
