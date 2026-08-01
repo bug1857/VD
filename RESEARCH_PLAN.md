@@ -65,8 +65,35 @@ Embedding model: None — synthetic vectors, not model embeddings.
 Number of vectors: 10,000 base vectors; 250 query vectors split into 50 calibration and 200 measured queries; separate deterministic boundary-fixture micro-dataset.
 Metadata schema: Integer vector ID; split (`base`, `calibration_query`, `measured_query`, `boundary_fixture`); generation seed; generator/version metadata. No payload attributes are used by EXP-001.
 Ground truth method: Independent NumPy exact L2 and cosine computation with float64 accumulation over stored little-endian float32 vectors, cross-checked against Milvus FLAT using the same metric, threshold bounds, ordering, and result cap.
-Version: `DATASET-001-v1` contract; primary seed `20260801`; NumPy version will be added to the immutable generation manifest.
-Checksum: Pending generation. Before ingestion, compute and record SHA-256 separately for the base vectors, calibration queries, measured queries, frozen thresholds, and immutable generation manifest. Record the artifact filenames, byte sizes, and hashes in that manifest; EXP-001 execution is blocked until every required checksum is populated and reverified.
+Version: `DATASET-001-v1`; primary seed `20260801`; generated with NumPy `2.5.1` on 2026-08-01.
+Artifact status: GENERATED AND CHECKSUM-VERIFIED — no Milvus ingestion or search was performed during generation.
+Artifact location: `artifacts/exp-001/dataset/`.
+
+Frozen calibration thresholds:
+
+| Metric | Label | Target cardinality | Frozen radius | Observed median calibration cardinality |
+|---|---|---:|---:|---:|
+| L2 | `target-005` | 5 | `172.2832095509522` | 4.5 |
+| L2 | `target-025` | 25 | `183.2043932030936` | 24.5 |
+| L2 | `target-075` | 75 | `191.85897352125554` | 74.0 |
+| COSINE | `target-005` | 5 | `0.28621445964266823` | 4.5 |
+| COSINE | `target-025` | 25 | `0.2478647769312102` | 24.5 |
+| COSINE | `target-075` | 75 | `0.21448069482694262` | 74.5 |
+
+Artifact checksums:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `base_ids.npy` | 80,128 | `3e7d12429f219ff5b6814ff1948c5b0e771431218bfb55b619b183b1e1264c51` |
+| `base_vectors.npy` | 5,120,128 | `4fe7eda30b45e66d169123063fba91ca5ca2078b8ed6f25f87b2b7260d5a1d30` |
+| `calibration_queries.npy` | 25,728 | `5bf9e5f2564a7d2dde20d26adf7584012f1551176b33991f0697ad9de312caaf` |
+| `measured_queries.npy` | 102,528 | `418a924d04187f0eb08ecc3846e30b607f8ab1bca38699446cb2bb7c13210a1a` |
+| `thresholds.json` | 622 | `597200ee81de02c658cf92b99c8ed3e1a8b492ac54f5f17b94a0734f378ee2ef` |
+| `boundary_fixtures.json` | 3,092 | `09cb7e3b975107ffe3d4b029aefdf3ab64c6b93961e90a66787642ab1e80cb7a` |
+| `generation_manifest.json` | 1,421 | `b6cb56a3eee60f6728be1d08a465e2a2500eec4089b4466da76fe2e886b51da9` |
+| `SHA256SUMS` | 601 | `81b987be67471b6f2bfb4f71aeccee10bd819bee24fe8e418b21f2ffe552d4b1` |
+
+Checksum procedure and verification: `generation_manifest.json` records byte sizes and SHA-256 values for every generated data/threshold/fixture artifact. `SHA256SUMS` additionally records the generation-manifest digest. Immediately after generation, `verify_dataset_artifacts(Path("artifacts/exp-001/dataset"))` re-read the manifest and independently verified every recorded byte size and checksum, then reverified every `SHA256SUMS` entry. A separate `shasum -a 256 artifacts/exp-001/dataset/*` audit matched all recorded values; the `SHA256SUMS` digest is recorded in this registry because a checksum list cannot include its own digest without recursion.
 Used by: EXP-001 contract in `EXPERIMENT_LOG.md`.
 
 ---
