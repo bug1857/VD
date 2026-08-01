@@ -3,7 +3,13 @@ from dataclasses import replace
 
 import numpy as np
 
-from vdbench.config import EXP001_DATASET_SPEC, IndexTrack, Metric, SearchConfiguration
+from vdbench.config import (
+    EXP001_DATASET_SPEC,
+    ContractViolation,
+    IndexTrack,
+    Metric,
+    SearchConfiguration,
+)
 from vdbench.dataset import DatasetBundle
 from vdbench.milvus import MilvusHarness
 
@@ -31,6 +37,8 @@ class FakeClient:
         self.index_params = FakeIndexParams()
         self.calls = []
         self.search_response = [[{"id": 0, "distance": 0.25}]]
+        self.load_state = {"state": "Loaded"}
+        self.index_description = None
 
     def has_collection(self, **kwargs):
         self.calls.append(("has_collection", kwargs))
@@ -52,15 +60,18 @@ class FakeClient:
         return {}
 
     def get_collection_stats(self, **kwargs):
+        self.calls.append(("get_collection_stats", kwargs))
         return {"row_count": str(self.bundle.spec.base_count)}
 
     def query(self, **kwargs):
+        self.calls.append(("query", kwargs))
         return [
             {"id": int(self.bundle.ids[0]), "vector": self.bundle.base_vectors[0].tolist()},
             {"id": int(self.bundle.ids[-1]), "vector": self.bundle.base_vectors[-1].tolist()},
         ]
 
     def prepare_index_params(self):
+        self.calls.append(("prepare_index_params", {}))
         return self.index_params
 
     def create_index(self, **kwargs):
@@ -70,9 +81,13 @@ class FakeClient:
         self.calls.append(("load_collection", kwargs))
 
     def get_load_state(self, **kwargs):
-        return {"state": "Loaded"}
+        self.calls.append(("get_load_state", kwargs))
+        return self.load_state
 
     def describe_index(self, **kwargs):
+        self.calls.append(("describe_index", kwargs))
+        if self.index_description is not None:
+            return self.index_description
         track = self.index_params.indexes[0] if self.index_params.indexes else {
             "index_type": "HNSW",
             "metric_type": "L2",
@@ -138,6 +153,66 @@ class MilvusAdapterTests(unittest.TestCase):
         )
         create = next(kwargs for name, kwargs in client.calls if name == "create_collection")
         self.assertEqual(create["consistency_level"], "Strong")
+
+    def test_read_back_occurs_only_after_collection_reaches_loaded_state(self) -> None:
+        client = FakeClient(self.bundle)
+        harness = MilvusHarness(
+            client, dimensions=2, data_types=lambda: ("INT64", "FLOAT_VECTOR")
+        )
+
+        harness.create_and_load_collection(
+            name="exp002_l2_hnsw",
+            metric=Metric.L2,
+            track=IndexTrack.HNSW,
+            dataset=self.bundle,
+        )
+
+        call_names = [name for name, _ in client.calls]
+        self.assertLess(
+            call_names.index("create_index"), call_names.index("load_collection")
+        )
+        self.assertLess(
+            call_names.index("load_collection"), call_names.index("get_load_state")
+        )
+        self.assertLess(call_names.index("get_load_state"), call_names.index("query"))
+
+    def test_unloaded_collection_fails_before_read_back(self) -> None:
+        client = FakeClient(self.bundle)
+        client.load_state = {"state": "NotLoaded"}
+        harness = MilvusHarness(
+            client, dimensions=2, data_types=lambda: ("INT64", "FLOAT_VECTOR")
+        )
+
+        with self.assertRaisesRegex(
+            ContractViolation, "collection did not reach Loaded state"
+        ):
+            harness.create_and_load_collection(
+                name="exp002_l2_hnsw",
+                metric=Metric.L2,
+                track=IndexTrack.HNSW,
+                dataset=self.bundle,
+            )
+
+        self.assertNotIn("query", [name for name, _ in client.calls])
+
+    def test_hnsw_validation_accepts_milvus_3_flattened_build_params(self) -> None:
+        client = FakeClient(self.bundle)
+        client.index_description = {
+            "index_name": "vector_index",
+            "index_type": "HNSW",
+            "metric_type": "L2",
+            "M": "16",
+            "efConstruction": "200",
+            "state": "Finished",
+            "build_id": 42,
+        }
+        harness = MilvusHarness(client, dimensions=2)
+
+        identity = harness.index_identity(
+            "exp002_l2_hnsw", Metric.L2, IndexTrack.HNSW
+        )
+
+        self.assertEqual(identity.description, client.index_description)
 
     def test_flat_setup_has_no_hnsw_build_parameters(self) -> None:
         client = FakeClient(self.bundle)

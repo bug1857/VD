@@ -84,6 +84,8 @@ def _validate_index_description(
         params = description.get("params")
         if isinstance(params, str):
             params = json.loads(params)
+        elif params is None:
+            params = description
         if not isinstance(params, dict):
             raise ContractViolation("HNSW index metadata omits build parameters")
         if int(params.get("M", -1)) != HNSW_M:
@@ -129,7 +131,7 @@ class MilvusHarness:
         track: IndexTrack,
         dataset: DatasetBundle,
     ) -> CollectionIdentity:
-        """Create one clean FLAT/HNSW collection, ingest, read back, and load it."""
+        """Create one clean FLAT/HNSW collection, ingest, index, load, and read back."""
 
         if dataset.base_vectors.shape != (dataset.spec.base_count, self.dimensions):
             raise ContractViolation("dataset shape does not match collection dimensions")
@@ -172,6 +174,23 @@ class MilvusHarness:
                 f"Milvus row count {row_count} != expected {dataset.spec.base_count}"
             )
 
+        index_params = self.client.prepare_index_params()
+        parameters: dict[str, object] = {
+            "field_name": VECTOR_FIELD,
+            "index_name": INDEX_NAME,
+            "index_type": track.value,
+            "metric_type": metric.value,
+        }
+        if track is IndexTrack.HNSW:
+            parameters["params"] = {"M": HNSW_M, "efConstruction": HNSW_EF_CONSTRUCTION}
+        index_params.add_index(**parameters)
+        self.client.create_index(collection_name=name, index_params=index_params, sync=True)
+        self.client.load_collection(collection_name=name)
+        load_state = self.client.get_load_state(collection_name=name)
+        state = load_state.get("state") if isinstance(load_state, dict) else load_state
+        if getattr(state, "name", str(state)) != "Loaded":
+            raise ContractViolation(f"collection did not reach Loaded state: {load_state}")
+
         sample_ids = (int(dataset.ids[0]), int(dataset.ids[-1]))
         read_back = self.client.query(
             collection_name=name,
@@ -186,21 +205,6 @@ class MilvusHarness:
             if not np.array_equal(actual, dataset.base_vectors[position]):
                 raise ContractViolation(f"Milvus read-back mismatch for id={identifier}")
 
-        index_params = self.client.prepare_index_params()
-        parameters: dict[str, object] = {
-            "field_name": VECTOR_FIELD,
-            "index_name": INDEX_NAME,
-            "index_type": track.value,
-            "metric_type": metric.value,
-        }
-        if track is IndexTrack.HNSW:
-            parameters["params"] = {"M": HNSW_M, "efConstruction": HNSW_EF_CONSTRUCTION}
-        index_params.add_index(**parameters)
-        self.client.create_index(collection_name=name, index_params=index_params, sync=True)
-        self.client.load_collection(collection_name=name)
-        load_state = self.client.get_load_state(collection_name=name)
-        if "Loaded" not in str(load_state):
-            raise ContractViolation(f"collection did not reach Loaded state: {load_state}")
         description = self.client.describe_index(
             collection_name=name, index_name=INDEX_NAME
         )
