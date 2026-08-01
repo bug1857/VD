@@ -184,3 +184,129 @@ Follow-up actions:
 2. Pin the Milvus/PyMilvus/Compose environment and record all tunable parameters in the `ARCHITECTURE.md` Configuration Registry.
 3. Design the benchmark harness and semantic oracle against this contract; do not implement until separately authorized.
 4. Execute as EXP-002 (or append a clearly immutable execution result under a new EXP ID) so this contract entry remains unchanged.
+
+### EXP-002: EXP-001 benchmark harness implementation
+
+Status: HARNESS IMPLEMENTED — OFFLINE UNIT TESTED; LIVE MILVUS EXECUTION NOT RUN
+Date: 2026-08-01
+Risk level: HIGH (research-validity implementation; no live benchmark evidence)
+
+Objective:
+
+Implement the EXP-001 contract without changing its dataset, index, search, or measurement parameters. This entry records implementation and offline verification only; it is not an empirical Milvus benchmark result.
+
+Hypothesis:
+
+No EXP-001 hypothesis is evaluated by this implementation-only entry. H1–H4 retain the statuses recorded in EXP-001 until a separately authorized live execution produces reviewable evidence.
+
+Configuration:
+
+- DATASET-001 default generator: NumPy `Generator(PCG64(20260801))`, 10,000 base vectors, 50 calibration queries, 200 disjoint measured queries, 128 dimensions, little-endian `float32`, independent standard-normal draws.
+- Independent oracle: stored `float32` inputs converted for `float64` accumulation; squared Euclidean L2 and COSINE; strict metric-specific range boundaries; deterministic score/ID ordering; full and capped cardinality.
+- Collections: separate L2/COSINE × FLAT/HNSW collections; explicit primary-key/vector schema; batched ingestion; entity-count and first/last-vector read-back; synchronous index build and load checks.
+- HNSW build parameters: `M=16`, `efConstruction=200`; query sweep `ef in [100, 200, 400, 800, 1600]`; `limit=100`; `Strong` consistency; no timed payload/vector output.
+- Protocol: all FLAT/oracle semantic checks precede HNSW timing; 50-query unmeasured warm-up per configuration; five measured repetitions × 200 measured queries; deterministic randomized configuration and query orders; one synchronous outstanding request; timing begins immediately before search and ends after full response materialization; oracle work, diagnostics, and writes occur outside the timing boundary.
+- Artifacts: immutable NumPy/JSON outputs, canonical generation manifest, per-artifact SHA-256 entries, `SHA256SUMS`, immutable run manifest containing timestamp/Git/environment image references and derived ordering seeds, raw JSONL, and post-timing summaries.
+- Deliberate local failures: `ef < limit` is rejected before a backend request; an injected unreachable endpoint emits only an expected-failure record.
+
+Dataset ID:
+
+`DATASET-001` contract implemented but the production 10k/250 dataset was not generated in this task. Unit tests use small deterministic temporary datasets and the required semantic micro-fixtures only.
+
+Hardware:
+
+Not applicable to benchmark interpretation. Tests ran locally, but no Milvus search, performance measurement, container resource sample, or hardware comparison was performed.
+
+Git commit:
+
+Implementation working tree based on `0750017739b8d56f7c9337e33aa6a400afc841c8`; dirty/uncommitted at verification time. A benchmark execution must record the eventual committed harness revision and clean/dirty state in its immutable run manifest.
+
+Random seed:
+
+Production default `20260801`. Ordering streams derive explicit `uint64` seeds through `numpy.random.SeedSequence([20260801, stream_id])`; every seed and realized order is included in the future run manifest.
+
+Metrics implemented:
+
+Raw capped recall@threshold, client-observed latency, returned/full cardinality, cap state, failed queries, and threshold violations; post-timing aggregation computes recall distribution and 95% CI, per-repetition p50/p95 latency, QPS validity and distribution, cardinality diagnostics, p95 coefficient of variation, and five-repetition confidence intervals. These functions emitted no live benchmark values in this task.
+
+Raw output location:
+
+No `artifacts/exp-001/<UTC-run-id>/` benchmark directory was created. Offline verification output was emitted to the task terminal only. Exact command:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src /tmp/vd-env001-pymilvus-compat.G6sKog/venv/bin/python -m unittest discover -s tests -v
+```
+
+Exact output:
+
+```text
+test_required_categories_and_exact_outputs (test_boundary_fixtures.BoundaryFixtureTests.test_required_categories_and_exact_outputs) ... ok
+test_result_cap_reports_uncapped_cardinality (test_boundary_fixtures.BoundaryFixtureTests.test_result_cap_reports_uncapped_cardinality) ... ok
+test_ef_below_limit_is_rejected_before_backend_call (test_config_schedule.ConfigurationScheduleTests.test_ef_below_limit_is_rejected_before_backend_call) ... ok
+test_exact_36_configuration_matrix_and_ef_sweep (test_config_schedule.ConfigurationScheduleTests.test_exact_36_configuration_matrix_and_ef_sweep) ... ok
+test_schedule_is_deterministic_and_has_exact_protocol_counts (test_config_schedule.ConfigurationScheduleTests.test_schedule_is_deterministic_and_has_exact_protocol_counts) ... ok
+test_calibration_emits_three_finite_thresholds_per_metric (test_dataset_artifacts.DatasetArtifactTests.test_calibration_emits_three_finite_thresholds_per_metric) ... ok
+test_every_written_artifact_is_checksummed_and_tampering_is_detected (test_dataset_artifacts.DatasetArtifactTests.test_every_written_artifact_is_checksummed_and_tampering_is_detected) ... ok
+test_generator_is_deterministic_disjoint_and_little_endian_float32 (test_dataset_artifacts.DatasetArtifactTests.test_generator_is_deterministic_disjoint_and_little_endian_float32) ... ok
+test_any_failed_query_invalidates_qps_comparison (test_metrics.MetricSummaryTests.test_any_failed_query_invalidates_qps_comparison) ... ok
+test_required_metrics_are_derived_from_five_complete_repetitions (test_metrics.MetricSummaryTests.test_required_metrics_are_derived_from_five_complete_repetitions) ... ok
+test_flat_setup_has_no_hnsw_build_parameters (test_milvus_adapter.MilvusAdapterTests.test_flat_setup_has_no_hnsw_build_parameters) ... ok
+test_hnsw_setup_uses_pinned_schema_build_params_and_readback (test_milvus_adapter.MilvusAdapterTests.test_hnsw_setup_uses_pinned_schema_build_params_and_readback) ... ok
+test_search_request_has_exact_range_params_limit_and_no_payload (test_milvus_adapter.MilvusAdapterTests.test_search_request_has_exact_range_params_limit_and_no_payload) ... ok
+test_cosine_known_values_use_float64_output (test_oracle.ExactOracleTests.test_cosine_known_values_use_float64_output) ... ok
+test_cosine_rejects_zero_norm_vectors (test_oracle.ExactOracleTests.test_cosine_rejects_zero_norm_vectors) ... ok
+test_l2_is_squared_euclidean_with_float64_output (test_oracle.ExactOracleTests.test_l2_is_squared_euclidean_with_float64_output) ... ok
+test_timing_stops_after_materialization_and_writes_after_timer (test_protocol.ProtocolTests.test_timing_stops_after_materialization_and_writes_after_timer) ... ok
+test_unreachable_probe_records_expected_failure_and_never_success (test_protocol.ProtocolTests.test_unreachable_probe_records_expected_failure_and_never_success) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.076s
+
+OK
+```
+
+Result:
+
+The offline unit suite passed. This result verifies the tested harness behavior only. DATASET-001 artifacts were not generated, no collection was created, no request was sent to Milvus, and no EXP-001 acceptance criterion that requires live evidence is marked PASSED or VERIFIED.
+
+Conclusion:
+
+The harness is ready for human review and a separately authorized live smoke execution. The live run remains the research-validity gate for FLAT/Milvus agreement, HNSW behavior, index-identity stability, latency/QPS/cardinality evidence, and H1–H4 evaluation.
+
+Follow-up actions:
+
+1. Review the implementation diff and commit it after human approval.
+2. In a separate authorized task, create DATASET-001 artifacts and verify all SHA-256 values before ingestion.
+3. Complete the remaining EXP-001 runtime environment checklist, execute the live smoke run against verified ENV-001, and preserve raw evidence under a unique UTC run directory.
+
+Post-review verification addendum (2026-08-01):
+
+The offline suite was rerun after enforcing one shared measured-query permutation per repetition, per-segment HNSW index-identity checks, live boundary-preflight orchestration, complete pinned digest fields in the future run manifest, and exact 36-configuration schedule validation. No live Milvus request was made. Exact output:
+
+```text
+test_required_categories_and_exact_outputs (test_boundary_fixtures.BoundaryFixtureTests.test_required_categories_and_exact_outputs) ... ok
+test_result_cap_reports_uncapped_cardinality (test_boundary_fixtures.BoundaryFixtureTests.test_result_cap_reports_uncapped_cardinality) ... ok
+test_dataset_defaults_are_exactly_the_exp001_contract (test_config_schedule.ConfigurationScheduleTests.test_dataset_defaults_are_exactly_the_exp001_contract) ... ok
+test_ef_below_limit_is_rejected_before_backend_call (test_config_schedule.ConfigurationScheduleTests.test_ef_below_limit_is_rejected_before_backend_call) ... ok
+test_exact_36_configuration_matrix_and_ef_sweep (test_config_schedule.ConfigurationScheduleTests.test_exact_36_configuration_matrix_and_ef_sweep) ... ok
+test_schedule_is_deterministic_and_has_exact_protocol_counts (test_config_schedule.ConfigurationScheduleTests.test_schedule_is_deterministic_and_has_exact_protocol_counts) ... ok
+test_calibration_emits_three_finite_thresholds_per_metric (test_dataset_artifacts.DatasetArtifactTests.test_calibration_emits_three_finite_thresholds_per_metric) ... ok
+test_every_written_artifact_is_checksummed_and_tampering_is_detected (test_dataset_artifacts.DatasetArtifactTests.test_every_written_artifact_is_checksummed_and_tampering_is_detected) ... ok
+test_generator_is_deterministic_disjoint_and_little_endian_float32 (test_dataset_artifacts.DatasetArtifactTests.test_generator_is_deterministic_disjoint_and_little_endian_float32) ... ok
+test_any_failed_query_invalidates_qps_comparison (test_metrics.MetricSummaryTests.test_any_failed_query_invalidates_qps_comparison) ... ok
+test_required_metrics_are_derived_from_five_complete_repetitions (test_metrics.MetricSummaryTests.test_required_metrics_are_derived_from_five_complete_repetitions) ... ok
+test_flat_setup_has_no_hnsw_build_parameters (test_milvus_adapter.MilvusAdapterTests.test_flat_setup_has_no_hnsw_build_parameters) ... ok
+test_hnsw_setup_uses_pinned_schema_build_params_and_readback (test_milvus_adapter.MilvusAdapterTests.test_hnsw_setup_uses_pinned_schema_build_params_and_readback) ... ok
+test_search_request_has_exact_range_params_limit_and_no_payload (test_milvus_adapter.MilvusAdapterTests.test_search_request_has_exact_range_params_limit_and_no_payload) ... ok
+test_cosine_known_values_use_float64_output (test_oracle.ExactOracleTests.test_cosine_known_values_use_float64_output) ... ok
+test_cosine_rejects_zero_norm_vectors (test_oracle.ExactOracleTests.test_cosine_rejects_zero_norm_vectors) ... ok
+test_l2_is_squared_euclidean_with_float64_output (test_oracle.ExactOracleTests.test_l2_is_squared_euclidean_with_float64_output) ... ok
+test_timing_stops_after_materialization_and_writes_after_timer (test_protocol.ProtocolTests.test_timing_stops_after_materialization_and_writes_after_timer) ... ok
+test_unreachable_probe_records_expected_failure_and_never_success (test_protocol.ProtocolTests.test_unreachable_probe_records_expected_failure_and_never_success) ... ok
+test_all_boundary_fixtures_are_loaded_and_compared_before_timing (test_runner_boundary_preflight.BoundaryPreflightTests.test_all_boundary_fixtures_are_loaded_and_compared_before_timing) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.052s
+
+OK
+```
