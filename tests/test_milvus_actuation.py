@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from vdbench.milvus_actuation import (
     CanaryPairedMeasurements,
     CollectionIdentityBinding,
     MilvusActuationClient,
+    ShadowAuditTrace,
     StackHealth,
     select_canary_routes,
 )
@@ -67,6 +69,7 @@ class FakePyMilvusClient:
         self.flat_build_id = 11
         self.hnsw_build_id = 22
         self.loaded = True
+        self.identity_capture_failures: set[str] = set()
 
     def search(self, **kwargs):
         vector = np.asarray(kwargs["data"][0], dtype="<f4")
@@ -103,6 +106,8 @@ class FakePyMilvusClient:
 
     def describe_index(self, **kwargs):
         self.other_calls.append(("describe_index", kwargs))
+        if kwargs["collection_name"] in self.identity_capture_failures:
+            raise RuntimeError("injected identity capture failure")
         track = (
             IndexTrack.FLAT
             if kwargs["collection_name"] == FLAT_NAME
@@ -142,6 +147,23 @@ class FakeStackHealthProbe:
         return self.result
 
 
+class FakeShadowTraceSink:
+    def __init__(self) -> None:
+        self.records: list[ShadowAuditTrace] = []
+
+    def append(self, trace: ShadowAuditTrace) -> None:
+        self.records.append(trace)
+
+
+class FailingShadowTraceSink:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def append(self, trace: ShadowAuditTrace) -> None:
+        self.calls += 1
+        raise RuntimeError("injected trace sink failure")
+
+
 class StepClock:
     def __init__(self) -> None:
         self.value = 0
@@ -151,7 +173,11 @@ class StepClock:
         return self.value
 
 
-def fixture_components(*, include_canary_batch: bool = True):
+def fixture_components(
+    *,
+    include_canary_batch: bool = True,
+    shadow_trace_sink=None,
+):
     base_ids = np.arange(4, dtype=np.int64)
     base_vectors = np.asarray(
         [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
@@ -215,6 +241,7 @@ def fixture_components(*, include_canary_batch: bool = True):
         stack_health_probe=health,
         initial_ef=400,
         clock_ns=StepClock(),
+        shadow_trace_sink=shadow_trace_sink,
     )
     return workload, client, estimator, health, adapter
 
@@ -424,6 +451,192 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.failed_query_count, 1)
         self.assertEqual(result.timeout_query_count, 1)
+
+    def test_shadow_trace_captures_200_calls_recall_cardinality_and_identities(
+        self,
+    ) -> None:
+        sink = FakeShadowTraceSink()
+        workload, client, estimator, health, adapter = fixture_components(
+            shadow_trace_sink=sink
+        )
+
+        result = adapter.shadow_candidate(
+            context=context(),
+            candidate_ef=800,
+            last_known_good_ef=400,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(client.search_calls), 200)
+        self.assertEqual(
+            sum(call["collection"] == FLAT_NAME for call in client.search_calls),
+            50,
+        )
+        self.assertEqual(sum(call["ef"] == 100 for call in client.search_calls), 50)
+        self.assertEqual(sum(call["ef"] == 400 for call in client.search_calls), 50)
+        self.assertEqual(sum(call["ef"] == 800 for call in client.search_calls), 50)
+        self.assertEqual(estimator.calls, [])
+        self.assertEqual(health.calls, 0)
+        self.assertEqual(len(sink.records), 1)
+
+        trace = sink.records[0]
+        self.assertTrue(trace.complete)
+        self.assertEqual(trace.reason_codes, ())
+        self.assertEqual(trace.metric, Metric.L2)
+        self.assertEqual(trace.threshold_stratum, THRESHOLD_STRATUM)
+        self.assertEqual(trace.candidate_ef, 800)
+        self.assertEqual(trace.last_known_good_ef, 400)
+        self.assertEqual(trace.sentinel_ef, 100)
+        self.assertEqual(trace.configuration_identity, CONFIGURATION_ID)
+        self.assertEqual(trace.data_identity, DATA_ID)
+        self.assertEqual(len(trace.queries), 50)
+        self.assertTrue(trace.flat_identity.pre_binding_match)
+        self.assertTrue(trace.flat_identity.post_binding_match)
+        self.assertTrue(trace.hnsw_identity.pre_binding_match)
+        self.assertTrue(trace.hnsw_identity.post_binding_match)
+        self.assertEqual(
+            trace.flat_identity.pre_snapshot,
+            trace.flat_identity.post_snapshot,
+        )
+        self.assertEqual(
+            trace.hnsw_identity.pre_snapshot,
+            trace.hnsw_identity.post_snapshot,
+        )
+        with self.assertRaises(TypeError):
+            trace.hnsw_identity.pre_snapshot.description[  # type: ignore[index,union-attr]
+                "build_id"
+            ] = 999
+
+        first = trace.queries[0]
+        expected_oracle = exact_range_search(
+            workload.base_vectors,
+            workload.base_ids,
+            workload.query_vectors[0],
+            Metric.L2,
+            radius=100.0,
+            range_filter=0.0,
+            limit=100,
+        )
+        self.assertEqual(
+            first.query_vector,
+            tuple(float(value) for value in workload.query_vectors[0]),
+        )
+        self.assertEqual(first.threshold_radius, 100.0)
+        self.assertEqual(first.range_filter, 0.0)
+        self.assertEqual(first.limit, 100)
+        self.assertEqual(first.oracle_result, expected_oracle)
+        self.assertEqual(first.exact_cardinality, 4)
+        self.assertEqual(
+            tuple(hit.id for hit in first.flat_hits or ()),
+            expected_oracle.ids,
+        )
+        self.assertEqual(
+            tuple(hit.id for hit in first.sentinel_hits or ()),
+            expected_oracle.ids,
+        )
+        self.assertEqual(first.sentinel_recall, 1.0)
+        self.assertEqual(
+            tuple(stage.stage for stage in first.stages),
+            (
+                "ORACLE",
+                "FLAT",
+                "CANDIDATE_HNSW",
+                "LAST_KNOWN_GOOD_HNSW",
+                "SENTINEL_HNSW",
+            ),
+        )
+        self.assertTrue(all(stage.success for stage in first.stages))
+        with self.assertRaises(FrozenInstanceError):
+            trace.complete = False  # type: ignore[misc]
+        self.assertIsInstance(first.query_vector, tuple)
+
+    def test_sentinel_failure_only_marks_trace_incomplete(self) -> None:
+        sink = FakeShadowTraceSink()
+        _, client, _, _, adapter = fixture_components(shadow_trace_sink=sink)
+        client.failures.add(("hnsw", 100, 0))
+
+        result = adapter.shadow_candidate(
+            context=context(),
+            candidate_ef=800,
+            last_known_good_ef=400,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.failed_query_count, 0)
+        self.assertEqual(result.timeout_query_count, 0)
+        trace = sink.records[0]
+        self.assertFalse(trace.complete)
+        failed_query = trace.queries[0]
+        self.assertIsNone(failed_query.sentinel_hits)
+        self.assertIsNone(failed_query.sentinel_recall)
+        sentinel_stage = next(
+            stage for stage in failed_query.stages if stage.stage == "SENTINEL_HNSW"
+        )
+        self.assertFalse(sentinel_stage.success)
+        self.assertTrue(sentinel_stage.timed_out)
+        self.assertEqual(sentinel_stage.error_type, "TimeoutError")
+        self.assertIn("STAGE_FAILED:0:SENTINEL_HNSW", trace.reason_codes)
+        self.assertIn("TIMEOUT:0:SENTINEL_HNSW", trace.reason_codes)
+
+    def test_live_identity_mismatch_only_marks_trace_incomplete(self) -> None:
+        sink = FakeShadowTraceSink()
+        _, client, _, _, adapter = fixture_components(shadow_trace_sink=sink)
+        client.hnsw_build_id = 999
+
+        result = adapter.shadow_candidate(
+            context=context(),
+            candidate_ef=800,
+            last_known_good_ef=400,
+        )
+
+        self.assertTrue(result.success)
+        trace = sink.records[0]
+        self.assertFalse(trace.complete)
+        self.assertFalse(trace.hnsw_identity.pre_binding_match)
+        self.assertFalse(trace.hnsw_identity.post_binding_match)
+        self.assertEqual(
+            trace.hnsw_identity.pre_snapshot.description[  # type: ignore[index,union-attr]
+                "build_id"
+            ],
+            999,
+        )
+        self.assertIn("STAGE_FAILED:PRE_HNSW_IDENTITY", trace.reason_codes)
+        self.assertIn("STAGE_FAILED:POST_HNSW_IDENTITY", trace.reason_codes)
+
+    def test_identity_capture_failure_only_marks_trace_incomplete(self) -> None:
+        sink = FakeShadowTraceSink()
+        _, client, _, _, adapter = fixture_components(shadow_trace_sink=sink)
+        client.identity_capture_failures.add(HNSW_NAME)
+
+        result = adapter.shadow_candidate(
+            context=context(),
+            candidate_ef=800,
+            last_known_good_ef=400,
+        )
+
+        self.assertTrue(result.success)
+        trace = sink.records[0]
+        self.assertFalse(trace.complete)
+        self.assertIsNone(trace.hnsw_identity.pre_snapshot)
+        self.assertIsNone(trace.hnsw_identity.post_snapshot)
+        self.assertEqual(trace.hnsw_identity.pre_capture.error_type, "RuntimeError")
+        self.assertEqual(trace.hnsw_identity.post_capture.error_type, "RuntimeError")
+        self.assertIn("STAGE_FAILED:PRE_HNSW_IDENTITY", trace.reason_codes)
+        self.assertIn("STAGE_FAILED:POST_HNSW_IDENTITY", trace.reason_codes)
+
+    def test_trace_sink_failure_raises_after_read_only_collection(self) -> None:
+        sink = FailingShadowTraceSink()
+        _, client, _, _, adapter = fixture_components(shadow_trace_sink=sink)
+
+        with self.assertRaisesRegex(RuntimeError, "injected trace sink failure"):
+            adapter.shadow_candidate(
+                context=context(),
+                candidate_ef=800,
+                last_known_good_ef=400,
+            )
+
+        self.assertEqual(sink.calls, 1)
+        self.assertEqual(len(client.search_calls), 200)
 
     def test_canary_routes_50_and_pairs_same_queries_at_lkg_ef(self) -> None:
         workload, client, estimator, health, adapter = fixture_components()
