@@ -32,8 +32,8 @@ A phase cannot be marked complete until: objectives met, tests complete, benchma
 | Workload monitor | not started | — | |
 | Drift detector | not started | CRITICAL | |
 | Tuning policy | not started | CRITICAL | |
-| Safe actuation layer | not started | CRITICAL | |
-| Benchmark harness | in progress | HIGH | Harness, DATASET-001, dedicated Python lock/export, host/config checksums, and pre-run resource evidence exist; host background load is disclosed; live execution and post-run evidence remain. |
+| Safe actuation layer | in progress | CRITICAL | Offline boundary, restart-durable audit/controller stores, and the Milvus-backed actuation adapter are built and tested through commit `9442ea4` (`131/131` tests). The adapter is not yet integrated into the live benchmark harness, and no live automatic actuation is authorized. |
+| Benchmark harness | in progress | HIGH | Harness, DATASET-001, dedicated Python lock/export, host/config checksums, pre/post-run resource evidence, and verified EXP-001 live evidence exist. ADR-002 actuation-adapter integration and dedicated live integration evidence remain pending. |
 
 ---
 
@@ -53,6 +53,11 @@ Estimated effort to resolve:
 
 ## NEXT HIGHEST-PRIORITY TASK
 
-ADR-001 is accepted: Milvus is the selected primary backend, so backend selection is complete.
+ADR-001 and ADR-002 are accepted. EXP-001 already supplies the verified Milvus range/threshold baseline; the Milvus-backed ADR-002 actuation adapter is built and fake-client-tested but not live-integrated.
 
-Next: stabilize or re-disclose host background workloads immediately before execution and, only after separate authorization, run EXP-002 against verified ENV-001 using the immutable DATASET-001 artifacts. The run must capture realized ordering seeds, collection/index/query metadata, execution Git state, and post-run health/resources. Do not interpret H1–H4 or mark the harness verified until raw evidence is reviewed. Workload drift, tuning policy, IVF, and safe live actuation remain out of scope.
+Options considered:
+
+- **Wire `milvus_actuation.py` into the existing EXP-001 benchmark harness next:** closes the current interface/evidence gap by exercising workload construction, deterministic 500-to-50 routing, paired candidate/last-known-good observations, health and identity bindings, durable audit output, and rollback verification. Because this is CRITICAL actuation work, first register a dedicated integration EXP contract and keep the path non-actuating/dry-run until deliberate failure and rollback evidence is reviewed.
+- **Run EXP-001 unchanged first:** reconfirms the already-verified baseline but does not exercise the adapter or reduce its integration risk. Repeat EXP-001 only if environment identity or frozen baseline inputs have changed.
+
+**Recommendation:** wire the adapter into the harness next under a new, pre-registered dry-run integration experiment. This produces new evidence against the highest-risk unverified boundary; an unchanged EXP-001 rerun would consume resources without validating the newly built module. Do not enable automatic actuation or mark the safe-actuation layer verified until the integration run, deliberate failures, rollback, restart persistence, and raw audit evidence pass review.
