@@ -489,3 +489,153 @@ Follow-up actions:
 
 1. Use EXP-001 only as the validated smoke foundation for the next Phase 1 research task.
 2. Keep all future performance or adaptation claims under new experiment IDs with their own immutable evidence directories.
+
+### EXP-005: Stationary live-shadow detector-to-policy dry-run integration
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Date: 2026-08-02
+Risk level: CRITICAL (actuation boundary integration; no live actuation authorized)
+
+Objective:
+
+Define the first controlled experiment where real read-only Milvus shadow evidence flows through:
+
+`ShadowAuditTrace → 200-query WindowEvidence assembly → actual drift detector → actual tuning policy in DRY_RUN mode → safe-actuation no-op boundary`
+
+This experiment must not perform canary execution or real actuation.
+
+Hypothesis:
+
+- **H1 — Stationary detector behavior:** Under stationary live replay, both current windows should produce complete evidence and the final detector decision should be `NO_DRIFT`. Evaluate L2 and COSINE independently. Do not pool them into one statistical claim.
+- **H2 — Policy behavior:** A real `NO_DRIFT` decision passed to the actual tuning policy in `DRY_RUN` mode should produce `NO_CHANGE`. The policy must preserve the real detector confidence, magnitude, metric, stratum, identities, and immutable audit provenance.
+- **H3 — Actuation-boundary behavior:** Passing the dry-run policy result through the safe-actuation boundary must produce no Milvus mutation and no canary start. The evidence must demonstrate no `start_canary`, no `apply`, no rollback invocation, no index rebuild, no collection mutation, and no serving-parameter change.
+- **H4 — Failure behavior:** Deliberate offline fake-client/fixture tests must prove that duplicate, incomplete, mismatched, failed, timed-out, non-finite, or identity-invalid traces fail closed before any live action.
+
+Configuration:
+
+#### Scope and invariants
+
+1. Use the existing read-only shadow-candidate/audit path. Do not introduce another Milvus query implementation.
+2. One `ShadowAuditTrace` contains exactly 50 audited queries.
+3. One complete detector window contains exactly four compatible traces: exactly 200 observations, exactly 200 unique query/audit identities, and no duplicate or omitted observation.
+4. For each evaluated configuration, use one immutable reference window, two consecutive current windows, and all three windows assembled independently from four traces each.
+5. Never combine: L2 and COSINE evidence, different threshold strata, different collections, different dataset identities, different index-build identities, different query limits, or incompatible audit configurations.
+6. Preserve the exact metric and canonical threshold-stratum identifiers already used by ADR-002 and current source.
+7. All evidence used by the detector must satisfy the existing ADR-002 completeness and identity contracts.
+8. The policy must run in `DRY_RUN` mode only.
+9. `START_CANARY`, live parameter changes, index rebuilds, collection mutation, and automatic actuation are prohibited.
+10. Any injected/stubbed `ResponseEstimate` must be explicitly labelled synthetic support input: it is not live-canary evidence, it must not be represented as an observed Milvus result, and it must not affect the expected stationary `NO_CHANGE` path.
+
+#### Fail-closed conditions
+
+The experiment must resolve to incomplete/invalid evidence and stop before downstream action if any window contains:
+- fewer or more than four traces,
+- fewer or more than 200 observations,
+- duplicate query/audit IDs,
+- a trace metadata count that disagrees with its actual persisted observation count,
+- internally mismatched parallel arrays/records within one trace,
+- duplicate identities inside a single trace even when the aggregate window count is 200,
+- missing trace data,
+- failed or timed-out queries,
+- threshold violations,
+- non-finite values,
+- incompatible metric or threshold stratum,
+- collection/data/index identity mismatch,
+- inconsistent limit or audit configuration,
+- incomplete recall-audit evidence,
+- trace checksum or manifest mismatch,
+- unordered or ambiguous window chronology.
+
+Do not coerce incomplete evidence to `NO_DRIFT`.
+
+#### Execution stages
+
+1. Implement the four-trace-to-window assembler as a pure validated boundary.
+2. Add focused offline tests for valid assembly and every fail-closed condition.
+3. Add an offline detector → policy → safe-boundary integration test using actual production functions.
+4. Review implementation and raw test output.
+5. Separately authorize stationary live shadow acquisition.
+6. Capture the immutable reference and two current windows independently for each approved metric/stratum.
+7. Run detector and policy evaluation offline from the persisted traces.
+8. Verify the no-op actuation evidence.
+9. Review all artifacts before changing EXP-005 status.
+
+Live acquisition may record process/container resource snapshots to identify material collection overhead, but memory-footprint behavior is observational and is not an EXP-005 acceptance criterion unless separately pre-registered before execution.
+
+#### Required evidence and reproducibility
+
+The minimum evidence set must include:
+
+* exact repository commit and branch,
+* tracked working-tree dirty/clean state,
+* dataset, collection, index-build, metric, threshold-stratum, limit, and audit-configuration identities,
+* chronological membership of every trace in the immutable reference window and two consecutive current windows,
+* all twelve source `ShadowAuditTrace` records per evaluated metric/stratum:
+
+  * four reference traces,
+  * four first-current traces,
+  * four second-current traces,
+* SHA-256 for every persisted trace,
+* deterministic aggregate manifests for each assembled window,
+* assembled reference and current `WindowEvidence`,
+* all detector `SignalEvidence`,
+* final `DriftDecision`,
+* complete tuning-policy inputs, including any synthetic `ResponseEstimate` clearly labelled as non-live support evidence,
+* resulting `PolicyDecision`,
+* safe-actuation/dry-run audit evidence proving no-op behavior,
+* raw deliberate-failure fixture results,
+* exact commands and raw test output,
+* pre/post no-mutation evidence for Milvus collections, indexes, serving parameters, and canary state.
+
+Dataset identity, repository commit, detector seed, collection identity, metric, and threshold stratum may remain `TBD` at contract-definition time. Each value must be frozen and recorded before the first live trace is captured, and none may be changed after evidence acquisition begins.
+
+Dataset ID:
+
+TBD at execution.
+
+Hardware:
+
+TBD at execution.
+
+Git commit:
+
+TBD at execution.
+
+Random seed:
+
+TBD at execution.
+
+Metrics measured:
+
+See Hypotheses and Acceptance criteria.
+
+Raw output location:
+
+Planned: `artifacts/exp-005/`. Artifact paths and filenames must follow existing repository conventions.
+
+Result:
+
+NOT RUN.
+
+Conclusion:
+
+Pending execution.
+
+Acceptance criteria:
+
+EXP-005 may later be considered for verification only if:
+- all required traces and windows are complete and checksum-valid,
+- L2 and COSINE remain independently stratified,
+- detector output is `NO_DRIFT`,
+- policy output is `NO_CHANGE`,
+- safe-actuation output is a proven no-op,
+- every deliberate failure test fails closed,
+- no live Milvus state was mutated,
+- raw evidence is independently reviewable,
+- no acceptance claim relies on synthetic response estimates.
+
+A result other than the pre-registered stationary expectation must be recorded honestly as unexpected, failed, or inconclusive—not rewritten after execution.
+
+Follow-up actions:
+
+1. Implement the four-trace-to-window assembler as a pure validated boundary (Stage 1).
