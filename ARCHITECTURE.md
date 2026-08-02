@@ -130,10 +130,11 @@ Research references:
 
 ### ADR-002: Define drift-detector and HNSW tuning-policy contracts
 
-Status: Proposed — design review required before implementation
+Status: Accepted
 Date: 2026-08-01
 Risk level: CRITICAL
 Evidence status: INFERRED design contract. EXP-001 verifies the Milvus HNSW `ef` measurement values and their smoke-scale recall/latency tradeoff; ADR-002 narrows that measured set before actuation. EXP-001 does not verify this detector, policy, safety thresholds, rollback behavior, or production readiness.
+Acceptance note: Design reviewed; implementation committed through `9442ea4`; `131/131` tests pass. Integration into the live benchmark harness is a separate task and remains pending.
 
 Problem:
 
@@ -234,7 +235,7 @@ Recall-signal permutation input and completeness contract:
 
 Governance status:
 
-- ADR-002 remains **Proposed — design review required before implementation**. Adding these conventions resolves implementation ambiguity but is not final sign-off, does not change the evidence status, and does not authorize detector implementation or policy actuation.
+- ADR-002 is **Accepted**. These conventions are normative, do not change the evidence status, and do not by themselves authorize live policy actuation.
 
 Statistical decision rule:
 
@@ -306,7 +307,7 @@ These conventions are normative for the offline policy implementation and resolv
 - **Last-known-good qualification:** A last-known-good value is qualified from exactly two consecutive `QualificationWindow` records, not from a bare `ef`. Both records must be complete and passing, use the same eligible `ef`, and have identical configuration, index, and data identities. Each must pass health, correctness, conservative-bound recall and latency SLOs, and rollback-clean checks. `ef=100` remains ineligible regardless of its window evidence.
 - **Externally supplied audit identity:** The pure policy function accepts an immutable audit ID supplied by the audit-log boundary and returns it unchanged. It never generates, derives, normalizes, or replaces audit identity internally. With no active canary (`CanaryObservation` absent), a missing or empty audit ID produces `NO_CHANGE` with reason `AUDIT_ID_MISSING`; it cannot produce a recommendation, start a canary, or qualify a last-known-good value. With an active canary (`CanaryObservation` present), a missing or empty supplied audit ID or a missing canary audit record is an immediate hard failure and produces `ROLLBACK` with reason `AUDIT_ID_MISSING`; the supplied empty audit-ID value is returned unchanged.
 
-ADR-002 remains **Proposed — design review required before implementation**. These conventions are pending sign-off and do not mark the policy implemented, Accepted, or authorized for live use.
+ADR-002 is **Accepted**. These conventions are normative for the committed offline policy and do not by themselves authorize live use.
 
 Action space and transition rules:
 
