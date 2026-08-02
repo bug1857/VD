@@ -500,7 +500,7 @@ Objective:
 
 Define the first controlled experiment where real read-only Milvus shadow evidence flows through:
 
-`ShadowAuditTrace → 200-query WindowEvidence assembly → actual drift detector → actual tuning policy in DRY_RUN mode → safe-actuation no-op boundary`
+`ShadowAuditTrace → AssembledShadowWindow (200 raw observations) → SignalEvidence/WindowEvidence → DriftDecision → PolicyDecision in DRY_RUN mode → safe-actuation no-op boundary`
 
 This experiment must not perform canary execution or real actuation.
 
@@ -512,6 +512,289 @@ Hypothesis:
 - **H4 — Failure behavior:** Deliberate offline fake-client/fixture tests must prove that duplicate, incomplete, mismatched, failed, timed-out, non-finite, or identity-invalid traces fail closed before any live action.
 
 Configuration:
+
+#### Definitions
+
+##### `AssembledShadowWindow`
+
+A proposed immutable, pure-data boundary containing one validated raw 200-query window assembled from exactly four compatible 50-query traces.
+
+It is not the existing `drift.WindowEvidence`.
+
+It provides the raw inputs required to later calculate:
+
+* query-vector MMD evidence,
+* threshold KS evidence,
+* exact-cardinality KS evidence,
+* sentinel-recall evidence.
+
+##### Existing `WindowEvidence`
+
+The existing ADR-002 detector object containing the finalized four-signal statistical family for one reference-versus-current comparison.
+
+It must continue to be produced only from real `SignalEvidence` objects through the existing detector functions and completeness rules.
+
+Do not propose changing the existing `WindowEvidence` shape in this task.
+
+#### Source-trace envelope contract
+
+Because the current `ShadowAuditTrace` value itself does not provide persistence chronology and manifest metadata, define a separate persisted source envelope surrounding each trace.
+
+Each envelope must provide:
+
+* non-empty immutable `trace_id`,
+* capture timestamp in canonical UTC form,
+* sequence index within the raw window,
+* declared observation count,
+* expected SHA-256 of the canonical persisted trace payload,
+* the existing immutable `ShadowAuditTrace`.
+
+This is additive metadata around the current trace. It must not redefine or mutate `ShadowAuditTrace`.
+
+The envelope capture timestamp must use the repository’s existing RFC3339 UTC contract:
+
+* valid UTC timestamp ending in `Z`,
+* parsed using the same semantics as the current safe-actuation timestamp validator,
+* no local-time or offset timestamps,
+* all four timestamps within one window strictly increasing after parsing.
+
+Do not introduce a second incompatible timestamp grammar.
+
+The experiment manifest must prove:
+
+`reference capture < first-current capture < second-current capture`
+
+using the completed capture time of each assembled window.
+
+A complete `AssembledShadowWindow` requires:
+
+* an externally supplied immutable `window_id`,
+* the metric and threshold stratum,
+* exactly four validated envelopes,
+* sequence indexes exactly `{0, 1, 2, 3}`,
+* four unique trace IDs,
+* strictly increasing capture timestamps,
+* no duplicate trace payload/checksum,
+* declared observation count exactly `50` for every trace,
+* actual `len(trace.queries)` exactly `50`,
+* recomputed trace SHA-256 matching the envelope SHA-256,
+* exactly 200 globally unique canonical query IDs,
+* the aggregate chronological query records,
+* one deterministic aggregate-manifest SHA-256,
+* `complete` and fail-closed reason codes.
+
+`window_id` must follow the existing ADR-002 canonical identifier domain:
+
+* integer or string only,
+* booleans forbidden,
+* strings non-empty,
+* strings normalized consistently with `canonical_serialize_tuple`.
+
+The assembler must not invent `window_id`.
+
+The immutable reference, first-current and second-current windows must have three distinct window IDs. Their experiment manifest must explicitly record their roles and order.
+
+Any violation must fail closed and must not produce complete detector input.
+
+#### Canonical trace-payload hashing
+
+Add a normative versioned payload contract:
+
+`shadow-trace-payload-v1`
+
+The SHA-256 must cover the entire existing `ShadowAuditTrace` content, including all nested:
+
+* metric and threshold stratum,
+* candidate, last-known-good and sentinel `ef`,
+* configuration and data identities,
+* FLAT and HNSW identity evidence,
+* pre/post identity snapshots,
+* every query record,
+* query ID and query vector,
+* threshold radius, range filter and limit,
+* oracle result,
+* exact cardinality,
+* FLAT and sentinel hits,
+* sentinel recall,
+* all stage evidence,
+* `complete`,
+* reason codes.
+
+Canonical encoding must use UTF-8 JSON produced with the exact repository-compatible rules:
+
+```text
+json.dumps(
+    payload,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+    allow_nan=False,
+).encode("utf-8")
+```
+
+Additional rules:
+
+* include `schema_version: "shadow-trace-payload-v1"`,
+* encode enum values using their exact `.value`,
+* encode tuples as JSON arrays,
+* convert dataclasses through explicit field mappings—not `repr`, `str`, `default=str`, pickle or platform-dependent serialization,
+* retain integer IDs as JSON integers and string IDs as JSON strings,
+* reject booleans as query IDs,
+* reject unsupported values and every non-finite float,
+* produce a lowercase 64-character SHA-256 hexadecimal digest,
+* exclude envelope metadata and `expected_sha256` from the trace-payload hash itself.
+
+`trace_id` remains externally supplied immutable provenance identity. The assembler must validate it but must not generate or rewrite it.
+
+#### Deterministic aggregate-window manifest hashing
+
+The aggregate manifest must use a separate version:
+
+`assembled-shadow-window-manifest-v1`
+
+It must contain:
+
+* aggregate schema version,
+* `window_id`,
+* metric,
+* threshold stratum,
+* four envelopes ordered by sequence index,
+* for each envelope:
+
+  * trace ID,
+  * exact validated timestamp string,
+  * sequence index,
+  * declared observation count,
+  * verified trace-payload SHA-256,
+* total observation count,
+* ordered canonical query IDs.
+
+Hash this manifest with the same canonical UTF-8 JSON rules.
+
+Do not include the aggregate manifest’s own expected digest inside its hashed payload.
+
+##### Initial assembly
+
+During initial assembly:
+
+* the assembler validates all four source envelopes and traces,
+* constructs the canonical `assembled-shadow-window-manifest-v1` payload,
+* computes `manifest_sha256`,
+* returns the immutable `AssembledShadowWindow` containing that computed digest.
+
+No caller-supplied aggregate digest is required during first construction because no persisted aggregate manifest exists yet.
+
+The assembler must never accept a caller-supplied digest as a replacement for its own computation.
+
+##### Persisted aggregate verification
+
+When an already persisted assembled window is loaded or independently verified:
+
+* the persisted aggregate record must provide an externally stored `expected_manifest_sha256`,
+* this expected digest must remain outside the hashed manifest payload,
+* the canonical manifest must be recomputed from the persisted window and its four source-envelope references,
+* the recomputed digest must exactly equal `expected_manifest_sha256`,
+* absence, malformed format, or mismatch must fail closed.
+
+Both computed and expected aggregate SHA-256 values must be lowercase hexadecimal strings of exactly 64 characters.
+
+Clarify that the existing fail-closed condition:
+
+`aggregate manifest hash mismatch`
+
+applies to persisted/reloaded aggregate verification. Initial assembly instead fails if canonical manifest construction or hashing cannot complete.
+
+Do not add the expected digest inside `AssembledShadowWindow` as self-authenticating data. It belongs to the surrounding persisted aggregate record or artifact manifest.
+
+##### Timestamp representation inside the manifest
+
+* timestamp validity and ordering use parsed RFC3339 UTC semantics,
+* the aggregate manifest hashes the exact already-validated timestamp string supplied by each source envelope,
+* timestamps must not be silently reformatted, truncated, rounded, or rewritten during hashing,
+* two timestamps representing the same instant are not strictly increasing and therefore fail chronology validation.
+
+##### Canonical string identifier representation
+
+For aggregate-manifest fields:
+
+* `trace_id` must be a non-empty string.
+* It must be NFC-normalized for envelope uniqueness and aggregate-manifest hashing.
+* The assembler must reject two original trace IDs that normalize to the same canonical value.
+* A normalization collision must fail closed; IDs must not be silently merged or rewritten.
+* The canonical NFC value is included in `assembled-shadow-window-manifest-v1`.
+* `trace_id` remains externally supplied; the assembler must not generate it.
+
+* string `window_id` values and string query IDs are NFC-normalized before inclusion in the canonical manifest payload,
+* integer IDs remain JSON integers,
+* normalization is used for equality, uniqueness, lookup and aggregate-manifest hashing,
+* the assembler must not silently merge two original IDs that normalize to the same canonical value; such a collision fails closed.
+
+The underlying `shadow-trace-payload-v1` still hashes the complete explicit trace representation according to its own defined payload mapping.
+
+#### Identity and compatibility requirements
+
+All four traces must match exactly on:
+
+* metric,
+* threshold stratum,
+* configuration identity,
+* data identity,
+* candidate `ef`,
+* last-known-good `ef`,
+* sentinel `ef`,
+* query limit,
+* threshold radius,
+* range filter,
+* FLAT expected binding and stable pre/post snapshots,
+* HNSW expected binding and stable pre/post snapshots.
+
+Every source trace must already have `complete=True`.
+
+Every query record must contain complete, finite and internally consistent:
+
+* query vector,
+* oracle result,
+* exact cardinality,
+* FLAT hits,
+* sentinel hits,
+* sentinel recall,
+* stage evidence.
+
+#### Canonical query-ID rules
+
+Across all four traces:
+
+* exactly 200 query IDs must exist,
+* all IDs must use one schema type: all integers or all strings,
+* bool is invalid,
+* string IDs must be non-empty,
+* uniqueness must be checked using the existing canonical tuple serialization semantics,
+* Unicode-normalization collisions must fail closed,
+* aggregate order must be sequence index first, then query order inside each trace.
+
+The assembler must preserve this order and must not sort query observations independently.
+
+#### Detector-input extraction
+
+Clarify that `AssembledShadowWindow` retains raw evidence for all 200 observations.
+
+For each reference/current comparison:
+
+* query-vector signal uses all 200 query vectors,
+* threshold signal uses all 200 threshold-radius values,
+* deterministic audit selection must call the existing `select_audit_sample` over the assembled window’s 200 canonical query IDs using:
+
+  * frozen detector seed,
+  * metric,
+  * that window’s immutable `window_id`,
+* the selected exactly 50 IDs provide the exact-cardinality and sentinel-recall samples,
+* selected records must be retrieved from the assembled data by canonical query identity,
+* cardinality and recall evidence must not use an arbitrary first 50, per-trace subset, or caller-selected replacement,
+* actual `query_vector_signal_test`, `ks_signal_test`, `recall_signal_test`, and `finalize_window_evidence` functions must be used.
+
+The detector seed remains external experiment configuration, frozen before first live capture. The assembler does not generate it.
+
+The assembler must not repair or impute invalid traces.
 
 #### Scope and invariants
 
@@ -544,19 +827,35 @@ The experiment must resolve to incomplete/invalid evidence and stop before downs
 - inconsistent limit or audit configuration,
 - incomplete recall-audit evidence,
 - trace checksum or manifest mismatch,
-- unordered or ambiguous window chronology.
+- unordered or ambiguous window chronology,
+- invalid or duplicate window ID,
+- unsupported or mixed query-ID schema,
+- Unicode-normalization identity collision,
+- invalid/non-UTC timestamp,
+- equal or non-monotonic timestamps,
+- unsupported/non-finite canonical payload value,
+- malformed or uppercase/non-64-character SHA-256,
+- trace payload hash mismatch,
+- aggregate manifest hash mismatch,
+- manifest order differing from envelope sequence order,
+- inability to select exactly 50 deterministic audit IDs,
+- selected ID missing from the assembled observations.
 
 Do not coerce incomplete evidence to `NO_DRIFT`.
 
 #### Execution stages
 
-1. Implement the four-trace-to-window assembler as a pure validated boundary.
+1. Implement the persisted trace envelope, canonical trace hashing, and four-trace-to-AssembledShadowWindow pure validation boundary.
 2. Add focused offline tests for valid assembly and every fail-closed condition.
 3. Add an offline detector → policy → safe-boundary integration test using actual production functions.
 4. Review implementation and raw test output.
 5. Separately authorize stationary live shadow acquisition.
 6. Capture the immutable reference and two current windows independently for each approved metric/stratum.
-7. Run detector and policy evaluation offline from the persisted traces.
+7. Run detector and policy evaluation offline from the persisted traces:
+   1. reference and current `AssembledShadowWindow` objects are built independently,
+   2. actual detector signal functions compare the immutable reference window with each current window,
+   3. the existing `WindowEvidence` is finalized from those actual signal results,
+   4. two current `WindowEvidence` objects are passed to `evaluate_drift_decision`.
 8. Verify the no-op actuation evidence.
 9. Review all artifacts before changing EXP-005 status.
 
@@ -632,7 +931,12 @@ EXP-005 may later be considered for verification only if:
 - every deliberate failure test fails closed,
 - no live Milvus state was mutated,
 - raw evidence is independently reviewable,
-- no acceptance claim relies on synthetic response estimates.
+- no acceptance claim relies on synthetic response estimates,
+- an implementation does not alias an `AssembledShadowWindow` as the existing `WindowEvidence`,
+- an implementation does not bypass actual signal-test functions,
+- an implementation does not fabricate `SignalEvidence`,
+- an implementation does not accept missing envelope chronology or checksum metadata,
+- an implementation does not mutate the existing collector trace to retrofit persistence fields silently.
 
 A result other than the pre-registered stationary expectation must be recorded honestly as unexpected, failed, or inconclusive—not rewritten after execution.
 
