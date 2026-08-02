@@ -398,6 +398,52 @@ Research references:
 
 ---
 
+### ADR-003: Correct MMD permutation exchangeability, zero-variance exclusion, and confidence redundancy
+
+Status: Proposed — implementation review required before code changes
+Date: 2026-08-02
+Risk level: CRITICAL
+Evidence status: INFERRED design contract. Supersedes the MMD preprocessing convention, zero-variance handling, and decision_confidence gate defined in ADR-002. Does not change the KS signal, recall signal, Holm correction, effect-size gates, three-state output, consecutive-window rule, or actuation ladder.
+
+Problem:
+
+ADR-002's MMD query-vector signal contains three flaws:
+
+1. Label-exchangeability violation: standardization mean/std and median-heuristic sigma are computed from the reference window only, then held fixed during permutations. The original reference group is therefore mathematically special (exactly zero mean, unit variance). Permuted pseudo-reference groups are not, breaking the exchangeability assumption required for a valid permutation p-value.
+2. Zero-variance false negative: a dimension with zero variance in the reference window is zeroed in both windows. If the current window develops variance in that dimension, the drift is invisible to MMD.
+3. Redundant and misleading gate: decision_confidence = 1 - adjusted_p is used as an independent >= 0.99 policy gate. This is redundant — adjusted_p <= 0.01 is already required by the Holm-corrected breach rule. The name "confidence" falsely implies a posterior probability.
+
+Alternatives considered:
+
+| Option | Correctness | Cost | Assessment |
+|---|---|---|---|
+| A — Full per-permutation recomputation of mean/std/sigma | Exact | O(N²) per permutation; prohibitively slow at 9,999 permutations | Rejected |
+| B — Pooled preprocessing (chosen) | Exact exchangeability | Same asymptotic cost as current; one extra pass over combined data | Accepted |
+| C — Conditional permutation test formulation | Correct under different assumptions | Requires separate theoretical justification and different null hypothesis | Future work if pooled approach is insufficient |
+
+Chosen solution:
+
+1. Pooled preprocessing: compute mean, std, and sigma from the pooled combination of true reference and true current windows (shape 400×D for standard windows). Build the kernel matrix once from pooled-standardized data. All permutations swap group membership over this fixed label-independent kernel. Preprocessing is computed once before permutations begin and never recomputed per permutation.
+2. Zero-variance exclusion: if a dimension has zero variance in the pooled data it is excluded entirely from MMD (not zeroed). The count and indices of excluded dimensions must be recorded in SignalEvidence. A dimension that varies in either window will have non-zero pooled variance and will be included.
+3. Rename and remove: rename decision_confidence to significance_evidence_score in DriftDecision and all references. Remove DETECTOR_CONFIDENCE_FLOOR from policy.py and its two reference sites (lines 46 and 1014 at time of this ADR). The policy must rely on detector state (DRIFT) and drift_magnitude >= 1.0 — the adjusted_p <= 0.01 requirement is already enforced inside the detector.
+
+Consequences:
+
+- All existing stationary false-positive and drift-injection experiment results (commits 2719f8f and 773b944) must be treated as provisional until rerun after this correction is implemented and verified. Do not cite those numbers as final validation.
+- drift.py: _prepare_mmd must be replaced with a pooled variant; zero-variance exclusion must use pooled std, not reference std; sigma must use pooled pairwise distances.
+- policy.py: DETECTOR_CONFIDENCE_FLOOR constant and its two usage sites must be removed; decision_confidence gate must be removed from all policy evaluation paths.
+- DriftDecision dataclass: decision_confidence field renamed to significance_evidence_score; all callers updated.
+- All tests referencing decision_confidence or DETECTOR_CONFIDENCE_FLOOR must be updated.
+- EXP-005 contract (commits ed4e877, ef7f7d3) remains valid in structure; its detector calls will use the corrected implementation after this ADR is implemented.
+
+Modules affected: drift.py, policy.py, and their test files.
+
+Research references:
+- Gretton et al., "A Kernel Two-Sample Test", JMLR 13 (2012) — original MMD formulation.
+- ADR-002 normative implementation conventions — superseded for MMD preprocessing only.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
