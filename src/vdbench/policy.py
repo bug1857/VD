@@ -178,6 +178,7 @@ class QualificationResult:
     configuration_identity: str | None = None
     index_identity: str | None = None
     data_identity: str | None = None
+    qualifying_window_ids: tuple[str, str] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,6 +407,7 @@ def qualify_last_known_good(
         configuration_identity=first.configuration_identity,
         index_identity=first.index_identity,
         data_identity=first.data_identity,
+        qualifying_window_ids=(first.window_id, second.window_id),
     )
 
 
@@ -1131,10 +1133,11 @@ def evaluate_tuning_policy(
     response_estimates: Mapping[int, ResponseEstimate],
     pre_action: PreActionSafety,
     canary_observation: CanaryObservation | None,
-    qualification_windows: Sequence[QualificationWindow],
+    qualification_windows: Sequence[QualificationWindow] | None = None,
     mode: PolicyMode,
     threshold_stratum: str,
     audit_id: str,
+    last_known_good: QualificationResult | None = None,
 ) -> PolicyDecision:
     """Evaluate ADR-002 policy evidence without database or actuation access."""
 
@@ -1143,8 +1146,28 @@ def evaluate_tuning_policy(
     if not isinstance(detector, DriftDecision):
         raise TypeError("detector must be a DriftDecision")
 
+    if qualification_windows is not None and last_known_good is not None:
+        raise ValueError(
+            "qualification_windows and last_known_good are mutually exclusive"
+        )
+    if last_known_good is not None and not isinstance(
+        last_known_good, QualificationResult
+    ):
+        raise TypeError("last_known_good must be a QualificationResult")
+
     estimates, estimate_reasons = _validate_response_estimates(response_estimates)
-    qualification = qualify_last_known_good(qualification_windows, audit_id=audit_id)
+    if last_known_good is not None:
+        qualification = last_known_good
+    elif qualification_windows is not None:
+        qualification = qualify_last_known_good(
+            qualification_windows, audit_id=audit_id
+        )
+    else:
+        qualification = QualificationResult(
+            qualified=False,
+            ef=None,
+            reasons=("LAST_KNOWN_GOOD_SOURCE_MISSING",),
+        )
     current_estimate = estimates.get(current_ef)
 
     if canary_observation is not None:
