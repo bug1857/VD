@@ -145,7 +145,10 @@ class ActuationWorkload:
     """Immutable query, oracle, threshold, collection, and identity source."""
 
     query_vectors: Mapping[QueryId, npt.NDArray[np.float32]]
-    canary_query_ids: tuple[QueryId, ...]
+    canary_query_ids: tuple[QueryId, ...] = field(
+        default_factory=tuple,
+        kw_only=True,
+    )
     base_ids: npt.NDArray[np.int64]
     base_vectors: npt.NDArray[np.float32]
     threshold_radii: Mapping[tuple[Metric | str, str], float]
@@ -190,14 +193,8 @@ class ActuationWorkload:
             normalized_queries[query_id] = value
 
         canary_query_ids = tuple(self.canary_query_ids)
-        if len(canary_query_ids) != CANARY_BATCH_SIZE:
-            raise ValueError("canary batch must contain exactly 500 query IDs")
-        for query_id in canary_query_ids:
-            _validate_query_id(query_id)
-        if len(set(canary_query_ids)) != CANARY_BATCH_SIZE:
-            raise ValueError("canary query IDs must be unique")
-        if any(query_id not in normalized_queries for query_id in canary_query_ids):
-            raise ValueError("every canary query ID must resolve to a query vector")
+        if canary_query_ids:
+            _validate_canary_query_batch(canary_query_ids, normalized_queries)
 
         normalized_thresholds: dict[tuple[Metric, str], float] = {}
         for (metric, stratum), radius in self.threshold_radii.items():
@@ -255,6 +252,11 @@ class ActuationWorkload:
         object.__setattr__(
             self, "identity_bindings", MappingProxyType(normalized_bindings)
         )
+
+    def validate_for_canary(self) -> None:
+        """Fail closed unless a complete 500-query canary batch is configured."""
+
+        _validate_canary_query_batch(self.canary_query_ids, self.query_vectors)
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +320,21 @@ def _validate_query_id(query_id: object) -> None:
     if isinstance(query_id, str) and not query_id:
         raise ValueError("string query IDs must be non-empty")
     canonical_serialize_tuple((query_id,))
+
+
+def _validate_canary_query_batch(
+    query_ids: Sequence[QueryId],
+    query_vectors: Mapping[QueryId, npt.NDArray[np.float32]],
+) -> None:
+    values = tuple(query_ids)
+    if len(values) != CANARY_BATCH_SIZE:
+        raise ValueError("canary batch must contain exactly 500 query IDs")
+    for query_id in values:
+        _validate_query_id(query_id)
+    if len(set(values)) != CANARY_BATCH_SIZE:
+        raise ValueError("canary query IDs must be unique")
+    if any(query_id not in query_vectors for query_id in values):
+        raise ValueError("every canary query ID must resolve to a query vector")
 
 
 def _identity_fingerprint(identity: CollectionIdentity) -> bytes:
@@ -671,6 +688,7 @@ class MilvusActuationClient:
 
         _validate_actuation_ef(candidate_ef, name="candidate_ef")
         _validate_actuation_ef(last_known_good_ef, name="last_known_good_ef")
+        self.workload.validate_for_canary()
         if not self._context_configuration_valid(context):
             raise ContractViolation("workload/context configuration identity mismatch")
         metric = self._metric(context)

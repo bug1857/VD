@@ -151,7 +151,7 @@ class StepClock:
         return self.value
 
 
-def fixture_components():
+def fixture_components(*, include_canary_batch: bool = True):
     base_ids = np.arange(4, dtype=np.int64)
     base_vectors = np.asarray(
         [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
@@ -176,9 +176,11 @@ def fixture_components():
         IndexTrack.HNSW.value,
         index_description(IndexTrack.HNSW),
     )
+    workload_kwargs = {}
+    if include_canary_batch:
+        workload_kwargs["canary_query_ids"] = tuple(range(500))
     workload = ActuationWorkload(
         query_vectors=query_vectors,
-        canary_query_ids=tuple(range(500)),
         base_ids=base_ids,
         base_vectors=base_vectors,
         threshold_radii={(Metric.L2, THRESHOLD_STRATUM): 100.0},
@@ -196,6 +198,7 @@ def fixture_components():
         },
         configuration_identity=CONFIGURATION_ID,
         data_identity=DATA_ID,
+        **workload_kwargs,
     )
     client = FakePyMilvusClient(
         base_ids=base_ids,
@@ -242,6 +245,39 @@ def context() -> ActuationContext:
 
 
 class MilvusActuationAdapterTests(unittest.TestCase):
+    def test_shadow_does_not_require_an_unrelated_canary_batch(self) -> None:
+        workload, client, _, _, adapter = fixture_components(
+            include_canary_batch=False
+        )
+
+        self.assertEqual(workload.canary_query_ids, ())
+        result = adapter.shadow_candidate(
+            context=context(),
+            candidate_ef=800,
+            last_known_good_ef=400,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.audited_query_count, 50)
+        self.assertEqual(len(client.search_calls), 150)
+
+    def test_start_canary_requires_a_complete_canary_batch_before_queries(self) -> None:
+        _, client, estimator, health, adapter = fixture_components(
+            include_canary_batch=False
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly 500"):
+            adapter.start_canary(
+                context=context(),
+                candidate_ef=800,
+                last_known_good_ef=400,
+                traffic_fraction=0.10,
+            )
+
+        self.assertEqual(client.search_calls, [])
+        self.assertEqual(estimator.calls, [])
+        self.assertEqual(health.calls, 0)
+
     def test_500_query_routing_selects_exactly_50_deterministically(self) -> None:
         first = select_canary_routes(
             tuple(range(500)),
