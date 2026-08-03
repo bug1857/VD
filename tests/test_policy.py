@@ -6,6 +6,7 @@ from vdbench.drift import (
     DetectorState,
     DriftClassification,
     DriftDecision,
+    build_evidence_provenance,
 )
 from vdbench.policy import (
     CanaryObservation,
@@ -20,13 +21,39 @@ from vdbench.policy import (
 
 CONFIG_ID = "config-v1"
 INDEX_ID = "hnsw-m16-efc200-v1"
+FLAT_INDEX_ID = "flat-v1"
 DATA_ID = "dataset-v1"
 AUDIT_ID = "audit-policy-001"
+
+
+def provenance(
+    *,
+    current_window_id: str = "current-window",
+    threshold: str = "target-025",
+    configuration_identity: str = CONFIG_ID,
+):
+    return build_evidence_provenance(
+        metric="L2",
+        threshold_stratum=threshold,
+        reference_window_id="reference-window",
+        current_window_id=current_window_id,
+        reference_manifest_sha256="a" * 64,
+        current_manifest_sha256="b" * 64,
+        configuration_identity=configuration_identity,
+        data_identity=DATA_ID,
+        flat_binding_id=FLAT_INDEX_ID,
+        hnsw_binding_id=INDEX_ID,
+        reference_audit_ids=tuple(range(50)),
+        reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+        current_audit_ids=tuple(range(50)),
+        current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
+    )
 
 
 def detector(
     state: DetectorState = DetectorState.DRIFT,
     classification: DriftClassification = DriftClassification.QUALITY_DRIFT,
+    threshold: str = "target-025",
 ) -> DriftDecision:
     return DriftDecision(
         state=state,
@@ -35,6 +62,9 @@ def detector(
             0.995 if state is DetectorState.DRIFT else None
         ),
         drift_magnitude=1.25 if state is DetectorState.DRIFT else None,
+        evidence_provenance=(
+            provenance(threshold=threshold) if state is DetectorState.DRIFT else None
+        ),
     )
 
 
@@ -139,6 +169,7 @@ def pre_action(
         threshold_stratum=threshold,
         configuration_identity=CONFIG_ID,
         index_identity=INDEX_ID,
+        flat_index_identity=FLAT_INDEX_ID,
         data_identity=DATA_ID,
         response_model_provenance="response-model-v1",
         exception_authorized=exception_authorized,
@@ -223,7 +254,7 @@ def decide(
     audit_id: str = AUDIT_ID,
 ):
     return evaluate_tuning_policy(
-        drift or detector(),
+        drift or detector(threshold=threshold),
         current_ef=current_ef,
         response_estimates=estimates or quality_estimates(threshold=threshold),
         pre_action=safety or pre_action(threshold=threshold),
@@ -243,6 +274,7 @@ class DetectorAndDirectionTests(unittest.TestCase):
                 classification=DriftClassification.QUALITY_DRIFT,
                 significance_evidence_score=0.98,
                 drift_magnitude=1.25,
+                evidence_provenance=provenance(),
             )
         )
 
@@ -252,6 +284,33 @@ class DetectorAndDirectionTests(unittest.TestCase):
             "DETECTOR_CONFIDENCE",
             {gate.name for gate in result.safety_gate_results},
         )
+
+    def test_drift_without_valid_provenance_cannot_recommend_or_start_canary(self) -> None:
+        result = decide(drift=replace(detector(), evidence_provenance=None))
+
+        self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_MISSING")
+        self.assertTrue(result.alert_required)
+
+    def test_drift_with_pre_action_identity_mismatch_cannot_recommend(self) -> None:
+        result = decide(
+            drift=replace(
+                detector(),
+                evidence_provenance=provenance(
+                    configuration_identity="unexpected-configuration"
+                ),
+            )
+        )
+
+        self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_MISMATCH")
+        self.assertFalse(result.safety_gate_results[0].passed)
+
+    def test_policy_output_carries_the_detector_provenance(self) -> None:
+        evidence = provenance()
+        result = decide(drift=replace(detector(), evidence_provenance=evidence))
+
+        self.assertEqual(result.evidence_provenance, evidence)
 
     def test_no_drift_and_insufficient_evidence_emit_no_change(self) -> None:
         cases = (

@@ -8,6 +8,7 @@ from vdbench.drift import (
     DriftClassification,
     Signal,
     SignalEvidence,
+    build_evidence_provenance,
     evaluate_drift_decision,
     finalize_window_evidence,
 )
@@ -40,6 +41,7 @@ SAMPLE_COUNTS = {
 }
 CONFIGURATION_ID = "config-v1"
 INDEX_ID = "hnsw-m16-efc200-v1"
+FLAT_INDEX_ID = "flat-index-v1"
 DATA_ID = "dataset-v1"
 THRESHOLD_STRATUM = "target-025"
 AUDIT_ID = "integration-audit-001"
@@ -107,6 +109,22 @@ def synthetic_window(window_id: str, breaches: tuple[Signal, ...]):
         window_id=window_id,
         signals=tuple(
             synthetic_signal(signal, breach=signal in breaches) for signal in Signal
+        ),
+        provenance=build_evidence_provenance(
+            metric="L2",
+            threshold_stratum=THRESHOLD_STRATUM,
+            reference_window_id="synthetic-reference",
+            current_window_id=window_id,
+            reference_manifest_sha256="a" * 64,
+            current_manifest_sha256="b" * 64,
+            configuration_identity=CONFIGURATION_ID,
+            data_identity=DATA_ID,
+            flat_binding_id=FLAT_INDEX_ID,
+            hnsw_binding_id=INDEX_ID,
+            reference_audit_ids=tuple(range(50)),
+            reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+            current_audit_ids=tuple(range(50)),
+            current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
         ),
     )
 
@@ -213,6 +231,7 @@ def pre_action_safety() -> PreActionSafety:
         index_identity=INDEX_ID,
         data_identity=DATA_ID,
         response_model_provenance="synthetic-validated-response-model-v1",
+        flat_index_identity=FLAT_INDEX_ID,
     )
 
 

@@ -444,6 +444,53 @@ Research references:
 
 ---
 
+### ADR-004: Carry immutable evidence provenance from shadow traces through policy and actuation
+
+Status: Accepted — implementation in progress
+Date: 2026-08-03
+Risk level: CRITICAL
+Evidence status: INFERRED design contract. This ADR closes an EXP-005 integration gap; it does not authorize live actuation.
+
+Problem:
+
+EXP-005 requires live-shadow evidence to remain independently reviewable from persisted traces through detector, policy, and the safe-actuation audit. The existing `WindowEvidence` and `DriftDecision` carry statistical results but not the immutable window manifests, identities, or deterministic audit selections from which those results were derived. Passing configuration/data/index fields separately to policy would permit a structurally valid but unbound decision path.
+
+Alternatives considered:
+
+| Option | Advantages | Disadvantages | Decision |
+|---|---|---|---|
+| A — External side-channel map keyed by window or audit ID | No existing value-object changes. | Mutable, restart-fragile, and can be mismatched with a detector result. | Rejected. |
+| B — Immutable evidence-provenance value propagated with evidence and decisions | Explicit, restart-auditable, validates every boundary, and preserves backward compatibility with optional fields. | Adds value-object and persistence schema work. | Chosen. |
+| C — Re-query Milvus at policy time to rediscover identity | Uses live state. | Cannot prove the detector used the same evidence; adds query side effects and race windows. | Rejected. |
+
+Chosen solution:
+
+1. Introduce an immutable, versioned `EvidenceProvenance` value. It records the metric, threshold stratum, reference/current window IDs and manifest SHA-256 values, configuration/data identities, FLAT/HNSW binding identities, deterministic audit selections and ranking digests, and a canonical provenance SHA-256.
+2. `shadow_extraction` constructs provenance only from two validated `AssembledShadowWindow` values and the actual `AuditSelection` results. It must not accept caller-supplied identities, manifests, selected IDs, or provenance hashes.
+3. Add an optional provenance field to `WindowEvidence`, propagate the current comparison provenance into `DriftDecision`, then into `PolicyDecision` and the immutable `ActuationAuditRecord`. Existing synthetic unit fixtures remain valid with `None`; they can never serve as real EXP-005/action evidence.
+4. When both consecutive `WindowEvidence` values have provenance, `evaluate_drift_decision` must fail closed if their metric, stratum, reference manifest, configuration/data identities, or FLAT/HNSW bindings differ. The current-window manifest and audit selection may differ and must remain separately retained.
+5. A `DRIFT` decision may yield `RECOMMEND_EF` or `START_CANARY` only when its provenance is present, structurally valid, and matches `PreActionSafety` on metric, stratum, configuration identity, data identity, and FLAT/HNSW binding identities. Missing or mismatched provenance yields `NO_CHANGE` with an explicit reason. `NO_DRIFT` remains a safe no-op, but EXP-005 may not claim end-to-end provenance without it.
+6. The safe-actuation boundary must validate a `START_CANARY` decision's provenance against `ActuationContext` and persist it in the append-only audit record. It must never reconstruct provenance through a new database query. A rollback triggered by an actual failing canary is deliberately not blocked by missing detector provenance: failing closed must preserve the ability to restore the last-known-good setting.
+7. Canonical provenance serialization uses the repository's NFC/UTF-8 canonical JSON rules, rejects unsupported/non-finite values, and computes lowercase SHA-256. Every persisted audit reader validates the schema and recomputes the digest before trusting it.
+
+Consequences:
+
+- EXP-005 Stage 3 must use three independently assembled windows (twelve traces): `reference→current-1` produces the previous `WindowEvidence`; `reference→current-2` produces the current `WindowEvidence`; only then may `evaluate_drift_decision(previous, current)` run.
+- `previous=None` remains `INSUFFICIENT_EVIDENCE`, never a stationary `NO_DRIFT` result.
+- DRY_RUN policy evaluation and a safe-boundary `NO_OP` remain non-actuating; fake-client rollback/canary failures stay separate deliberate-failure tests and cannot be represented as an EXP-005 stationary no-op.
+- This supersedes no statistical rule in ADR-002/ADR-003. It adds provenance binding only.
+
+Verification plan:
+
+1. Unit-test canonical provenance construction, digest recomputation, malformed/tampered provenance, and every detector/policy/boundary identity mismatch.
+2. Extend persistence tests to reject malformed or digest-mismatched provenance records fail closed across restart.
+3. Add the EXP-005 offline Stage 3 test using twelve independently assembled synthetic traces and actual extraction, detector, policy, and safe-boundary functions; prove `NO_DRIFT → NO_CHANGE → NO_OP` with zero client calls.
+4. Before EXP-005 live acquisition, capture and persist provenance from real trace manifests; demonstrate a deliberate identity mismatch reaches `INSUFFICIENT_EVIDENCE`/non-action before any live action.
+
+Modules affected: detector-owned provenance value type; shadow extraction; drift detector values; tuning policy; safe-actuation boundary; append-only audit persistence; focused unit/integration tests.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |

@@ -34,9 +34,11 @@ from .actuation import (
     RollbackVerification,
     ShadowResult,
 )
+from .config import Metric
+from .drift import EvidenceProvenance, evidence_provenance_valid
 from .policy import CanaryObservation, QualificationResult, SafetyGateResult
 
-AUDIT_SCHEMA_VERSION = 1
+AUDIT_SCHEMA_VERSION = 2
 CONTROLLER_SCHEMA_VERSION = 1
 REENABLE_CONFIRMATION_TOKEN = "I_CONFIRM_RE_ENABLE_AUTOMATIC_ACTIONS"
 
@@ -50,6 +52,9 @@ _SAFETY_GATE_FIELDS = frozenset(field.name for field in fields(SafetyGateResult)
 _SHADOW_FIELDS = frozenset(field.name for field in fields(ShadowResult))
 _CANARY_FIELDS = frozenset(field.name for field in fields(CanaryObservation))
 _ROLLBACK_FIELDS = frozenset(field.name for field in fields(RollbackVerification))
+_EVIDENCE_PROVENANCE_FIELDS = frozenset(
+    field.name for field in fields(EvidenceProvenance)
+)
 _CONTROLLER_FIELDS = frozenset(
     {
         "schema_version",
@@ -120,6 +125,39 @@ def _valid_optional_mapping(
     return value is None or _exact_mapping(value, expected_fields)
 
 
+def _validate_evidence_provenance(value: object) -> None:
+    if value is None:
+        return
+    if not _exact_mapping(value, _EVIDENCE_PROVENANCE_FIELDS):
+        raise AuditLogCorruptedError(
+            "audit evidence provenance fields do not match schema"
+        )
+    assert isinstance(value, Mapping)
+    try:
+        provenance = EvidenceProvenance(
+            schema_version=value["schema_version"],
+            metric=Metric(value["metric"]),
+            threshold_stratum=value["threshold_stratum"],
+            reference_window_id=value["reference_window_id"],
+            current_window_id=value["current_window_id"],
+            reference_manifest_sha256=value["reference_manifest_sha256"],
+            current_manifest_sha256=value["current_manifest_sha256"],
+            configuration_identity=value["configuration_identity"],
+            data_identity=value["data_identity"],
+            flat_binding_id=value["flat_binding_id"],
+            hnsw_binding_id=value["hnsw_binding_id"],
+            reference_audit_ids=tuple(value["reference_audit_ids"]),
+            reference_audit_rank_digests=tuple(value["reference_audit_rank_digests"]),
+            current_audit_ids=tuple(value["current_audit_ids"]),
+            current_audit_rank_digests=tuple(value["current_audit_rank_digests"]),
+            sha256=value["sha256"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuditLogCorruptedError("audit evidence provenance is malformed") from exc
+    if not evidence_provenance_valid(provenance):
+        raise AuditLogCorruptedError("audit evidence provenance is invalid")
+
+
 def _validate_audit_payload(payload: object) -> dict[str, Any]:
     if not _exact_mapping(payload, _AUDIT_ENVELOPE_FIELDS):
         raise AuditLogCorruptedError("audit envelope fields do not match schema")
@@ -158,6 +196,7 @@ def _validate_audit_payload(payload: object) -> dict[str, Any]:
     for value, expected_fields, label in optional_fields:
         if not _valid_optional_mapping(value, expected_fields):
             raise AuditLogCorruptedError(f"audit {label} fields do not match schema")
+    _validate_evidence_provenance(record["evidence_provenance"])
     return dict(record)
 
 
@@ -192,7 +231,7 @@ def _scan_audit_handle(handle: Any) -> set[str]:
 
 
 class JsonlAuditSink:
-    """Process-safe, append-only schema-version-1 JSONL audit sink."""
+    """Process-safe, append-only schema-version-2 JSONL audit sink."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path)

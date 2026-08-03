@@ -8,10 +8,12 @@ from vdbench.drift import (
     DetectorState,
     DriftClassification,
     DriftDecision,
+    EvidenceProvenance,
     RecallAuditSample,
     Signal,
     SignalEvidence,
     canonical_serialize_tuple,
+    build_evidence_provenance,
     derive_permutation_seed,
     deterministic_permutation_p_value,
     evaluate_drift_decision,
@@ -70,6 +72,30 @@ def complete_window(
     ]
     return finalize_window_evidence(
         metric="L2", window_id=window_id, signals=signals
+    )
+
+
+def provenance(
+    *,
+    current_window_id: str,
+    current_manifest: str,
+    configuration_identity: str = "config-v1",
+) -> EvidenceProvenance:
+    return build_evidence_provenance(
+        metric="L2",
+        threshold_stratum="target-075",
+        reference_window_id="reference",
+        current_window_id=current_window_id,
+        reference_manifest_sha256="a" * 64,
+        current_manifest_sha256=current_manifest,
+        configuration_identity=configuration_identity,
+        data_identity="dataset-v1",
+        flat_binding_id="flat-v1",
+        hnsw_binding_id="hnsw-v1",
+        reference_audit_ids=tuple(range(50)),
+        reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+        current_audit_ids=tuple(range(50)),
+        current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
     )
 
 
@@ -399,6 +425,76 @@ class DegenerateEvidenceTests(unittest.TestCase):
 
 
 class DecisionTests(unittest.TestCase):
+    def test_provenance_canonicalizes_nfc_identity_text_before_hashing(self) -> None:
+        decomposed = provenance(
+            current_window_id="current", current_manifest="b" * 64,
+            configuration_identity="config-cafe\u0301",
+        )
+        composed = provenance(
+            current_window_id="current", current_manifest="b" * 64,
+            configuration_identity="config-caf\u00e9",
+        )
+
+        self.assertEqual(decomposed.configuration_identity, "config-caf\u00e9")
+        self.assertEqual(decomposed, composed)
+
+    def test_provenance_is_immutable_and_propagates_to_decision(self) -> None:
+        previous_provenance = provenance(
+            current_window_id="current-1", current_manifest="b" * 64
+        )
+        current_provenance = provenance(
+            current_window_id="current-2", current_manifest="c" * 64
+        )
+        previous = finalize_window_evidence(
+            metric="L2",
+            window_id="current-1",
+            signals=tuple(signal_evidence(signal) for signal in Signal),
+            provenance=previous_provenance,
+        )
+        current = finalize_window_evidence(
+            metric="L2",
+            window_id="current-2",
+            signals=tuple(signal_evidence(signal) for signal in Signal),
+            provenance=current_provenance,
+        )
+        decision = evaluate_drift_decision(previous, current)
+        self.assertEqual(decision.state, DetectorState.NO_DRIFT)
+        self.assertEqual(decision.evidence_provenance, current_provenance)
+        self.assertEqual(len(current_provenance.sha256), 64)
+
+    def test_mismatched_provenance_fails_closed(self) -> None:
+        previous = finalize_window_evidence(
+            metric="L2",
+            window_id="current-1",
+            signals=tuple(signal_evidence(signal) for signal in Signal),
+            provenance=provenance(
+                current_window_id="current-1", current_manifest="b" * 64
+            ),
+        )
+        current = finalize_window_evidence(
+            metric="L2",
+            window_id="current-2",
+            signals=tuple(signal_evidence(signal) for signal in Signal),
+            provenance=build_evidence_provenance(
+                metric="L2",
+                threshold_stratum="target-075",
+                reference_window_id="reference",
+                current_window_id="current-2",
+                reference_manifest_sha256="a" * 64,
+                current_manifest_sha256="c" * 64,
+                configuration_identity="different-config",
+                data_identity="dataset-v1",
+                flat_binding_id="flat-v1",
+                hnsw_binding_id="hnsw-v1",
+                reference_audit_ids=tuple(range(50)),
+                reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+                current_audit_ids=tuple(range(50)),
+                current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
+            ),
+        )
+        decision = evaluate_drift_decision(previous, current)
+        self.assertEqual(decision.state, DetectorState.INSUFFICIENT_EVIDENCE)
+        self.assertIn("EVIDENCE_PROVENANCE_MISMATCH", decision.reason_codes)
     def test_drift_decision_exposes_significance_evidence_score_only(self) -> None:
         decision = DriftDecision(
             state=DetectorState.DRIFT,

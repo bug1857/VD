@@ -20,6 +20,7 @@ from vdbench.actuation_persistence import (
     JsonlAuditSink,
 )
 from vdbench.config import Metric
+from vdbench.drift import build_evidence_provenance
 from vdbench.policy import (
     PolicyAction,
     QualificationResult,
@@ -50,6 +51,7 @@ def audit_record(audit_id: str) -> ActuationAuditRecord:
         collection_name="vd-l2-hnsw",
         configuration_identity="config-v1",
         index_identity="index-v1",
+        flat_index_identity="flat-v1",
         data_identity="data-v1",
         audited_query_ids=tuple(range(50)),
         last_known_good=qualification,
@@ -74,6 +76,22 @@ def audit_record(audit_id: str) -> ActuationAuditRecord:
                 passed=True,
                 detail="fixture gate",
             ),
+        ),
+        evidence_provenance=build_evidence_provenance(
+            metric=Metric.L2,
+            threshold_stratum="target-025",
+            reference_window_id="reference-window",
+            current_window_id="current-window",
+            reference_manifest_sha256="a" * 64,
+            current_manifest_sha256="b" * 64,
+            configuration_identity="config-v1",
+            data_identity="data-v1",
+            flat_binding_id="flat-v1",
+            hnsw_binding_id="index-v1",
+            reference_audit_ids=tuple(range(50)),
+            reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+            current_audit_ids=tuple(range(50)),
+            current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
         ),
     )
 
@@ -144,9 +162,21 @@ class JsonlAuditSinkTests(unittest.TestCase):
             self.assertTrue(sink.contains("audit-001"))
             self.assertFalse(sink.contains("audit-002"))
             envelope = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(envelope["schema_version"], 1)
+            self.assertEqual(envelope["schema_version"], 2)
             self.assertEqual(envelope["record"]["audit_id"], "audit-001")
             self.assertTrue(path.read_bytes().endswith(b"\n"))
+
+    def test_tampered_evidence_provenance_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "actuation-audit.jsonl"
+            sink = JsonlAuditSink(path)
+            sink.append(audit_record("audit-provenance"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["record"]["evidence_provenance"]["sha256"] = "0" * 64
+            path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+            with self.assertRaises(AuditLogCorruptedError):
+                sink.contains("audit-provenance")
 
     def test_duplicate_audit_id_is_rejected_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

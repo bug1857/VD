@@ -32,7 +32,13 @@ import math
 from numbers import Integral
 
 from .config import Metric, THRESHOLD_LABELS
-from .drift import DetectorState, DriftClassification, DriftDecision
+from .drift import (
+    DetectorState,
+    DriftClassification,
+    DriftDecision,
+    EvidenceProvenance,
+    evidence_provenance_valid,
+)
 
 ACTUATION_LADDER = (200, 400, 800, 1600)
 RECALL_FLOOR = 0.95
@@ -89,6 +95,7 @@ class PreActionSafety:
     index_identity: str
     data_identity: str
     response_model_provenance: str
+    flat_index_identity: str | None = None
     milvus_healthy: bool = True
     etcd_healthy: bool = True
     minio_healthy: bool = True
@@ -210,6 +217,7 @@ class PolicyDecision:
     mode: PolicyMode
     audit_id: str
     alert_required: bool = False
+    evidence_provenance: EvidenceProvenance | None = None
 
 
 def _coerce_metric(value: Metric | str) -> Metric:
@@ -459,6 +467,45 @@ def _decision(
         mode=mode,
         audit_id=audit_id,
         alert_required=alert_required,
+        evidence_provenance=detector.evidence_provenance,
+    )
+
+
+def _evidence_provenance_gate(
+    *,
+    detector: DriftDecision,
+    metric: Metric,
+    threshold_stratum: str,
+    pre_action: PreActionSafety,
+) -> SafetyGateResult:
+    """Bind a drift result to the exact pre-action identities, fail closed."""
+
+    provenance = detector.evidence_provenance
+    if provenance is None:
+        return _gate(
+            "EVIDENCE_PROVENANCE_BOUND",
+            False,
+            "DRIFT recommendation requires immutable evidence provenance",
+        )
+    if not evidence_provenance_valid(provenance):
+        return _gate(
+            "EVIDENCE_PROVENANCE_BOUND",
+            False,
+            "detector evidence provenance is malformed or digest-mismatched",
+        )
+    matches = bool(
+        provenance.metric is metric
+        and provenance.threshold_stratum == threshold_stratum
+        and provenance.configuration_identity == pre_action.configuration_identity
+        and provenance.data_identity == pre_action.data_identity
+        and provenance.hnsw_binding_id == pre_action.index_identity
+        and _nonempty(pre_action.flat_index_identity)
+        and provenance.flat_binding_id == pre_action.flat_index_identity
+    )
+    return _gate(
+        "EVIDENCE_PROVENANCE_BOUND",
+        matches,
+        "provenance metric, stratum, configuration, data, FLAT, and HNSW bindings must match pre-action evidence",
     )
 
 
@@ -1313,6 +1360,33 @@ def evaluate_tuning_policy(
                     "threshold stratum must be canonical",
                 ),
             ),
+            mode=mode,
+            audit_id=audit_id,
+            alert_required=True,
+        )
+
+    provenance_gate = _evidence_provenance_gate(
+        detector=detector,
+        metric=metric,
+        threshold_stratum=threshold_stratum,
+        pre_action=pre_action,
+    )
+    if not provenance_gate.passed:
+        reason = (
+            "EVIDENCE_PROVENANCE_MISSING"
+            if detector.evidence_provenance is None
+            else "EVIDENCE_PROVENANCE_MISMATCH"
+        )
+        return _decision(
+            action=PolicyAction.NO_CHANGE,
+            current_ef=current_ef,
+            candidate_ef=None,
+            last_known_good_ef=qualification.ef,
+            estimate=None,
+            current_estimate=current_estimate,
+            reason=reason,
+            detector=detector,
+            gates=(provenance_gate,),
             mode=mode,
             audit_id=audit_id,
             alert_required=True,

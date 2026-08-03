@@ -8,7 +8,12 @@ import sys
 import tempfile
 import unittest
 
-from vdbench.drift import DetectorState, DriftClassification, DriftDecision
+from vdbench.drift import (
+    DetectorState,
+    DriftClassification,
+    DriftDecision,
+    build_evidence_provenance,
+)
 from vdbench.last_known_good import (
     REASON_IDENTITY_MISMATCH,
     REASON_MALFORMED,
@@ -29,6 +34,7 @@ from vdbench.policy import (
 
 CONFIGURATION_ID = "config-v1"
 INDEX_ID = "hnsw-m16-efc200-v1"
+FLAT_INDEX_ID = "flat-index-v1"
 DATA_ID = "dataset-v1"
 THRESHOLD_STRATUM = "target-025"
 AUDIT_ID = "audit-lkg-001"
@@ -73,6 +79,7 @@ def pre_action() -> PreActionSafety:
         index_identity=INDEX_ID,
         data_identity=DATA_ID,
         response_model_provenance="response-model-v1",
+        flat_index_identity=FLAT_INDEX_ID,
     )
 
 
@@ -302,6 +309,22 @@ print(json.dumps(payload, sort_keys=True))
                 classification=DriftClassification.QUALITY_DRIFT,
                 significance_evidence_score=0.995,
                 drift_magnitude=1.25,
+                evidence_provenance=build_evidence_provenance(
+                    metric="L2",
+                    threshold_stratum=THRESHOLD_STRATUM,
+                    reference_window_id="reference-window",
+                    current_window_id="current-window",
+                    reference_manifest_sha256="a" * 64,
+                    current_manifest_sha256="b" * 64,
+                    configuration_identity=CONFIGURATION_ID,
+                    data_identity=DATA_ID,
+                    flat_binding_id=FLAT_INDEX_ID,
+                    hnsw_binding_id=INDEX_ID,
+                    reference_audit_ids=tuple(range(50)),
+                    reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+                    current_audit_ids=tuple(range(50)),
+                    current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
+                ),
             )
             keywords = {
                 "current_ef": 400,

@@ -264,6 +264,7 @@ def context() -> ActuationContext:
         collection_name=HNSW_NAME,
         configuration_identity=CONFIGURATION_ID,
         index_identity=INDEX_ID,
+        flat_index_identity="flat-identity-v1",
         data_identity=DATA_ID,
         audited_query_ids=tuple(range(50)),
         last_known_good=qualification,

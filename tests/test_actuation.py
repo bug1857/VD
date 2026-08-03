@@ -11,6 +11,7 @@ from vdbench.actuation import (
     ShadowResult,
 )
 from vdbench.config import Metric
+from vdbench.drift import build_evidence_provenance
 from vdbench.policy import (
     CanaryObservation,
     PolicyAction,
@@ -23,6 +24,7 @@ from vdbench.policy import (
 AUDIT_ID = "actuation-audit-001"
 CONFIGURATION_ID = "config-v1"
 INDEX_ID = "hnsw-m16-efc200-v1"
+FLAT_INDEX_ID = "flat-v1"
 DATA_ID = "dataset-v1"
 THRESHOLD_STRATUM = "target-025"
 MODULE_PATH = Path(__file__).parents[1] / "src" / "vdbench" / "actuation.py"
@@ -49,6 +51,7 @@ def context() -> ActuationContext:
         collection_name="vd_l2_hnsw",
         configuration_identity=CONFIGURATION_ID,
         index_identity=INDEX_ID,
+        flat_index_identity=FLAT_INDEX_ID,
         data_identity=DATA_ID,
         audited_query_ids=tuple(range(50)),
         last_known_good=last_known_good(),
@@ -90,6 +93,22 @@ def decision(
         mode=PolicyMode.CANARY_ENABLED,
         audit_id=audit_id,
         alert_required=action is PolicyAction.ROLLBACK,
+        evidence_provenance=build_evidence_provenance(
+            metric=Metric.L2,
+            threshold_stratum=THRESHOLD_STRATUM,
+            reference_window_id="reference-window",
+            current_window_id="current-window",
+            reference_manifest_sha256="a" * 64,
+            current_manifest_sha256="b" * 64,
+            configuration_identity=CONFIGURATION_ID,
+            data_identity=DATA_ID,
+            flat_binding_id=FLAT_INDEX_ID,
+            hnsw_binding_id=INDEX_ID,
+            reference_audit_ids=tuple(range(50)),
+            reference_audit_rank_digests=tuple(f"{value:064x}" for value in range(50)),
+            current_audit_ids=tuple(range(50)),
+            current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
+        ),
     )
 
 
@@ -253,6 +272,33 @@ def harness(
 
 
 class SafeActuationBoundaryTests(unittest.TestCase):
+    def test_start_canary_without_provenance_is_blocked_before_client_calls(self) -> None:
+        client = FakeActuationClient()
+        sink = FakeAuditSink()
+        controller = FakeController()
+        result = SafeActuationBoundary(client, sink, controller).execute(
+            replace(decision(PolicyAction.START_CANARY), evidence_provenance=None),
+            context(),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_MISSING")
+        self.assertEqual(client.calls, [])
+        self.assertEqual(len(sink.append_calls), 1)
+
+    def test_start_canary_with_context_binding_mismatch_is_blocked(self) -> None:
+        client = FakeActuationClient()
+        sink = FakeAuditSink()
+        controller = FakeController()
+        result = SafeActuationBoundary(client, sink, controller).execute(
+            decision(PolicyAction.START_CANARY),
+            replace(context(), flat_index_identity="unexpected-flat-binding"),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_CONTEXT_MISMATCH")
+        self.assertEqual(client.calls, [])
+
     def test_successful_canary_start_shadows_then_exposes_ten_percent(self) -> None:
         boundary, client, sink, controller = harness()
 

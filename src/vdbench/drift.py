@@ -30,7 +30,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 import hashlib
+import json
 from numbers import Integral
+import re
 import struct
 import unicodedata
 
@@ -47,6 +49,8 @@ ELIGIBLE_QUERY_COUNT = 200
 AUDIT_QUERY_COUNT = 50
 RESULT_LIMIT = 100
 SENTINEL_EF = 100
+EVIDENCE_PROVENANCE_SCHEMA_VERSION = "evidence-provenance-v1"
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class Signal(StrEnum):
@@ -133,6 +137,184 @@ class AuditSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceProvenance:
+    """Immutable binding from persisted shadow windows to detector evidence."""
+
+    schema_version: str
+    metric: Metric
+    threshold_stratum: str
+    reference_window_id: CanonicalValue
+    current_window_id: CanonicalValue
+    reference_manifest_sha256: str
+    current_manifest_sha256: str
+    configuration_identity: str
+    data_identity: str
+    flat_binding_id: str
+    hnsw_binding_id: str
+    reference_audit_ids: tuple[CanonicalValue, ...]
+    reference_audit_rank_digests: tuple[str, ...]
+    current_audit_ids: tuple[CanonicalValue, ...]
+    current_audit_rank_digests: tuple[str, ...]
+    sha256: str
+
+
+def _provenance_identifier(value: object, *, field: str) -> CanonicalValue:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} cannot be Boolean")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, str) and value:
+        return unicodedata.normalize("NFC", value)
+    raise ValueError(f"{field} must be a non-empty integer or string")
+
+
+def _provenance_sha256(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or _SHA256_HEX.fullmatch(value) is None:
+        raise ValueError(f"{field} must be lowercase SHA-256")
+    return value
+
+
+def _provenance_text(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} must be a non-empty string")
+    return unicodedata.normalize("NFC", value)
+
+
+def _provenance_payload(
+    *,
+    metric: Metric,
+    threshold_stratum: str,
+    reference_window_id: CanonicalValue,
+    current_window_id: CanonicalValue,
+    reference_manifest_sha256: str,
+    current_manifest_sha256: str,
+    configuration_identity: str,
+    data_identity: str,
+    flat_binding_id: str,
+    hnsw_binding_id: str,
+    reference_audit_ids: tuple[CanonicalValue, ...],
+    reference_audit_rank_digests: tuple[str, ...],
+    current_audit_ids: tuple[CanonicalValue, ...],
+    current_audit_rank_digests: tuple[str, ...],
+) -> dict[str, object]:
+    return {
+        "schema_version": EVIDENCE_PROVENANCE_SCHEMA_VERSION,
+        "metric": metric.value,
+        "threshold_stratum": threshold_stratum,
+        "reference_window_id": reference_window_id,
+        "current_window_id": current_window_id,
+        "reference_manifest_sha256": reference_manifest_sha256,
+        "current_manifest_sha256": current_manifest_sha256,
+        "configuration_identity": configuration_identity,
+        "data_identity": data_identity,
+        "flat_binding_id": flat_binding_id,
+        "hnsw_binding_id": hnsw_binding_id,
+        "reference_audit_ids": list(reference_audit_ids),
+        "reference_audit_rank_digests": list(reference_audit_rank_digests),
+        "current_audit_ids": list(current_audit_ids),
+        "current_audit_rank_digests": list(current_audit_rank_digests),
+    }
+
+
+def build_evidence_provenance(
+    *,
+    metric: Metric | str,
+    threshold_stratum: str,
+    reference_window_id: CanonicalValue,
+    current_window_id: CanonicalValue,
+    reference_manifest_sha256: str,
+    current_manifest_sha256: str,
+    configuration_identity: str,
+    data_identity: str,
+    flat_binding_id: str,
+    hnsw_binding_id: str,
+    reference_audit_ids: Sequence[CanonicalValue],
+    reference_audit_rank_digests: Sequence[str],
+    current_audit_ids: Sequence[CanonicalValue],
+    current_audit_rank_digests: Sequence[str],
+) -> EvidenceProvenance:
+    """Build canonical provenance; no caller-supplied digest is accepted."""
+
+    normalized_metric = _coerce_metric(metric)
+    stratum = _provenance_text(threshold_stratum, field="threshold_stratum")
+    ref_id = _provenance_identifier(reference_window_id, field="reference_window_id")
+    current_id = _provenance_identifier(current_window_id, field="current_window_id")
+    if ref_id == current_id:
+        raise ValueError("reference and current window IDs must differ")
+    configuration = _provenance_text(
+        configuration_identity, field="configuration_identity"
+    )
+    data = _provenance_text(data_identity, field="data_identity")
+    flat_binding = _provenance_text(flat_binding_id, field="flat_binding_id")
+    hnsw_binding = _provenance_text(hnsw_binding_id, field="hnsw_binding_id")
+    audit_pairs = (
+        (reference_audit_ids, reference_audit_rank_digests, "reference"),
+        (current_audit_ids, current_audit_rank_digests, "current"),
+    )
+    normalized_audits: list[tuple[tuple[CanonicalValue, ...], tuple[str, ...]]] = []
+    for ids, digests, label in audit_pairs:
+        normalized_ids = tuple(
+            _provenance_identifier(value, field=f"{label}_audit_id") for value in ids
+        )
+        normalized_digests = tuple(
+            _provenance_sha256(value, field=f"{label}_audit_rank_digest")
+            for value in digests
+        )
+        if len(normalized_ids) != AUDIT_QUERY_COUNT or len(normalized_digests) != AUDIT_QUERY_COUNT:
+            raise ValueError("provenance requires exactly 50 audit IDs and digests")
+        if len({canonical_serialize_tuple((value,)) for value in normalized_ids}) != AUDIT_QUERY_COUNT:
+            raise ValueError("provenance audit IDs must be canonical-unique")
+        normalized_audits.append((normalized_ids, normalized_digests))
+    payload = _provenance_payload(
+        metric=normalized_metric, threshold_stratum=stratum, reference_window_id=ref_id,
+        current_window_id=current_id,
+        reference_manifest_sha256=_provenance_sha256(reference_manifest_sha256, field="reference_manifest_sha256"),
+        current_manifest_sha256=_provenance_sha256(current_manifest_sha256, field="current_manifest_sha256"),
+        configuration_identity=configuration, data_identity=data,
+        flat_binding_id=flat_binding, hnsw_binding_id=hnsw_binding,
+        reference_audit_ids=normalized_audits[0][0], reference_audit_rank_digests=normalized_audits[0][1],
+        current_audit_ids=normalized_audits[1][0], current_audit_rank_digests=normalized_audits[1][1],
+    )
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    return EvidenceProvenance(
+        schema_version=EVIDENCE_PROVENANCE_SCHEMA_VERSION,
+        metric=normalized_metric,
+        threshold_stratum=stratum,
+        reference_window_id=ref_id,
+        current_window_id=current_id,
+        reference_manifest_sha256=payload["reference_manifest_sha256"],  # type: ignore[arg-type]
+        current_manifest_sha256=payload["current_manifest_sha256"],  # type: ignore[arg-type]
+        configuration_identity=configuration,
+        data_identity=data,
+        flat_binding_id=flat_binding,
+        hnsw_binding_id=hnsw_binding,
+        reference_audit_ids=normalized_audits[0][0],
+        reference_audit_rank_digests=normalized_audits[0][1],
+        current_audit_ids=normalized_audits[1][0],
+        current_audit_rank_digests=normalized_audits[1][1],
+        sha256=digest,
+    )
+
+
+def evidence_provenance_valid(provenance: object) -> bool:
+    if not isinstance(provenance, EvidenceProvenance):
+        return False
+    try:
+        rebuilt = build_evidence_provenance(
+            metric=provenance.metric, threshold_stratum=provenance.threshold_stratum,
+            reference_window_id=provenance.reference_window_id, current_window_id=provenance.current_window_id,
+            reference_manifest_sha256=provenance.reference_manifest_sha256, current_manifest_sha256=provenance.current_manifest_sha256,
+            configuration_identity=provenance.configuration_identity, data_identity=provenance.data_identity,
+            flat_binding_id=provenance.flat_binding_id, hnsw_binding_id=provenance.hnsw_binding_id,
+            reference_audit_ids=provenance.reference_audit_ids, reference_audit_rank_digests=provenance.reference_audit_rank_digests,
+            current_audit_ids=provenance.current_audit_ids, current_audit_rank_digests=provenance.current_audit_rank_digests,
+        )
+    except (TypeError, ValueError):
+        return False
+    return provenance.schema_version == EVIDENCE_PROVENANCE_SCHEMA_VERSION and provenance.sha256 == rebuilt.sha256
+
+
+@dataclass(frozen=True, slots=True)
 class RecallAuditSample:
     """One window's exact `(50,)` sentinel-recall audit contract."""
 
@@ -199,6 +381,7 @@ class WindowEvidence:
     signals: tuple[SignalEvidence, ...]
     complete: bool
     reason_codes: tuple[str, ...] = ()
+    provenance: EvidenceProvenance | None = None
 
     def by_signal(self) -> dict[Signal, SignalEvidence]:
         """Return signal evidence keyed by the four canonical signal names."""
@@ -216,6 +399,7 @@ class DriftDecision:
     significance_evidence_score: float | None = None
     drift_magnitude: float | None = None
     reason_codes: tuple[str, ...] = ()
+    evidence_provenance: EvidenceProvenance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -931,6 +1115,7 @@ def finalize_window_evidence(
     audit_query_count: int = AUDIT_QUERY_COUNT,
     prerequisites_valid: bool = True,
     reason_codes: Sequence[str] = (),
+    provenance: EvidenceProvenance | None = None,
 ) -> WindowEvidence:
     """Validate the four-signal family and apply Holm correction atomically."""
 
@@ -949,6 +1134,12 @@ def finalize_window_evidence(
         reasons.append("INCOMPLETE_AUDIT_WINDOW")
     if not prerequisites_valid:
         reasons.append("INVALID_WINDOW_PREREQUISITES")
+    if provenance is not None and (
+        not evidence_provenance_valid(provenance)
+        or provenance.metric is not normalized_metric
+        or provenance.current_window_id != window_id
+    ):
+        reasons.append("EVIDENCE_PROVENANCE_INVALID")
 
     for signal, item in signal_map.items():
         expected = _EXPECTED_COUNTS[signal]
@@ -980,6 +1171,7 @@ def finalize_window_evidence(
             signals=ordered_signals,
             complete=False,
             reason_codes=tuple(dict.fromkeys(reasons)),
+            provenance=provenance,
         )
 
     adjusted = holm_step_down(
@@ -997,6 +1189,7 @@ def finalize_window_evidence(
         window_id=window_id,
         signals=ordered_signals,
         complete=True,
+        provenance=provenance,
     )
 
 
@@ -1011,12 +1204,30 @@ def evaluate_drift_decision(
             state=DetectorState.INSUFFICIENT_EVIDENCE,
             classification=DriftClassification.NONE,
             reason_codes=("MISSING_PREVIOUS_WINDOW",),
+            evidence_provenance=current.provenance,
         )
     reasons: list[str] = []
     if previous.metric is not current.metric:
         reasons.append("METRIC_MISMATCH")
     if previous.window_id == current.window_id:
         reasons.append("WINDOW_IDS_MUST_DIFFER")
+    if (previous.provenance is None) != (current.provenance is None):
+        reasons.append("EVIDENCE_PROVENANCE_MISSING")
+    elif previous.provenance is not None and current.provenance is not None:
+        static_fields = (
+            "metric", "threshold_stratum", "reference_window_id",
+            "reference_manifest_sha256", "configuration_identity", "data_identity",
+            "flat_binding_id", "hnsw_binding_id",
+        )
+        if (
+            not evidence_provenance_valid(previous.provenance)
+            or not evidence_provenance_valid(current.provenance)
+            or any(
+                getattr(previous.provenance, field) != getattr(current.provenance, field)
+                for field in static_fields
+            )
+        ):
+            reasons.append("EVIDENCE_PROVENANCE_MISMATCH")
     if not previous.complete:
         reasons.extend(previous.reason_codes or ("PREVIOUS_WINDOW_INCOMPLETE",))
     if not current.complete:
@@ -1026,6 +1237,7 @@ def evaluate_drift_decision(
             state=DetectorState.INSUFFICIENT_EVIDENCE,
             classification=DriftClassification.NONE,
             reason_codes=tuple(dict.fromkeys(reasons)),
+            evidence_provenance=current.provenance,
         )
 
     previous_signals = previous.by_signal()
@@ -1044,10 +1256,12 @@ def evaluate_drift_decision(
                 state=DetectorState.INSUFFICIENT_EVIDENCE,
                 classification=DriftClassification.NONE,
                 reason_codes=("PENDING_CONFIRMATION",),
+                evidence_provenance=current.provenance,
             )
         return DriftDecision(
             state=DetectorState.NO_DRIFT,
             classification=DriftClassification.NONE,
+            evidence_provenance=current.provenance,
         )
 
     has_input = bool(consecutive & _INPUT_SIGNALS)
@@ -1083,12 +1297,14 @@ def evaluate_drift_decision(
         triggering_signals=ordered_triggers,
         significance_evidence_score=min(significance_evidence_scores),
         drift_magnitude=min(magnitude_values),
+        evidence_provenance=current.provenance,
     )
 
 
 __all__ = [
     "AUDIT_QUERY_COUNT",
     "AuditSelection",
+    "EvidenceProvenance",
     "DetectorState",
     "DriftClassification",
     "DriftDecision",
@@ -1103,9 +1319,11 @@ __all__ = [
     "SignalEvidence",
     "WindowEvidence",
     "canonical_serialize_tuple",
+    "build_evidence_provenance",
     "derive_permutation_seed",
     "deterministic_permutation_p_value",
     "evaluate_drift_decision",
+    "evidence_provenance_valid",
     "finalize_window_evidence",
     "holm_step_down",
     "ks_signal_test",

@@ -182,6 +182,17 @@ class ShadowExtractionTests(unittest.TestCase):
             tuple((item.reference_count, item.current_count) for item in evidence.signals),
             ((200, 200), (200, 200), (50, 50), (50, 50)),
         )
+        self.assertIsNotNone(evidence.provenance)
+        assert evidence.provenance is not None
+        self.assertEqual(
+            evidence.provenance.reference_manifest_sha256,
+            self.reference.manifest_sha256,
+        )
+        self.assertEqual(
+            evidence.provenance.current_manifest_sha256,
+            self.current.manifest_sha256,
+        )
+        self.assertEqual(len(evidence.provenance.current_audit_ids), 50)
 
     def test_cosine_valid_windows_produce_complete_real_evidence(self) -> None:
         reference = _window("cosine-reference", metric=Metric.COSINE)

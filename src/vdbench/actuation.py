@@ -25,6 +25,7 @@ import re
 from typing import Protocol, TypeAlias
 
 from .config import Metric, THRESHOLD_LABELS
+from .drift import EvidenceProvenance, evidence_provenance_valid
 from .policy import (
     CanaryObservation,
     PolicyAction,
@@ -87,6 +88,7 @@ class ActuationContext:
     collection_name: str
     configuration_identity: str
     index_identity: str
+    flat_index_identity: str
     data_identity: str
     audited_query_ids: tuple[QueryId, ...]
     last_known_good: QualificationResult
@@ -114,6 +116,7 @@ class ActuationAuditRecord:
     canary_observation: CanaryObservation | None = None
     rollback_verification: RollbackVerification | None = None
     automatic_actions_disabled: bool = False
+    evidence_provenance: EvidenceProvenance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +233,7 @@ def _context_failure(
             context.collection_name,
             context.configuration_identity,
             context.index_identity,
+            context.flat_index_identity,
             context.data_identity,
         )
     ):
@@ -256,6 +260,32 @@ def _context_failure(
         return "LAST_KNOWN_GOOD_IDENTITY_MISMATCH"
     if decision.action is PolicyAction.START_CANARY and decision.candidate_ef is None:
         return "CANDIDATE_EF_MISSING"
+    return None
+
+
+def _provenance_failure(
+    decision: PolicyDecision,
+    context: ActuationContext,
+) -> str | None:
+    """Validate provenance for canary start; rollback deliberately bypasses it."""
+
+    provenance = decision.evidence_provenance
+    if provenance is None:
+        return "EVIDENCE_PROVENANCE_MISSING"
+    if not evidence_provenance_valid(provenance):
+        return "EVIDENCE_PROVENANCE_INVALID"
+    metric = _metric(context.metric)
+    if metric is None:
+        return "EVIDENCE_PROVENANCE_CONTEXT_METRIC_INVALID"
+    if not (
+        provenance.metric is metric
+        and provenance.threshold_stratum == context.threshold_stratum
+        and provenance.configuration_identity == context.configuration_identity
+        and provenance.data_identity == context.data_identity
+        and provenance.flat_binding_id == context.flat_index_identity
+        and provenance.hnsw_binding_id == context.index_identity
+    ):
+        return "EVIDENCE_PROVENANCE_CONTEXT_MISMATCH"
     return None
 
 
@@ -359,6 +389,7 @@ class SafeActuationBoundary:
             canary_observation=canary_observation,
             rollback_verification=rollback_verification,
             automatic_actions_disabled=automatic_actions_disabled,
+            evidence_provenance=decision.evidence_provenance,
         )
 
     def _result(
@@ -462,6 +493,15 @@ class SafeActuationBoundary:
             )
 
         if decision.action is PolicyAction.START_CANARY:
+            provenance_failure = _provenance_failure(decision, context)
+            if provenance_failure is not None:
+                return self._blocked(
+                    decision,
+                    context,
+                    reason=provenance_failure,
+                    traffic_fraction=traffic_fraction,
+                    append=True,
+                )
             failed_gate = next(
                 (gate for gate in decision.safety_gate_results if not gate.passed),
                 None,

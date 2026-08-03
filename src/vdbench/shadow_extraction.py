@@ -19,7 +19,9 @@ from .drift import (
     RecallAuditSample,
     Signal,
     SignalEvidence,
+    EvidenceProvenance,
     WindowEvidence,
+    build_evidence_provenance,
     canonical_serialize_tuple,
     finalize_window_evidence,
     ks_signal_test,
@@ -319,6 +321,7 @@ def _finalize(
     current_window: AssembledShadowWindow,
     signals: Sequence[SignalEvidence],
     reasons: Sequence[str],
+    provenance: EvidenceProvenance,
 ) -> WindowEvidence:
     try:
         return finalize_window_evidence(
@@ -329,6 +332,7 @@ def _finalize(
             audit_query_count=AUDIT_QUERY_COUNT,
             prerequisites_valid=not reasons,
             reason_codes=reasons,
+            provenance=provenance,
         )
     except (TypeError, ValueError) as exc:
         return _incomplete(
@@ -425,6 +429,29 @@ def extract_window_evidence(
     )
     if reference_audit is None or current_audit is None:
         return _incomplete(current=current_window, metric=normalized_metric, reasons=reasons)
+    try:
+        provenance = build_evidence_provenance(
+            metric=normalized_metric,
+            threshold_stratum=current_window.threshold_stratum,
+            reference_window_id=reference_window.window_id,
+            current_window_id=current_window.window_id,
+            reference_manifest_sha256=reference_window.manifest_sha256,
+            current_manifest_sha256=current_window.manifest_sha256,
+            configuration_identity=current_identity[1],
+            data_identity=current_identity[0],
+            flat_binding_id=current_identity[2],
+            hnsw_binding_id=current_identity[3],
+            reference_audit_ids=reference_selection.query_ids,
+            reference_audit_rank_digests=reference_selection.digest_hex,
+            current_audit_ids=current_selection.query_ids,
+            current_audit_rank_digests=current_selection.digest_hex,
+        )
+    except (TypeError, ValueError):
+        return _incomplete(
+            current=current_window,
+            metric=normalized_metric,
+            reasons=("EVIDENCE_PROVENANCE_CONSTRUCTION_FAILED",),
+        )
     reference_recall = _recall_sample(
         window=reference_window,
         identity=reference_identity,
@@ -500,6 +527,7 @@ def extract_window_evidence(
         current_window=current_window,
         signals=signals,
         reasons=reasons,
+        provenance=provenance,
     )
 
 
