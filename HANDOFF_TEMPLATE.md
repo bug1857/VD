@@ -8,6 +8,10 @@ Governed by the Two-Agent Protocol in `AGENTS.md`. Use this whenever Codex is de
 ## HANDOFF: <task name>
 Risk level: LOW | MEDIUM | HIGH | CRITICAL   (see Risk Classification)
 
+> **PRE-IMPLEMENTATION GATE:** Before implementing: if you see ambiguity or risk,
+> state it and stop — don't silently choose or add scope.
+> See `AGENTS.md` → PRE-IMPLEMENTATION GATE for the full rule.
+
 ### 1. Objective
 One sentence, unambiguous.
 
@@ -34,6 +38,7 @@ What this task is NOT responsible for (prevents scope creep into other modules).
 
 Run this before accepting any output (own or another agent's) as done (full detail in `AGENTS.md` → Verification Gate):
 
+- [ ] Ambiguities and risks were surfaced before implementation began (not patched around silently)
 - [ ] Raw output pasted, not summarized
 - [ ] Diff verified with `git diff` / `git show HEAD:<file> | grep <keyword>`
 - [ ] Correctness re-derived independently where it matters

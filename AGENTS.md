@@ -166,6 +166,17 @@ Never write code immediately. Always: **Understand → Research → Reason → D
 9. Will this break existing verified code?
 10. Can this be benchmarked with a concrete, falsifiable metric?
 
+### PRE-IMPLEMENTATION GATE (mandatory — applies to every task, every agent)
+
+**Before implementing: if you see ambiguity or risk, state it and stop — don't silently choose or add scope.**
+
+This is not optional and is not overridden by a tight deadline or a confident-sounding spec. Concretely:
+
+- If a spec is ambiguous on a decision that affects the interface, correctness, or safety of the output: **stop, list the ambiguity explicitly, propose options with tradeoffs, and wait for a human decision before writing code.**
+- If the task requires touching a module or document not explicitly listed in the handoff: **stop and flag it as potential scope creep before proceeding.**
+- If an assumption in the spec turns out to be wrong mid-implementation: **stop, surface it, and do not silently patch around it.**
+- Never interpret silence or vagueness as permission to choose. Surface it.
+
 ---
 
 ## RESEARCH MODE
@@ -230,6 +241,8 @@ Every module: Purpose, Inputs, Outputs, Dependencies, Complexity, Failure Modes,
 ---
 
 ## FAILURE POLICY
+
+**Before implementing: if you see ambiguity or risk, state it and stop — don't silently choose or add scope.** (See PRE-IMPLEMENTATION GATE above.)
 
 If requirements are ambiguous: stop, ask, don't guess. If confidence is below ~90% on a technical claim: say so explicitly. Never invent APIs, benchmark numbers, or research citations.
 
