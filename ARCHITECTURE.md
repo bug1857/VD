@@ -836,7 +836,30 @@ class BackgroundShadowWorker:
 4. The injected `ShadowAuditExecutor` is the sole component allowed to perform background read-only shadow, FLAT, and oracle work. It must return a complete trace whose 50 canonical query IDs match the supplied observations in order, metric/stratum/identity match the group, and candidate/LKG/sentinel settings are already registered. A mismatch, timeout, failed stage, or incomplete trace yields an explicit worker rejection and no source publication.
 5. Only after those checks pass does the worker call the existing `ShadowTracePublisher.publish(trace=..., context=...)`. Publication retains ADR-006 persist-before-publish, at-least-once, and fail-closed behavior. The worker advances the persisted trace ordinal only after `PUBLISHED` or `IDEMPOTENT`; an unknown/error publication outcome blocks that stream for explicit operator recovery rather than reusing an ambiguous slot. The worker does not implement a second trace serializer or queue ledger.
 6. The worker owns volatile partial batches. On startup, the state store's persisted partial counts become an exact, non-sensitive restart-loss record and are cleared before new evidence is accepted; their raw observations cannot be recovered. The worker must never fabricate a partial trace, replay unknown raw observations, or rebaseline the monitor. Published envelopes retain ADR-006 recovery semantics.
-7. The recorder, worker, executor, and reference gateway must not import `policy.py`, `actuation.py`, an automatic-action controller, or `WorkloadMonitor`. The executor may use a lazily imported Milvus client only in the background worker path. `DRY_RUN` policy evaluation remains downstream of the existing monitor only.
+7. The recorder, worker, and reference gateway must not import `policy.py`, `actuation.py`, an automatic-action controller, or `WorkloadMonitor`. The background-only executor may consume the immutable `ActuationContext`, `ShadowResult`, and `QualificationResult` value contracts currently co-located in the actuation/policy modules, and may call an injected `MilvusActuationClient.shadow_candidate` only; it must not import or construct `SafeActuationBoundary`, invoke policy evaluation, or reference `start_canary`, `stop_candidate`, `restore_last_known_good`, or `verify_restoration`. The executor may use a lazily imported Milvus client only in the background worker path. `DRY_RUN` policy evaluation remains downstream of the existing monitor only.
+
+Executor-adapter refinement (implementation contract):
+
+The first `MilvusHostShadowExecutor` composes the existing
+`MilvusActuationClient.shadow_candidate` trace path rather than reimplementing
+range search, FLAT/oracle comparison, HNSW search, or identity capture. It owns
+an immutable `HostShadowPlan` for every exact `MonitorStreamKey`, containing
+only the registered candidate/LKG `ef` pair and the required served `ef`. Before
+capture it requires exactly 50 homogeneous observations whose canonical IDs,
+float32 vectors, radius/range/limit, served `ef`, metric/stratum, configuration
+identity, data identity, and FLAT/HNSW bindings exactly match the plan and its
+injected adapter workload. It verifies etcd/MinIO health, both collections'
+`Loaded` state, and both identity bindings before *and* after the shadow call.
+
+The adapter is injected—not constructed from a URI—and owns an exclusive,
+lock-protected temporary in-memory trace sink. A pre-existing adapter trace sink
+is a fail-closed ownership conflict; the original `None` value is restored in a
+`finally` block. The executor invokes only `shadow_candidate`; it never calls
+`start_canary`, `stop_candidate`, `restore_last_known_good`,
+`verify_restoration`, collection/schema/index mutation, or policy code. A failed
+shadow result raises a non-sensitive executor error; a structurally incomplete
+captured trace is returned to the worker, which records the existing explicit
+trace rejection and never publishes it.
 
 Safety, resource, and privacy invariants:
 
