@@ -633,7 +633,12 @@ class FileShadowTraceEventSource(ShadowTraceEventSource, ShadowTracePublisher):
                 raise ShadowEventSourceError("ENVELOPE_CONTEXT_MISMATCH")
 
     def _quarantine(self, pending_path: Path, reason_code: str) -> None:
-        if not pending_path.exists():
+        # ``exists()`` follows a symbolic link and is therefore false for a
+        # dangling hostile entry.  Quarantine operates on the directory entry,
+        # not on its target, so use lstat semantics and never dereference it.
+        try:
+            pending_path.lstat()
+        except FileNotFoundError:
             return
         filename = pending_path.name
         target = self._rejected / filename

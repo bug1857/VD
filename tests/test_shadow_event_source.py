@@ -293,6 +293,25 @@ class ShadowEventSourceTests(unittest.TestCase):
             self.assertEqual(source.poll(limit=4), ())
             self.assertIn("EVENT_SYMLINK_REJECTED", source.rejected_reason_codes())
 
+    def test_dangling_pending_symlink_is_quarantined_without_dereference(self) -> None:
+        """A relative outbox must not strand a dangling hostile directory entry."""
+
+        with tempfile.TemporaryDirectory(dir=".") as temporary:
+            root = Path(temporary) / "outbox"
+            source = FileShadowTraceEventSource(
+                root, max_pending_events=4, max_pending_bytes=4096
+            )
+            receipt = source.publish(trace=_trace(), context=_context())
+            assert receipt.event is not None
+            pending = root / "pending" / f"{receipt.event.event_id}.json"
+            pending.unlink()
+            pending.symlink_to(Path("not-a-real-target.json"))
+
+            self.assertEqual(source.poll(limit=4), ())
+            self.assertFalse(pending.is_symlink())
+            self.assertTrue((root / "rejected" / f"{receipt.event.event_id}.json").is_symlink())
+            self.assertIn("EVENT_SYMLINK_REJECTED", source.rejected_reason_codes())
+
     def test_permission_drift_after_construction_blocks_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "outbox"
