@@ -51,6 +51,7 @@ __all__ = [
     "FailureProbeRunResult",
     "finalize_failure_probes",
     "run_failure_probes",
+    "verify_failure_probe_bundle",
 ]
 
 
@@ -67,6 +68,8 @@ class FailureProbeResult:
     foreground_success: bool
     fail_closed: bool
     foreground_request_count: int
+    foreground_success_count: int
+    foreground_observation_reason_codes: tuple[str, ...]
     worker_cycle: WorkerCycleResult | None
     publisher_call_count: int
     detail: str
@@ -243,6 +246,22 @@ def _serve(
     )
 
 
+def _observation_reason_codes(responses: tuple[object, ...]) -> tuple[str, ...]:
+    """Return the exact post-response receipt codes emitted by the gateway."""
+
+    codes: list[str] = []
+    for response in responses:
+        receipt = getattr(response, "observation_receipt", None)
+        code = getattr(receipt, "reason_code", None)
+        if code is None:
+            status = getattr(receipt, "status", None)
+            code = getattr(status, "value", status)
+        if not isinstance(code, str) or not code:
+            raise EXP008FailureProbeError("FOREGROUND_RECEIPT_EVIDENCE_INVALID")
+        codes.append(code)
+    return tuple(codes)
+
+
 def _write_probe(root: Path, result: FailureProbeResult) -> None:
     write_immutable_json(root / "probes" / f"{result.name}.json", _json_value(result))
 
@@ -304,6 +323,10 @@ def run_failure_probes(
                 and isolation_responses[0].observation_receipt.reason_code == "RECORDER_FAILED"
             ),
             foreground_request_count=len(isolation_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in isolation_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(isolation_responses),
             worker_cycle=None,
             publisher_call_count=0,
             detail="real foreground query succeeded while its post-response recorder raised",
@@ -327,6 +350,10 @@ def run_failure_probes(
                 == "PENDING_OBSERVATION_CAPACITY_EXCEEDED"
             ),
             foreground_request_count=len(queue_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in queue_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(queue_responses),
             worker_cycle=None,
             publisher_call_count=0,
             detail="second post-response observation dropped; no worker invoked",
@@ -358,6 +385,10 @@ def run_failure_probes(
                 and unavailable_publisher.calls == 1
             ),
             foreground_request_count=len(publisher_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in publisher_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(publisher_responses),
             worker_cycle=publisher_cycle,
             publisher_call_count=unavailable_publisher.calls,
             detail="real shadow trace captured, unavailable publisher blocks its stream",
@@ -390,6 +421,10 @@ def run_failure_probes(
                 and timeout_publisher.calls == 0
             ),
             foreground_request_count=len(timeout_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in timeout_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(timeout_responses),
             worker_cycle=timeout_cycle,
             publisher_call_count=timeout_publisher.calls,
             detail="timeout after foreground completion rejects trace before publication",
@@ -422,6 +457,10 @@ def run_failure_probes(
                 and identity_publisher.calls == 0
             ),
             foreground_request_count=len(identity_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in identity_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(identity_responses),
             worker_cycle=identity_cycle,
             publisher_call_count=identity_publisher.calls,
             detail="real shadow trace deliberately invalidated before publication",
@@ -466,6 +505,10 @@ def run_failure_probes(
                 and restart_loss == 1
             ),
             foreground_request_count=len(restart_responses),
+            foreground_success_count=sum(
+                response.served_outcome.success for response in restart_responses
+            ),
+            foreground_observation_reason_codes=_observation_reason_codes(restart_responses),
             worker_cycle=restart_cycle,
             publisher_call_count=restart_publisher.calls,
             detail=f"volatile partial batch discarded exactly once on restart; restart_loss_count={restart_loss}",
@@ -537,6 +580,142 @@ _PROBE_EXPECTATIONS = MappingProxyType(
     }
 )
 _STREAM_IDS = frozenset({"exp008-l2-stationary", "exp008-cosine-stationary"})
+_PROBE_FOREGROUND_COUNTS = MappingProxyType(
+    {
+        "foreground_recorder_failure": 1,
+        "queue_full": 2,
+        "publisher_unavailable": 50,
+        "executor_timeout": 50,
+        "identity_mismatch": 50,
+        "worker_restart_partial_loss": 1,
+    }
+)
+_PROBE_RECEIPT_CODES = MappingProxyType(
+    {
+        "foreground_recorder_failure": ("RECORDER_FAILED",),
+        "queue_full": ("ACCEPTED", "PENDING_OBSERVATION_CAPACITY_EXCEEDED"),
+        "publisher_unavailable": ("ACCEPTED",) * 50,
+        "executor_timeout": ("ACCEPTED",) * 50,
+        "identity_mismatch": ("ACCEPTED",) * 50,
+        "worker_restart_partial_loss": ("ACCEPTED",),
+    }
+)
+_PROBE_WORKER_CYCLES = MappingProxyType(
+    {
+        "foreground_recorder_failure": None,
+        "queue_full": None,
+        "publisher_unavailable": {
+            "drained_observation_count": 50,
+            "captured_trace_count": 1,
+            "published_trace_count": 0,
+            "rejected_observation_count": 50,
+            "blocked_stream_count": 1,
+            "reason_codes": ["PUBLISH_OUTCOME_UNKNOWN"],
+        },
+        "executor_timeout": {
+            "drained_observation_count": 50,
+            "captured_trace_count": 0,
+            "published_trace_count": 0,
+            "rejected_observation_count": 50,
+            "blocked_stream_count": 0,
+            "reason_codes": ["EXECUTOR_CAPTURE_FAILED"],
+        },
+        "identity_mismatch": {
+            "drained_observation_count": 50,
+            "captured_trace_count": 0,
+            "published_trace_count": 0,
+            "rejected_observation_count": 50,
+            "blocked_stream_count": 0,
+            "reason_codes": ["TRACE_IDENTITY_MISMATCH"],
+        },
+        "worker_restart_partial_loss": {
+            "drained_observation_count": 1,
+            "captured_trace_count": 0,
+            "published_trace_count": 0,
+            "rejected_observation_count": 0,
+            "blocked_stream_count": 0,
+            "reason_codes": [],
+        },
+    }
+)
+_PROBE_PUBLISHER_CALL_COUNTS = MappingProxyType(
+    {
+        "foreground_recorder_failure": 0,
+        "queue_full": 0,
+        "publisher_unavailable": 1,
+        "executor_timeout": 0,
+        "identity_mismatch": 0,
+        "worker_restart_partial_loss": 0,
+    }
+)
+_WORKER_STATE_EXPECTATIONS = MappingProxyType(
+    {
+        "publisher_unavailable": {
+            "blocked_reason_code": "PUBLISH_OUTCOME_UNKNOWN",
+            "rejected_observation_count": 50,
+            "restart_loss_count": 0,
+        },
+        "executor_timeout": {
+            "blocked_reason_code": None,
+            "rejected_observation_count": 50,
+            "restart_loss_count": 0,
+        },
+        "identity_mismatch": {
+            "blocked_reason_code": None,
+            "rejected_observation_count": 50,
+            "restart_loss_count": 0,
+        },
+        "worker_restart_partial_loss": {
+            "blocked_reason_code": None,
+            "rejected_observation_count": 0,
+            "restart_loss_count": 1,
+        },
+    }
+)
+
+
+def _capture_artifact_paths() -> frozenset[str]:
+    """The closed set produced before fresh-process finalization."""
+
+    state_probe_names = {
+        "publisher_unavailable",
+        "executor_timeout",
+        "identity_mismatch",
+        "worker_restart_partial_loss",
+    }
+    return frozenset(
+        {
+            "capture_receipt.json",
+            "pre_run_resources.json",
+            "serving_preflight.json",
+            "serving_postflight.json",
+            *(f"probes/{name}.json" for name in _PROBE_EXPECTATIONS),
+            *(
+                f"state/{name}/host-worker-state.json" for name in state_probe_names
+            ),
+        }
+    )
+
+
+def _final_artifact_paths() -> frozenset[str]:
+    return _capture_artifact_paths() | frozenset({"post_run_resources.json"})
+
+
+def _artifact_file_paths(root: Path) -> frozenset[str]:
+    paths: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise EXP008FailureProbeError("ARTIFACT_SYMLINK_REJECTED")
+        if path.is_file():
+            paths.add(str(path.relative_to(root)))
+    return frozenset(paths)
+
+
+def _verify_artifact_inventory(*, root: Path, finalized: bool) -> None:
+    excluded = frozenset({"run_manifest.json", "completion.json"}) if finalized else frozenset()
+    expected = (_final_artifact_paths() if finalized else _capture_artifact_paths()) | excluded
+    if _artifact_file_paths(root) != expected:
+        raise EXP008FailureProbeError("CAPTURE_ARTIFACT_INVENTORY_INVALID")
 
 
 def _artifact_hashes(root: Path) -> dict[str, str]:
@@ -587,47 +766,152 @@ def _verify_preflight_document(path: Path) -> None:
         raise EXP008FailureProbeError("SERVING_PREFLIGHT_EVIDENCE_INVALID")
 
 
-def _verify_capture(root: Path) -> Mapping[str, object]:
+def _verify_probe_document(*, name: str, document: object) -> Mapping[str, object]:
+    """Validate one probe's observed facts, not its self-declared conclusion."""
+
+    required_keys = {
+        "name",
+        "expected_reason_code",
+        "foreground_success",
+        "fail_closed",
+        "foreground_request_count",
+        "foreground_success_count",
+        "foreground_observation_reason_codes",
+        "worker_cycle",
+        "publisher_call_count",
+        "detail",
+    }
+    if not isinstance(document, dict) or set(document) != required_keys:
+        raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
+    request_count = _PROBE_FOREGROUND_COUNTS[name]
+    if (
+        document.get("name") != name
+        or document.get("expected_reason_code") != _PROBE_EXPECTATIONS[name]
+        or document.get("foreground_success") is not True
+        or document.get("fail_closed") is not True
+        or type(document.get("foreground_request_count")) is not int
+        or document["foreground_request_count"] != request_count
+        or type(document.get("foreground_success_count")) is not int
+        or document["foreground_success_count"] != request_count
+        or document.get("foreground_observation_reason_codes")
+        != list(_PROBE_RECEIPT_CODES[name])
+        or document.get("worker_cycle") != _PROBE_WORKER_CYCLES[name]
+        or type(document.get("publisher_call_count")) is not int
+        or document["publisher_call_count"] != _PROBE_PUBLISHER_CALL_COUNTS[name]
+        or not isinstance(document.get("detail"), str)
+        or not document["detail"]
+    ):
+        raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
+    return document
+
+
+def _verify_worker_state_evidence(root: Path) -> None:
+    """Prove durable worker state agrees with each H4 worker-failure record."""
+
+    stream_key_fields = {
+        "stream_id",
+        "metric",
+        "threshold_stratum",
+        "configuration_identity",
+        "data_identity",
+        "flat_binding_id",
+        "hnsw_binding_id",
+    }
+    state_fields = {
+        "stream_key",
+        "next_trace_ordinal",
+        "partial_observation_count",
+        "inflight_observation_count",
+        "restart_loss_count",
+        "rejected_observation_count",
+        "blocked_reason_code",
+    }
+    canonical_stream_key: Mapping[str, object] | None = None
+    for name, expected in _WORKER_STATE_EXPECTATIONS.items():
+        state_path = root / "state" / name / "host-worker-state.json"
+        document = _load_json(state_path, reason="STATE_EVIDENCE_INVALID")
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"schema_version", "streams"}
+            or document["schema_version"] != "host-worker-state-v1"
+            or not isinstance(document["streams"], list)
+            or len(document["streams"]) != 1
+            or not isinstance(document["streams"][0], dict)
+        ):
+            raise EXP008FailureProbeError("STATE_EVIDENCE_INVALID")
+        stream = document["streams"][0]
+        stream_key = stream.get("stream_key")
+        if (
+            set(stream) != state_fields
+            or not isinstance(stream_key, dict)
+            or set(stream_key) != stream_key_fields
+            or stream_key.get("stream_id") != "exp008-l2-stationary"
+            or stream_key.get("metric") != "L2"
+            or stream_key.get("threshold_stratum") != "target-075"
+            or any(
+                not isinstance(stream_key[field], str) or not stream_key[field]
+                for field in stream_key_fields
+            )
+            or any(
+                type(stream.get(field)) is not int or stream[field] < 0
+                for field in (
+                    "next_trace_ordinal",
+                    "partial_observation_count",
+                    "inflight_observation_count",
+                    "restart_loss_count",
+                    "rejected_observation_count",
+                )
+            )
+            or stream["next_trace_ordinal"] != 0
+            or stream["partial_observation_count"] != 0
+            or stream["inflight_observation_count"] != 0
+            or stream["blocked_reason_code"] != expected["blocked_reason_code"]
+            or stream["rejected_observation_count"]
+            != expected["rejected_observation_count"]
+            or stream["restart_loss_count"] != expected["restart_loss_count"]
+        ):
+            raise EXP008FailureProbeError("STATE_EVIDENCE_INVALID")
+        if canonical_stream_key is None:
+            canonical_stream_key = stream_key
+        elif stream_key != canonical_stream_key:
+            raise EXP008FailureProbeError("STATE_EVIDENCE_INVALID")
+
+
+def _verify_capture(root: Path, *, finalized: bool = False) -> Mapping[str, object]:
+    _verify_artifact_inventory(root=root, finalized=finalized)
     receipt = _load_json(root / "capture_receipt.json", reason="CAPTURE_RECEIPT_UNAVAILABLE")
     if (
         not isinstance(receipt, dict)
-        or receipt.get("schema_version") != _SCHEMA_VERSION
-        or receipt.get("status") != "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION"
-        or not isinstance(receipt.get("capture_git"), dict)
+        or set(receipt)
+        != {
+            "schema_version",
+            "status",
+            "capture_git",
+            "started_at_utc",
+            "probes",
+            "published_trace_count",
+            "monitor_call_count",
+            "policy_call_count",
+            "actuation_call_count",
+        }
+        or receipt["schema_version"] != _SCHEMA_VERSION
+        or receipt["status"] != "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION"
+        or not isinstance(receipt["capture_git"], dict)
+        or set(receipt["capture_git"]) != {"commit", "dirty"}
+        or not isinstance(receipt["capture_git"].get("commit"), str)
+        or not isinstance(receipt["capture_git"].get("dirty"), bool)
         or not isinstance(receipt.get("started_at_utc"), str)
     ):
         raise EXP008FailureProbeError("CAPTURE_RECEIPT_INVALID")
     _verify_preflight_document(root / "serving_preflight.json")
     _verify_preflight_document(root / "serving_postflight.json")
+    _verify_worker_state_evidence(root)
     probe_documents: dict[str, Mapping[str, object]] = {}
-    for name, expected_reason in _PROBE_EXPECTATIONS.items():
+    for name in _PROBE_EXPECTATIONS:
         document = _load_json(root / "probes" / f"{name}.json", reason="PROBE_ARTIFACT_UNAVAILABLE")
-        if (
-            not isinstance(document, dict)
-            or document.get("name") != name
-            or document.get("expected_reason_code") != expected_reason
-            or document.get("foreground_success") is not True
-            or document.get("fail_closed") is not True
-            or document.get("publisher_call_count") not in (0, 1)
-        ):
-            raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
-        probe_documents[name] = document
-    expected_publisher_calls = {
-        "foreground_recorder_failure": 0,
-        "queue_full": 0,
-        "publisher_unavailable": 1,
-        "executor_timeout": 0,
-        "identity_mismatch": 0,
-        "worker_restart_partial_loss": 0,
-    }
-    if any(
-        document["publisher_call_count"] != expected_publisher_calls[name]
-        for name, document in probe_documents.items()
-    ):
-        raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
-    extras = {path.stem for path in (root / "probes").glob("*.json")} - set(_PROBE_EXPECTATIONS)
-    if extras:
-        raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
+        probe_documents[name] = _verify_probe_document(name=name, document=document)
+    if receipt["probes"] != [probe_documents[name] for name in _PROBE_EXPECTATIONS]:
+        raise EXP008FailureProbeError("CAPTURE_RECEIPT_INVALID")
     if (
         receipt.get("published_trace_count") != 0
         or receipt.get("monitor_call_count") != 0
@@ -636,6 +920,110 @@ def _verify_capture(root: Path) -> Mapping[str, object]:
     ):
         raise EXP008FailureProbeError("CAPTURE_NON_ACTUATION_INVALID")
     return receipt
+
+
+def _manifest_payload_sha256(manifest: Mapping[str, object]) -> str:
+    """Hash the canonical manifest payload while excluding its self-reference."""
+
+    payload = dict(manifest)
+    payload.pop("self_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def verify_failure_probe_bundle(
+    output_dir: str | os.PathLike[str],
+) -> Mapping[str, object]:
+    """Independently validate a finalized EXP-008 H1/H4 evidence bundle.
+
+    This verifier is safe to run in a fresh process: it opens no live clients
+    and does not mutate evidence.  It fails closed on any inventory, raw probe,
+    hash, receipt, or completion inconsistency.
+    """
+
+    root = Path(output_dir)
+    _verify_capture(root, finalized=True)
+    manifest_path = root / "run_manifest.json"
+    completion_path = root / "completion.json"
+    manifest = _load_json(manifest_path, reason="MANIFEST_UNAVAILABLE")
+    completion = _load_json(completion_path, reason="COMPLETION_UNAVAILABLE")
+    manifest_keys = {
+        "schema_version",
+        "execution_mode",
+        "started_at_utc",
+        "capture_git",
+        "finalizer_git",
+        "detector_seed",
+        "probe_expectations",
+        "no_monitor_policy_or_actuation",
+        "artifact_sha256",
+        "self_sha256",
+    }
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != manifest_keys
+        or manifest["schema_version"] != _SCHEMA_VERSION
+        or manifest["execution_mode"] != "DRY_RUN"
+        or not isinstance(manifest["started_at_utc"], str)
+        or not manifest["started_at_utc"]
+        or not isinstance(manifest["capture_git"], dict)
+        or set(manifest["capture_git"]) != {"commit", "dirty"}
+        or not isinstance(manifest["capture_git"].get("commit"), str)
+        or manifest["capture_git"].get("dirty") is not False
+        or not isinstance(manifest["finalizer_git"], dict)
+        or set(manifest["finalizer_git"]) != {"commit", "dirty"}
+        or not isinstance(manifest["finalizer_git"].get("commit"), str)
+        or manifest["finalizer_git"].get("dirty") is not False
+        or manifest["finalizer_git"] != manifest["capture_git"]
+        or manifest["detector_seed"] != EXP008_DETECTOR_SEED
+        or manifest["probe_expectations"] != dict(_PROBE_EXPECTATIONS)
+        or manifest["no_monitor_policy_or_actuation"] is not True
+        or not isinstance(manifest["artifact_sha256"], dict)
+        or not isinstance(manifest["self_sha256"], str)
+        or manifest["self_sha256"] != _manifest_payload_sha256(manifest)
+    ):
+        raise EXP008FailureProbeError("MANIFEST_INVALID")
+    expected_hashes = {
+        relative: sha256_file(root / relative)
+        for relative in sorted(_final_artifact_paths())
+    }
+    if manifest["artifact_sha256"] != expected_hashes:
+        raise EXP008FailureProbeError("ARTIFACT_HASH_MISMATCH")
+    completion_keys = {
+        "schema_version",
+        "status",
+        "manifest_sha256",
+        "probe_count",
+        "published_trace_count",
+        "monitor_call_count",
+        "policy_call_count",
+        "actuation_call_count",
+    }
+    if (
+        not isinstance(completion, dict)
+        or set(completion) != completion_keys
+        or completion["schema_version"] != _SCHEMA_VERSION
+        or completion["status"] != "COMPLETE"
+        or completion["manifest_sha256"] != sha256_file(manifest_path)
+        or completion["probe_count"] != len(_PROBE_EXPECTATIONS)
+        or any(
+            completion[field] != 0
+            for field in (
+                "published_trace_count",
+                "monitor_call_count",
+                "policy_call_count",
+                "actuation_call_count",
+            )
+        )
+    ):
+        raise EXP008FailureProbeError("COMPLETION_INVALID")
+    return MappingProxyType(
+        {
+            "probe_count": completion["probe_count"],
+            "capture_git": manifest["capture_git"],
+            "finalizer_git": manifest["finalizer_git"],
+            "manifest_sha256": completion["manifest_sha256"],
+        }
+    )
 
 
 def finalize_failure_probes(
@@ -667,7 +1055,7 @@ def finalize_failure_probes(
         "no_monitor_policy_or_actuation": True,
     }
     manifest["artifact_sha256"] = _artifact_hashes(root)
-    manifest["self_sha256"] = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
+    manifest["self_sha256"] = _manifest_payload_sha256(manifest)
     manifest_path = root / "run_manifest.json"
     write_immutable_json(manifest_path, manifest)
     completion_path = root / "completion.json"

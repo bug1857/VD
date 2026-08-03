@@ -142,6 +142,148 @@ class Exp008FailureProbeTests(unittest.TestCase):
                     )
             self.assertFalse((root / "completion.json").exists())
 
+    def test_fresh_finalizer_rejects_tampered_observed_worker_reason(self) -> None:
+        """The declared expected code cannot substitute for observed evidence."""
+
+        from experiments.exp008_failure_probes import (
+            EXP008FailureProbeError,
+            finalize_failure_probes,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            self._capture(root)
+            path = root / "probes" / "executor_timeout.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["worker_cycle"]["reason_codes"] = []
+            path.unlink()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with patch(
+                "experiments.exp008_failure_probes.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(EXP008FailureProbeError, "PROBE_EVIDENCE_INVALID"):
+                    finalize_failure_probes(
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                        repository=Path(directory),
+                    )
+
+    def test_fresh_finalizer_rejects_capture_receipt_disagreement(self) -> None:
+        """The signed receipt must agree exactly with its persisted probe artifacts."""
+
+        from experiments.exp008_failure_probes import (
+            EXP008FailureProbeError,
+            finalize_failure_probes,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            self._capture(root)
+            path = root / "capture_receipt.json"
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            receipt["probes"][0]["detail"] = "tampered receipt only"
+            path.unlink()
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            with patch(
+                "experiments.exp008_failure_probes.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(EXP008FailureProbeError, "CAPTURE_RECEIPT_INVALID"):
+                    finalize_failure_probes(
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                        repository=Path(directory),
+                    )
+
+    def test_fresh_finalizer_rejects_unexpected_capture_artifact(self) -> None:
+        """The immutable evidence inventory is closed, not merely hashed later."""
+
+        from experiments.exp008_failure_probes import (
+            EXP008FailureProbeError,
+            finalize_failure_probes,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            self._capture(root)
+            (root / "unreviewed-extra.json").write_text("{}", encoding="utf-8")
+            with patch(
+                "experiments.exp008_failure_probes.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(EXP008FailureProbeError, "CAPTURE_ARTIFACT_INVENTORY_INVALID"):
+                    finalize_failure_probes(
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                        repository=Path(directory),
+                    )
+
+    def test_fresh_finalizer_rejects_tampered_restart_state_evidence(self) -> None:
+        """The restart-loss claim is checked against durable worker state."""
+
+        from experiments.exp008_failure_probes import (
+            EXP008FailureProbeError,
+            finalize_failure_probes,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            self._capture(root)
+            path = root / "state" / "worker_restart_partial_loss" / "host-worker-state.json"
+            state = json.loads(path.read_text(encoding="utf-8"))
+            state["streams"][0]["restart_loss_count"] = 0
+            path.unlink()
+            path.write_text(json.dumps(state), encoding="utf-8")
+            with patch(
+                "experiments.exp008_failure_probes.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(EXP008FailureProbeError, "STATE_EVIDENCE_INVALID"):
+                    finalize_failure_probes(
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                        repository=Path(directory),
+                    )
+
+    def test_independent_bundle_verifier_rejects_manifest_or_artifact_tampering(self) -> None:
+        """Final evidence validates self hash, inventory, and receipt independently."""
+
+        from experiments.exp008_failure_probes import (
+            EXP008FailureProbeError,
+            finalize_failure_probes,
+            verify_failure_probe_bundle,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            self._capture(root)
+            with patch(
+                "experiments.exp008_failure_probes.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                finalize_failure_probes(
+                    output_dir=root,
+                    post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                    repository=Path(directory),
+                )
+            verified = verify_failure_probe_bundle(root)
+            self.assertEqual(verified["probe_count"], 6)
+
+            manifest_path = root / "run_manifest.json"
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = json.loads(manifest_bytes)
+            manifest["self_sha256"] = "0" * 64
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(EXP008FailureProbeError, "MANIFEST_INVALID"):
+                verify_failure_probe_bundle(root)
+            manifest_path.write_bytes(manifest_bytes)
+
+            path = root / "pre_run_resources.json"
+            path.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(EXP008FailureProbeError, "ARTIFACT_HASH_MISMATCH"):
+                verify_failure_probe_bundle(root)
+
     def test_fresh_finalizer_rejects_changed_capture_commit(self) -> None:
         from experiments.exp008_failure_probes import EXP008FailureProbeError, finalize_failure_probes
 
