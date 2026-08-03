@@ -493,10 +493,10 @@ Modules affected: detector-owned provenance value type; shadow extraction; drift
 
 ### ADR-005: Define the online workload monitor and DRY_RUN orchestration boundary
 
-Status: Accepted — implementation and offline safety/recovery evidence verified; live event source remains separately unimplemented
+Status: Accepted — implementation and offline safety/recovery evidence verified; ADR-006 source/outbox is separately verified, while the host sampler/shadow worker remains unimplemented
 Date: 2026-08-03  
 Risk level: CRITICAL  
-Evidence status: VERIFIED for the monitor's offline DRY_RUN scope through EXP-006 (commit `6650c06`). No live event-source integration or automatic actuation is authorized.
+Evidence status: VERIFIED for the monitor's offline DRY_RUN scope through EXP-006 (commit `6650c06`) and the separate source/outbox through EXP-007 (commit `ad635c7`). No host integration or automatic actuation is authorized.
 
 Problem:
 
@@ -762,6 +762,110 @@ Research references:
 - ADR-004 for immutable evidence provenance.
 - ADR-005 and EXP-006 for monitor/event semantics and fail-closed state handling.
 - EXP-005 for trace shape, persistence, and stationary live-shadow evidence.
+
+---
+
+### ADR-007: Use a framework-neutral host observation recorder and background shadow worker
+
+Status: Proposed — implementation and EXP-008 live DRY_RUN evidence required
+Date: 2026-08-03
+Risk level: CRITICAL
+Evidence status: INFERRED design contract. No serving application, live host integration, automatic configuration change, canary, or rollback is authorized by this ADR.
+
+Problem:
+
+ADR-006 provides a verified durable boundary once a complete 50-query `ShadowAuditTrace` exists. The repository deliberately contains no production HTTP/gRPC serving application, and `runner.py` is a bounded benchmark rather than a service lifecycle. There is therefore no safe component that can accept a completed foreground range-query observation, keep its request path independent from monitoring work, group compatible observations, perform the required read-only shadow/FLAT/oracle capture, and deliver a complete trace to the verified source/outbox.
+
+Treating `runner.py` as a live host would hide this distinction and invalidate any claim of continuous-workload coverage. A framework-specific web server would add an unrelated product surface without an existing host to integrate.
+
+Alternatives considered:
+
+| Option | Advantages | Disadvantages | Decision |
+|---|---|---|---|
+| A — Add monitoring callbacks directly to `runner.py` | Reuses existing Milvus setup and dataset loading | Mixes finite benchmark and online-service lifecycles; cannot observe post-response host traffic; risks benchmark contamination | Rejected |
+| B — Build a new FastAPI/gRPC serving product | Demonstrates one concrete deployment | No serving application currently exists; introduces a framework, network API, auth surface, and deployment scope unrelated to the Core range-tuning question | Rejected |
+| C — Framework-neutral in-process recorder plus injected background shadow executor | Explicit host seam; testable with fake queues/executors; no foreground disk, network, or policy work; usable from a future HTTP/gRPC/application host | Requires a separately implemented read-only executor and a host to call the recorder | Chosen |
+| D — Inspect Milvus/gRPC traffic after the fact | No host integration call | Cannot recover response identity, threshold semantics, request outcome, or oracle context; violates the complete-evidence contract | Rejected |
+
+Chosen solution:
+
+Choose **Option C**. Implement a small library boundary with a constant-time, post-response `offer()` operation and an independently scheduled `run_once()` background worker. The foreground host retains ownership of its actual query. It records an immutable observation only after that query finishes, then immediately returns the original response path. The worker alone groups 50 compatible observations and invokes an injected, read-only `ShadowAuditExecutor` to produce the existing immutable `ShadowAuditTrace`; the existing `FileShadowTraceEventSource` then performs persistence and publication.
+
+The first integration is a reference in-process gateway for EXP-008, not an HTTP/gRPC server and not a claim that a real application has been instrumented. A production host calls the same recorder contract from its post-response hook.
+
+Interface contract:
+
+```python
+@dataclass(frozen=True, slots=True)
+class CompletedRangeQueryObservation:
+    request_id: int | str
+    captured_at_utc: str
+    stream_key: MonitorStreamKey
+    query_vector: tuple[float, ...]
+    threshold_radius: float
+    range_filter: float
+    limit: int
+    served_ef: int
+    served_outcome: ServedQueryOutcome
+
+
+class HostObservationRecorder(Protocol):
+    def offer(
+        self, observation: CompletedRangeQueryObservation
+    ) -> ObservationReceipt: ...
+
+
+class ShadowAuditExecutor(Protocol):
+    def capture(
+        self, observations: tuple[CompletedRangeQueryObservation, ...]
+    ) -> ShadowAuditTrace: ...
+
+
+class BackgroundShadowWorker:
+    def run_once(self, *, max_observations: int) -> WorkerCycleResult: ...
+```
+
+1. `offer()` uses only a bounded in-memory queue and a non-blocking insertion (`put_nowait` or equivalent). It may validate fixed-size scalar/identity fields, but must not contact Milvus, write any file, wait for the worker, retry, evaluate drift/policy, call the publisher, or invoke an actuation client. A full queue returns `DROPPED_BACKPRESSURE` with a non-sensitive reason; it never delays or modifies the served query.
+2. `CompletedRangeQueryObservation` is immutable and carries the canonical request ID, metric/stratum/index/data lineage, query vector, threshold/range filter, result limit, served `ef`, and a minimal immutable served outcome. Raw query payload exists only in volatile worker memory and the owner-only completed trace envelope; no event, monitor state, drop metric, or error log may duplicate it.
+3. The worker preserves FIFO order within every exact `MonitorStreamKey` and groups exactly 50 compatible observations. It assigns the externally documented `(window_id, window_sequence, trace_sequence_index)` only after a complete group is available. It never joins metric, stratum, data identity, configuration identity, FLAT binding, or HNSW binding across groups.
+4. The injected `ShadowAuditExecutor` is the sole component allowed to perform background read-only shadow, FLAT, and oracle work. It must return a complete trace whose 50 canonical query IDs match the supplied observations in order, metric/stratum/identity match the group, and candidate/LKG/sentinel settings are already registered. A mismatch, timeout, failed stage, or incomplete trace yields an explicit worker rejection and no source publication.
+5. Only after those checks pass does the worker call the existing `ShadowTracePublisher.publish(trace=..., context=...)`. Publication retains ADR-006 persist-before-publish, at-least-once, and fail-closed behavior. The worker does not implement a second trace serializer or queue ledger.
+6. The worker owns volatile partial batches. Process loss may discard observations that have not yet become a complete published trace; it must increment a non-sensitive loss/restart counter and must never fabricate a partial trace, replay unknown raw observations, or rebaseline the monitor. Published envelopes retain ADR-006 recovery semantics.
+7. The recorder, worker, executor, and reference gateway must not import `policy.py`, `actuation.py`, an automatic-action controller, or `WorkloadMonitor`. The executor may use a lazily imported Milvus client only in the background worker path. `DRY_RUN` policy evaluation remains downstream of the existing monitor only.
+
+Safety, resource, and privacy invariants:
+
+1. **Foreground isolation:** `offer()` is bounded and non-blocking. Full/closed/invalid monitoring state is observable but never a request failure.
+2. **Read-only background data plane:** shadow/FLAT/oracle calls use validated range parameters and never create/drop/load/index/mutate a collection or change `ef` server-side.
+3. **Bounded memory:** queue capacity, worker drain limit, partial-batch count, and maximum observation age are registered configuration values with explicit drop behavior. No hidden unbounded lists or retry loops.
+4. **Privacy minimization:** request vectors and hit payloads never enter events, monitor state, policy input, drop counters, or exception text. Before live data is admitted, the trace/outbox host volume must meet ADR-006 owner-only/encryption requirements.
+5. **No automatic actuation:** this layer cannot evaluate or execute policy. `NO_CHANGE`, recommendations, canaries, rollbacks, and configuration writes remain outside its imports and call graph.
+6. **Operator rollback:** disable the host hook or stop the worker to halt new observations. Preserve already published evidence; do not delete, rebaseline, or modify Milvus automatically.
+
+Consequences:
+
+- The project gains an honest, framework-neutral host seam rather than an invented application server or a benchmark callback disguised as continuous monitoring.
+- A read-only Milvus-backed executor and a reference gateway can be tested independently with fakes, then validated against ENV-001 without changing the detector, policy, source/outbox, or monitor contracts.
+- The v1 worker loses only unpersisted observations on restart; that loss is explicitly observable and cannot become detector evidence. Durable replay begins only at the ADR-006 outbox.
+- Multi-host coordination, distributed queues, web API/authentication, multi-tenant isolation, and automatic actuation remain out of scope.
+
+Verification plan:
+
+1. Unit-test constant-time/non-blocking recorder behavior with traps for filesystem, Milvus, publisher, policy, and actuation access; test queue-full, invalid observation, FIFO grouping, identity isolation, partial-batch restart loss accounting, and executor/trace mismatch rejection.
+2. Unit-test a fake executor and reference gateway to prove the background worker is the only path that can invoke capture or publish.
+3. Pre-register EXP-008 before implementation. It must validate real ENV-001 read-only range queries through the reference gateway for separate L2 and COSINE stationary traffic, then prove `trace → source → monitor → NO_DRIFT → NO_CHANGE` with no actuation.
+4. Add deliberate live DRY_RUN failure probes: source unavailable, queue full, executor timeout/failure, identity change, and worker restart. Each must preserve served-query success and record an explicit non-sensitive reason.
+
+Modules affected:
+
+New host-observation recorder, background worker, reference gateway, and focused tests; a new lazy/read-only executor adapter; EXP-008 validator and evidence artifacts. Existing `shadow_event_source.py`, `workload_monitor.py`, `shadow_extraction.py`, `drift.py`, `policy.py`, and all actuation modules are composed through their existing contracts only.
+
+Research references:
+
+- ADR-001 for benchmark/service separation.
+- ADR-002 for range-query safety and DRY_RUN actuation governance.
+- ADR-005 for monitor orchestration and foreground isolation.
+- ADR-006 and EXP-007 for durable source/outbox semantics and data minimization.
 
 ---
 

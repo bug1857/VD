@@ -1189,3 +1189,85 @@ Follow-up actions:
 1. Design the host-owned non-blocking observation sampler and background shadow-audit worker as a separate CRITICAL boundary.
 2. Pre-register and run a separate live host-integration experiment before claiming continuous-traffic coverage.
 3. Keep the monitor DRY_RUN-only; automatic actuation remains separately governed and unauthorized.
+
+---
+
+### EXP-008: Reference host-observation integration and live DRY_RUN validation
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Date: 2026-08-03
+Risk level: CRITICAL (ADR-007 foreground/worker separation; live ENV-001 reads only; no automatic actuation)
+
+Objective:
+
+Validate a framework-neutral reference host gateway that records completed live range-query observations without delaying or changing the foreground query, groups them through the ADR-007 background worker, emits complete traces through the verified ADR-006 outbox, and reaches the real DRY_RUN monitor. The experiment establishes a reference embedding seam, not an HTTP/gRPC deployment or production traffic claim.
+
+Hypotheses:
+
+- **H1 — Foreground isolation:** the post-response recorder accepts or drops an observation without filesystem, background-Milvus, source-publisher, detector, policy, or actuation work on the served-query call path.
+- **H2 — Complete compatible trace production:** separate L2 and COSINE stationary host workloads yield ordered, identity-compatible complete 50-query traces, then three 200-query monitor windows per stream; partial/incompatible observations never publish a trace.
+- **H3 — Live DRY_RUN composition:** real ENV-001 read-only shadow/FLAT/oracle capture reaches `NO_DRIFT → NO_CHANGE` once per stationary metric stream through the existing source/outbox and monitor, with zero configuration mutation or actuation call.
+- **H4 — Failure containment and restart truthfulness:** full queue, closed source, executor failure/timeout, identity mismatch, and worker restart preserve foreground-query success, create explicit non-sensitive records, and never fabricate/replay unpersisted observations.
+
+Configuration:
+
+- **Backend/environment:** verified ENV-001 Milvus only; use the committed DATASET-001 artifacts, pinned URI, image/version/digest evidence, and a separately captured identity baseline.
+- **Reference workload:** separate deterministic stationary L2 and COSINE request streams, each with exactly 600 completed host observations (three 200-query windows / twelve 50-query traces). Their request order, seed, metric, stratum, candidate/LKG/sentinel `ef`, and collection identities must be frozen in the run manifest.
+- **Execution mode:** read-only data-plane queries plus downstream `PolicyMode.DRY_RUN`; no collection/index/schema/configuration mutation, `start_canary`, `stop_candidate`, `restore_last_known_good`, `verify_restoration`, or live action controller call.
+- **Recorder/worker limits:** freeze queue capacity, worker drain limit, maximum partial batches, maximum observation age, and every drop/restart reason in the manifest before execution. The v1 in-memory queue is host-owned and must be explicitly distinguished from ADR-006's durable outbox capacity.
+
+Required scenarios and pass criteria:
+
+1. **Foreground isolation traps**
+   - Call the reference gateway against live Milvus while recorder dependencies for filesystem, publisher, executor, detector, policy, and actuation are trapped.
+   - Pass only if the served query returns normally, the recorder returns `ACCEPTED` or a documented drop without invoking any trap, and all additional shadow work occurs only after explicit worker execution.
+2. **L2 and COSINE stationary composition**
+   - Run 600 completed host observations for each metric separately; require twelve persisted complete traces and three assembled complete windows per stream.
+   - Pass only if source/outbox, monitor, and provenance identities remain separate, all trace/window checksums verify, and each stream produces one audited `NO_DRIFT` / `NO_CHANGE` result.
+3. **Read-only identity and range semantics**
+   - Compare every real executor trace against its recorded FLAT/oracle/sentinel evidence and identity binding.
+   - Pass only if all stages report success, zero timeout/threshold violations, exact FLAT/oracle agreement, and no pre/post identity mismatch; no collection/admin mutation is observed.
+4. **Queue and source failure containment**
+   - Force a full in-memory queue and an unavailable/rejecting publisher after a normal served query.
+   - Pass only if the served query succeeds, the event is explicitly dropped/rejected without raw payload in diagnostics, and no detector/monitor/policy input follows.
+5. **Executor failure, identity mismatch, and worker restart**
+   - Inject an executor timeout/failure, a changed identity binding, and a worker restart with an incomplete volatile batch.
+   - Pass only if no invalid trace is published; the restart-loss counter is exact; monitor receives no fabricated/replayed event; and all subsequent compatible complete groups remain ordered.
+6. **DRY_RUN/non-actuation proof**
+   - Attach trap actuation/controller implementations at every reachable boundary and inspect imports/call counts.
+   - Pass only if all trap counts remain zero, policy mode remains `DRY_RUN`, and no Milvus mutation/configuration API is called.
+
+Acceptance criteria:
+
+- Raw foreground, worker, source/outbox, monitor, and failure-probe output is captured in an immutable artifact bundle with checksums, exact commit, dirty state, environment pinning, resource snapshots, and queue settings.
+- Both metric streams meet all composition and identity/range semantics checks; no result combines stream identities or request observations.
+- Every deliberate failure is fail-closed with an explicit non-sensitive reason and zero downstream detector/policy/actuation processing where applicable.
+- Full repository and focused EXP-008 suites pass. EXP-008 may verify a live DRY_RUN reference integration only; it never authorizes automatic actuation or claims deployment in an external serving application.
+
+Dataset ID:
+
+DATASET-001, verified artifacts only. Record all consumed checksums in the run manifest.
+
+Hardware:
+
+Record host CPU/RAM/OS/kernel, Docker resource allocation, ENV-001 container health, foreground/background process snapshot, and pre/post-run resource snapshots. Performance interpretation is secondary to correctness and foreground-isolation evidence.
+
+Git commit:
+
+TBD at execution; pin recorder, worker, executor/reference gateway, source/outbox, monitor, tests, and all committed dependencies.
+
+Random seed:
+
+TBD before execution; freeze request scheduling, deterministic audit selection, and all worker ordering configuration.
+
+Raw output location:
+
+Planned: `artifacts/exp-008/<UTC-run-id>/`.
+
+Result:
+
+NOT RUN — contract only.
+
+Conclusion:
+
+Pending ADR-007 implementation, deliberate-failure validation, and live DRY_RUN evidence. No external host deployment or automatic actuation is authorized.
