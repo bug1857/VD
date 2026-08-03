@@ -1,4 +1,4 @@
-"""EXP-008 H4 read-only failure-containment capture.
+"""EXP-008 H1/H4 read-only isolation and failure-containment capture.
 
 This experiment deliberately injects post-response failures while retaining a
 real foreground range-serving dependency in the live composition root.  It
@@ -120,6 +120,18 @@ class _RaisingPublisher:
         raise OSError("synthetic publisher unavailable")
 
 
+class _RaisingRecorder:
+    """Prove foreground success survives a post-response recorder fault."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def offer(self, observation: object) -> object:
+        del observation
+        self.calls += 1
+        raise OSError("synthetic post-response recorder fault")
+
+
 class _CountingPublisher:
     """Trap publisher: its call count proves invalid traces never publish."""
 
@@ -214,7 +226,7 @@ def _worker(
     )
 
 
-def _gateway(runtime: Exp008Runtime, recorder: BoundedHostObservationRecorder, clock: _StrictUtcClock) -> ReferenceRangeGateway:
+def _gateway(runtime: Exp008Runtime, recorder: object, clock: _StrictUtcClock) -> ReferenceRangeGateway:
     return ReferenceRangeGateway(
         serving_executor=runtime.serving,
         recorder=recorder,
@@ -276,6 +288,28 @@ def run_failure_probes(
             raise EXP008FailureProbeError("SERVING_PREFLIGHT_INCOMPLETE")
         write_immutable_json(root / "pre_run_resources.json", dict(pre_run_resources))
         write_immutable_json(root / "serving_preflight.json", _preflight_document(preflight))
+
+        isolation_recorder = _RaisingRecorder()
+        isolation_responses = _serve(
+            gateway=_gateway(runtime, isolation_recorder, clock),
+            configuration=configuration,
+            count=1,
+        )
+        isolation_result = FailureProbeResult(
+            name="foreground_recorder_failure",
+            expected_reason_code="RECORDER_FAILED",
+            foreground_success=all(response.served_outcome.success for response in isolation_responses),
+            fail_closed=(
+                isolation_recorder.calls == 1
+                and isolation_responses[0].observation_receipt.reason_code == "RECORDER_FAILED"
+            ),
+            foreground_request_count=len(isolation_responses),
+            worker_cycle=None,
+            publisher_call_count=0,
+            detail="real foreground query succeeded while its post-response recorder raised",
+        )
+        results.append(isolation_result)
+        _write_probe(root, isolation_result)
 
         queue_recorder = BoundedHostObservationRecorder(max_pending_observations=1)
         queue_responses = _serve(
@@ -494,6 +528,7 @@ def run_failure_probes(
 _SCHEMA_VERSION = "exp008-h4-failure-probes-v1"
 _PROBE_EXPECTATIONS = MappingProxyType(
     {
+        "foreground_recorder_failure": "RECORDER_FAILED",
         "queue_full": "PENDING_OBSERVATION_CAPACITY_EXCEEDED",
         "publisher_unavailable": "PUBLISH_OUTCOME_UNKNOWN",
         "executor_timeout": "EXECUTOR_CAPTURE_FAILED",
@@ -578,6 +613,7 @@ def _verify_capture(root: Path) -> Mapping[str, object]:
             raise EXP008FailureProbeError("PROBE_EVIDENCE_INVALID")
         probe_documents[name] = document
     expected_publisher_calls = {
+        "foreground_recorder_failure": 0,
         "queue_full": 0,
         "publisher_unavailable": 1,
         "executor_timeout": 0,

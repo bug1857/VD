@@ -43,6 +43,7 @@ class Exp008FailureProbeTests(unittest.TestCase):
             self.assertEqual(
                 [probe.name for probe in result.probes],
                 [
+                    "foreground_recorder_failure",
                     "queue_full",
                     "publisher_unavailable",
                     "executor_timeout",
@@ -51,6 +52,7 @@ class Exp008FailureProbeTests(unittest.TestCase):
                 ],
             )
             expected = {
+                "foreground_recorder_failure": "RECORDER_FAILED",
                 "queue_full": "PENDING_OBSERVATION_CAPACITY_EXCEEDED",
                 "publisher_unavailable": "PUBLISH_OUTCOME_UNKNOWN",
                 "executor_timeout": "EXECUTOR_CAPTURE_FAILED",
@@ -110,7 +112,7 @@ class Exp008FailureProbeTests(unittest.TestCase):
                     post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
                     repository=Path(directory),
                 )
-            self.assertEqual(result.probe_count, 5)
+            self.assertEqual(result.probe_count, 6)
             self.assertTrue(result.manifest_path.is_file())
             completion = json.loads(result.completion_path.read_text(encoding="utf-8"))
             self.assertEqual(completion["status"], "COMPLETE")
@@ -168,7 +170,7 @@ class Exp008FailureProbeTests(unittest.TestCase):
             output_dir=Path("evidence"),
             manifest_path=Path("evidence/run_manifest.json"),
             completion_path=Path("evidence/completion.json"),
-            probe_count=5,
+            probe_count=6,
         )
         with (
             patch(
