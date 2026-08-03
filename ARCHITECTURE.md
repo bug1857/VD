@@ -767,10 +767,11 @@ Research references:
 
 ### ADR-007: Use a framework-neutral host observation recorder and background shadow worker
 
-Status: Proposed — implementation and EXP-008 live DRY_RUN evidence required
+Status: Accepted — reference implementation and EXP-008 live DRY_RUN evidence verified
 Date: 2026-08-03
 Risk level: CRITICAL
-Evidence status: INFERRED design contract. No serving application, live host integration, automatic configuration change, canary, or rollback is authorized by this ADR.
+Evidence status: VERIFIED for the framework-neutral reference in-process gateway, worker, durable source/outbox, monitor, and read-only DRY_RUN composition through EXP-008 (`2403799` stationary evidence; `76600f8` H1/H4 evidence). No external serving-application deployment, automatic configuration change, canary, or rollback is authorized by this ADR.
+Acceptance note: The implementation and strict H1/H4 evidence verifier are committed through `76600f8`; the full repository suite passed (`354` tests). A production host invokes the same post-response boundary, but must earn separate deployment-specific evidence.
 
 Problem:
 

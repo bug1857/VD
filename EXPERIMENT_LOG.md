@@ -1194,7 +1194,7 @@ Follow-up actions:
 
 ### EXP-008: Reference host-observation integration and live DRY_RUN validation
 
-Status: IMPLEMENTED — LIVE STATIONARY EVIDENCE CAPTURED — H4 PROBE HARNESS FAKE-TESTED — LIVE H4 RUN PENDING — NOT VERIFIED
+Status: VERIFIED — LIVE STATIONARY COMPOSITION AND H1/H4 FOREGROUND/FAILURE EVIDENCE CAPTURED
 Date: 2026-08-03
 Risk level: CRITICAL (ADR-007 foreground/worker separation; live ENV-001 reads only; no automatic actuation)
 
@@ -1264,20 +1264,22 @@ Record host CPU/RAM/OS/kernel, Docker resource allocation, ENV-001 container hea
 
 Git commit:
 
-TBD at execution; pin recorder, worker, executor/reference gateway, source/outbox, monitor, tests, and all committed dependencies.
+Stationary composition evidence: clean commit `2403799` (`2403799271f5bad205a752b9d407bf95ad3be852`). H1/H4 live failure evidence: clean commit `76600f8` (`76600f8c10eba219f22df36c9816d7661aff24fa`), which includes the independent failure-bundle verifier and strict observed-receipt/worker-state validation.
 
 Random seed:
 
-TBD before execution; freeze request scheduling, deterministic audit selection, and all worker ordering configuration.
+`20260805`, frozen for request scheduling, deterministic audit selection, and worker ordering configuration.
 
 Raw output location:
 
-Latest stationary evidence: `artifacts/exp-008/run-20260803T171620Z/`.
+Stationary composition evidence: `artifacts/exp-008/run-20260803T171620Z/`. H1/H4 live failure evidence: `artifacts/exp-008/failure-probes-20260803T175325Z/`.
 
 Result:
 
 Stationary live evidence captured on 2026-08-03 under clean commit `2403799` (`2403799271f5bad205a752b9d407bf95ad3be852`): `run_manifest.json` SHA-256 `0df310713eb067266187fd6f055b462dd5a2415531e0073a8527673f45b2fc95`. The fresh-process finalizer independently verified all 62 recorded artifact checksums; both resource snapshots had empty stderr (including no inherited gRPC fork warning). The bundle records 1,200 accepted foreground requests (600 per stream), 24 successful 50-query traces, six complete 200-query windows, and two audited evaluations: L2 / `target-075` and COSINE / `target-025` each reached `NO_DRIFT → NO_CHANGE`. `policy_mode_dry_run=true`; configuration mutation, canary start, rollback, and safe-boundary construction are all `false`. This is stationary H2/H3 evidence only; it does not satisfy the registered deliberate-failure/restart scenarios or authorize automatic actuation.
 
+Deliberate live H1/H4 evidence captured on 2026-08-03 under clean commit `76600f8` (`76600f8c10eba219f22df36c9816d7661aff24fa`): `artifacts/exp-008/failure-probes-20260803T175325Z/run_manifest.json` SHA-256 `a154904c6b7bb41f16694bd17e3ba6fbcb4c7e83b63d4088fa09907d21735d01`. A fresh no-gRPC verifier independently validated the manifest payload hash, all 15 artifact hashes, the clean capture/finalizer commit binding, closed artifact inventory, raw probe/receipt agreement, and durable worker state. All 154 live foreground range queries succeeded. H1 observed the post-response recorder failure code `RECORDER_FAILED` without changing the served response. H4 observed exact fail-closed outcomes for queue capacity (`PENDING_OBSERVATION_CAPACITY_EXCEEDED`), unavailable publisher (`PUBLISH_OUTCOME_UNKNOWN`), shadow executor timeout (`EXECUTOR_CAPTURE_FAILED`), identity mismatch (`TRACE_IDENTITY_MISMATCH`), and worker restart partial-batch loss (`restart_loss_count=1`). Both preflight and postflight reported complete, reason-free L2 and COSINE streams; zero traces were published and monitor, policy, and actuation call counts were all zero. Both resource snapshots had empty stderr and no gRPC fork warning.
+
 Conclusion:
 
-The isolated EXP-008 composition root, strict monitor-audit sink, fresh-process evidence finalizer, and H4 failure-probe harness are implemented. The H4 harness is fake-component tested and uses real live foreground serving only when explicitly invoked; it injects queue, publisher, executor, identity, and restart faults strictly after the served response. Stationary live DRY_RUN evidence is captured, but the registered live H4 probes remain pending; EXP-008 must not be marked VERIFIED and no external host deployment or automatic actuation is authorized.
+EXP-008 is VERIFIED for the reference in-process host-observation composition: H1 foreground isolation, H2 trace/window production, H3 live read-only DRY_RUN evaluation, and H4 deliberate failure/restart containment all have immutable live evidence. This verification does not claim an external serving-application deployment, does not authorize full-traffic tuning, and does not authorize automatic actuation; a separately designed and evidenced human-gated canary/rollback step remains required.

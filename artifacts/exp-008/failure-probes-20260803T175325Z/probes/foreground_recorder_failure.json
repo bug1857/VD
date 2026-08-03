@@ -1,0 +1,1 @@
+{"detail":"real foreground query succeeded while its post-response recorder raised","expected_reason_code":"RECORDER_FAILED","fail_closed":true,"foreground_observation_reason_codes":["RECORDER_FAILED"],"foreground_request_count":1,"foreground_success":true,"foreground_success_count":1,"name":"foreground_recorder_failure","publisher_call_count":0,"worker_cycle":null}
