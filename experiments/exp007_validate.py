@@ -631,12 +631,33 @@ def _artifact_inventory(root: Path) -> tuple[dict[str, str], dict[str, str]]:
 def _filesystem_type(path: Path) -> str:
     """Return the host filesystem name or fail rather than inventing one."""
 
-    command = (
-        ["stat", "-f", "%T", str(path)]
-        if sys.platform == "darwin"
-        else ["stat", "-f", "-c", "%T", str(path)]
+    if sys.platform == "darwin":
+        # BSD ``stat -f %T`` is the mount point, not the filesystem type.
+        # Resolve the mount point with df, then read its type from mount(8).
+        df = subprocess.run(
+            ["df", "-P", str(path)], text=True, capture_output=True, check=False
+        )
+        rows = [line for line in df.stdout.splitlines() if line.strip()]
+        if df.returncode != 0 or len(rows) < 2:
+            raise Exp007ValidationError("filesystem mount point could not be recorded")
+        mount_point = rows[-1].split()[-1]
+        mounts = subprocess.run(["mount"], text=True, capture_output=True, check=False)
+        marker = f" on {mount_point} ("
+        for line in mounts.stdout.splitlines():
+            if marker not in line:
+                continue
+            suffix = line.split(marker, 1)[1]
+            value = suffix.split(",", 1)[0].rstrip(")").strip()
+            if value:
+                return value
+        raise Exp007ValidationError("filesystem type could not be recorded")
+
+    result = subprocess.run(
+        ["stat", "-f", "-c", "%T", str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
     )
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise Exp007ValidationError("filesystem type could not be recorded")

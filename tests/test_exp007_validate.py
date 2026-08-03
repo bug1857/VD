@@ -64,6 +64,7 @@ class Exp007ValidationTests(unittest.TestCase):
             self.assertEqual(receipt["raw_result_sha256"], raw_result["self_sha256"])
             self.assertTrue(manifest["artifact_sha256"])
             self.assertTrue(manifest["filesystem_type"])
+            self.assertNotEqual(manifest["filesystem_type"], "/")
             self.assertTrue(manifest["architecture"])
             self.assertEqual(manifest["outbox_root_mode"], "0o700")
             self.assertIsInstance(manifest["outbox_root_owner_uid"], int)
