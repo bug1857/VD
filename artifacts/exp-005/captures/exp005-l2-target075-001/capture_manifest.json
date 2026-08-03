@@ -1,0 +1,1 @@
+{"baseline_sha256":"6e26b0793ca44732ec464fe08e09287d28c87356f0f0e8dd71691e3e8658dc52","candidate_ef":800,"capture_id":"exp005-l2-target075-001","last_known_good_ef":400,"metric":"L2","roles":["reference","current-1","current-2"],"schema_version":"exp005-live-shadow-capture-v1","threshold_stratum":"target-075","trace_size":50,"window_query_count":200}
