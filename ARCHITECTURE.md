@@ -429,7 +429,7 @@ Chosen solution:
 
 Consequences:
 
-- All existing stationary false-positive and drift-injection experiment results (commits 2719f8f and 773b944) must be treated as provisional until rerun after this correction is implemented and verified. Do not cite those numbers as final validation.
+- Validation completion: corrected implementation commit `8278711` reproduced the stored stationary figures (L2 `0/299`, COSINE `0/299`) and drift-injection figures (`0 FN`, `10/10`); the triggering-magnitude range measured `2.333960876921x–6.901880012192x` versus the stored `2.3x–7.1x` rounded range. This is documented in `PROJECT_BIBLE.md` and `SESSION_HANDOFF.md` at commit `c0594ec`; status: `PROVISIONAL → VALIDATED`.
 - drift.py: _prepare_mmd must be replaced with a pooled variant; zero-variance exclusion must use pooled std, not reference std; sigma must use pooled pairwise distances.
 - policy.py: DETECTOR_CONFIDENCE_FLOOR constant and its two usage sites must be removed; decision_confidence gate must be removed from all policy evaluation paths.
 - DriftDecision dataclass: decision_confidence field renamed to significance_evidence_score; all callers updated.
