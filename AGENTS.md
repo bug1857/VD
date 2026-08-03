@@ -52,6 +52,10 @@ Most project failures happen at the *handoff* between agents, not inside either 
 4. **Never commit without an explicit "approved, commit" from the human.** Proposing a commit is not authorization to make it.
 5. **End every verified task with explicit, click-by-click manual test instructions** for the human to confirm behavior end-to-end.
 
+### Proportional verification and anti-gaming rule
+
+Treat delegated-agent claims, generated tests, and benchmark summaries as untrusted until checked against the actual diff and raw output. Look specifically for tautological assertions, mock-only coverage, skipped tests, weakened regressions, fabricated measurements, and scope creep. Verification must be risk-proportional: perform deep independent checks for CRITICAL/HIGH logic, focused checks for ordinary changes, and avoid repeated or low-value analysis that does not improve confidence.
+
 ### Code review checklist (run before considering any implementation finished)
 
 Correctness · Performance · Security · Readability · Maintainability · Edge cases · Thread safety · Memory · Exception handling · Logging · Configuration · Documentation · Tests present · Benchmark evidence present
