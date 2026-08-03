@@ -107,10 +107,24 @@ Embedding model: None — synthetic vectors, not model embeddings.
 Number of vectors: 1,800 query vectors: 600 unique routing queries for the 60-of-600 candidate partition and 1,200 disjoint background candidate-recall audit queries. No query vector or occurrence identifier may appear in both roles.
 Metadata schema: Canonical integer query ID; role (`routing` or `recall_audit`); immutable DATASET-001 base/threshold identity; seed/generator/version metadata; byte size and SHA-256 for every artifact. After the 600-ID eligible routing manifest is frozen, a separate approval-bound canonical CSPRNG candidate-selection record records the exact 60-ID candidate/LKG partition, eligible-manifest digest, and non-sensitive random-source provenance before result collection. Raw CSPRNG entropy is never persisted.
 Ground truth method: Independent float64 oracle range search over the checksum-verified DATASET-001 base vectors, using the inherited frozen metric/radius/range/limit configuration; FLAT agreement is required before any HNSW candidate-recall value is usable.
-Version: Planned `DATASET-002-v1`; primary seed `20260809`; expected NumPy pin `2.5.1`. This entry is a registry contract only: artifacts are not generated and have no checksums yet.
-Artifact location: Planned `artifacts/exp-009/dataset/`.
+Version: `DATASET-002-v1`; primary seed `20260809`; generated with NumPy `2.5.1` on 2026-08-03.
+Artifact status: GENERATED AND CHECKSUM-VERIFIED — no Milvus ingestion, search, candidate routing, or approval action was performed during generation.
+Artifact location: `artifacts/exp-009/dataset/`.
 Use restrictions: EXP-009 Stage 1 only until its workload, estimator, and calibration gates are verified. The 600 routing vectors support the finite-population 60-of-600 latency design: with nearest-rank p95 `ceil(0.95 * 600) = 570`, a CSPRNG simple-random 60-ID set has at least `1 - C(570,60)/C(600,60) = 0.961003033592` probability that its maximum is at least the frozen manifest's p95 threshold, conditional on the pre-registered fixed-potential-outcome/no-interference model. Stage 1 validates the calculation and selection contract only; the controlled live stage must supply schedule-stability/no-interference evidence. This does not imply IID latency or production-traffic coverage. The 1,200 disjoint recall-audit vectors support the proposed one-sided bounded-mean Hoeffding recall bound with margin `sqrt(log(20)/(2*1200)) = 0.035330182290`; passing the ADR-002 recall floor requires an observed audit mean at least `0.985330182290` under the explicitly tested independent-query-generator model.
 Checksum procedure: Before use, write arrays, role/identity manifest, oracle records, and SHA-256 inventory atomically; independently reread and verify every byte size/hash plus the inventory hash. Record the inherited DATASET-001 generation-manifest SHA-256 and thresholds SHA-256 in DATASET-002's manifest. A separate verification command and unit tests must fail closed on role overlap, duplicate IDs, non-finite vectors, wrong dimensions/dtype, inherited-identity mismatch, missing oracle records, any checksum mismatch, a candidate-selection record created before the eligible-manifest freeze, a selection-record digest mismatch, duplicate selection IDs, or any selected ID outside the eligible routing population.
+Artifact checksums:
+
+| Artifact | SHA-256 |
+|---|---|
+| `routing_ids.npy` | `e780f21d20b3df6c2d4bc46c908018dd03adbb256be7224aee0bafd48afd065d` |
+| `routing_queries.npy` | `459bf6186b6d9b25c1557f6941d4e4cb86b6e40f9d6de68141bc553c1a54ad7c` |
+| `recall_audit_ids.npy` | `d6c84131fe438255935ba77c12fa8f8d38779c3ce026ef82de7a2368696e0f91` |
+| `recall_audit_queries.npy` | `29c64e7a3128fd3e94345c7580a6aa73dfd79412f000d60db256566b5dfa94bb` |
+| `inherited_dataset001.json` | `832d681185d674d3a6e0d55645907101f1064175e41d89b1925f6f11d27e9388` |
+| `oracle_records.jsonl` (10,800 records) | `9c5c01fe4c47233dba58fb9e0735b2150403cb2d068eba58f7893de59e7906c4` |
+| `dataset002_manifest.json` | `45ae2d754cd0e0923a6e2be38c0878c27665b5f0cbd9dce2b7de3c3c5ae77b01` |
+| `SHA256SUMS` | `848de8c74377acc57fa5385caabe812629a4a63074d9fa31c5008f3bed81af30` |
+Verification: `verify_dataset002_artifacts(Path("artifacts/exp-009/dataset"), dataset001_dir=Path("artifacts/exp-001/dataset"))` independently regenerated the vectors, validated inherited DATASET-001 identity, reread all artifact checksums, and recomputed all 10,800 exact-oracle records successfully.
 Used by: Planned EXP-009 Stage 1; no other experiment may consume it without an explicit registry update.
 
 ---
