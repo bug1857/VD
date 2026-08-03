@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -147,6 +148,23 @@ def _configuration():
 
 
 class Exp008AcquisitionContractTests(unittest.TestCase):
+    def _capture_fake_runtime(self, root: Path):
+        from vdbench.exp008_acquisition import Exp008Runtime, capture_exp008
+
+        close_calls: list[str] = []
+        capture = capture_exp008(
+            configuration=_configuration(),
+            runtime=Exp008Runtime(
+                serving=_FakeServing(),
+                shadow=_FakeShadow(),
+                close=lambda: close_calls.append("closed"),
+            ),
+            output_dir=root,
+            pre_run_resources={"timestamp_utc": "2026-08-03T00:00:00Z"},
+            capture_git={"commit": "fake-capture-commit", "dirty": False},
+        )
+        return capture, close_calls
+
     def test_prepared_configuration_is_pinned_to_the_two_registered_streams(self) -> None:
         from vdbench.exp008_acquisition import (
             EXP008_DETECTOR_SEED,
@@ -204,6 +222,153 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             self.assertEqual(close_calls, ["closed"])
             self.assertIn('"runtime_closed":true', (root / "post_run_resources.json").read_text(encoding="utf-8"))
 
+    def test_capture_phase_never_finalizes_or_invokes_resource_snapshot(self) -> None:
+        from vdbench.exp008_acquisition import Exp008Runtime, capture_exp008
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "exp008"
+            close_calls: list[str] = []
+            with patch(
+                "vdbench.exp008_acquisition._resource_snapshot",
+                side_effect=AssertionError("capture must not fork a resource snapshot"),
+            ):
+                capture = capture_exp008(
+                    configuration=_configuration(),
+                    runtime=Exp008Runtime(
+                        serving=_FakeServing(),
+                        shadow=_FakeShadow(),
+                        close=lambda: close_calls.append("closed"),
+                    ),
+                    output_dir=root,
+                    pre_run_resources={"timestamp_utc": "2026-08-03T00:00:00Z"},
+                    capture_git={"commit": "fake-capture-commit", "dirty": False},
+                )
+
+            self.assertTrue(capture.receipt_path.is_file())
+            self.assertFalse((root / "completion.json").exists())
+            self.assertFalse((root / "run_manifest.json").exists())
+            self.assertEqual(close_calls, ["closed"])
+            receipt = json.loads(capture.receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                receipt["status"],
+                "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION",
+            )
+
+    def test_finalizer_fails_closed_when_capture_commit_changes(self) -> None:
+        from vdbench.exp008_acquisition import EXP008AcquisitionError, finalize_exp008
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "exp008"
+            self._capture_fake_runtime(root)
+            with patch(
+                "vdbench.exp008_acquisition.git_state",
+                return_value={"commit": "different-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(
+                    EXP008AcquisitionError,
+                    "CAPTURE_COMMIT_CHANGED_BEFORE_FINALIZATION",
+                ):
+                    finalize_exp008(
+                        configuration=_configuration(),
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                    )
+            self.assertFalse((root / "completion.json").exists())
+
+    def test_finalizer_rejects_tampered_foreground_evidence(self) -> None:
+        from vdbench.exp008_acquisition import EXP008AcquisitionError, finalize_exp008
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "exp008"
+            self._capture_fake_runtime(root)
+            receipts_path = root / "foreground_receipts.json"
+            receipts = json.loads(receipts_path.read_text(encoding="utf-8"))
+            receipts[0]["served_success"] = False
+            receipts_path.unlink()
+            receipts_path.write_text(json.dumps(receipts), encoding="utf-8")
+            with patch(
+                "vdbench.exp008_acquisition.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(
+                    EXP008AcquisitionError,
+                    "CAPTURE_FOREGROUND_EVIDENCE_INVALID",
+                ):
+                    finalize_exp008(
+                        configuration=_configuration(),
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                    )
+            self.assertFalse((root / "completion.json").exists())
+
+    def test_finalizer_rejects_event_path_escape_before_loading_trace(self) -> None:
+        from vdbench.exp008_acquisition import EXP008AcquisitionError, finalize_exp008
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "exp008"
+            self._capture_fake_runtime(root)
+            event_path = next((root / "outbox" / "acknowledged").glob("*.json"))
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            event["envelope_path"] = "../../outside.json"
+            event_path.unlink()
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            with patch(
+                "vdbench.exp008_acquisition.git_state",
+                return_value={"commit": "fake-capture-commit", "dirty": False},
+            ):
+                with self.assertRaisesRegex(
+                    EXP008AcquisitionError,
+                    "CAPTURE_EVENT_OR_TRACE_INVALID",
+                ):
+                    finalize_exp008(
+                        configuration=_configuration(),
+                        output_dir=root,
+                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                    )
+            self.assertFalse((root / "completion.json").exists())
+
+    def test_finalize_only_cli_never_constructs_live_runtime(self) -> None:
+        from vdbench.exp008_acquisition import Exp008RunResult, main
+
+        finalized = Exp008RunResult(
+            output_dir=Path("evidence"),
+            manifest_path=Path("evidence/run_manifest.json"),
+            completion_path=Path("evidence/completion.json"),
+            evaluated_stream_count=2,
+            trace_count=24,
+        )
+        with (
+            patch(
+                "vdbench.exp008_acquisition.prepare_exp008_configuration",
+                return_value=_configuration(),
+            ),
+            patch(
+                "vdbench.exp008_acquisition._resource_snapshot",
+                return_value={"timestamp_utc": "2026-08-03T00:01:00Z"},
+            ),
+            patch(
+                "vdbench.exp008_acquisition.finalize_exp008",
+                return_value=finalized,
+            ) as finalize,
+            patch(
+                "vdbench.exp008_acquisition.build_live_runtime",
+                side_effect=AssertionError("finalizer must not open live Milvus"),
+            ),
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        "--dataset-dir", "ignored-dataset",
+                        "--l2-baseline", "ignored-l2",
+                        "--cosine-baseline", "ignored-cosine",
+                        "--output-dir", "ignored-output",
+                        "--finalize-only",
+                    ]
+                ),
+                0,
+            )
+        finalize.assert_called_once()
+
     def test_failed_preflight_stops_before_foreground_or_shadow_work(self) -> None:
         from vdbench.exp008_acquisition import (
             EXP008AcquisitionError,
@@ -246,6 +411,28 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             "alter_alias",
         }
         self.assertFalse(invoked_attributes & forbidden)
+
+    def test_capture_function_has_no_resource_snapshot_or_subprocess_calls(self) -> None:
+        from vdbench import exp008_acquisition
+
+        source_path = Path(exp008_acquisition.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        capture = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "capture_exp008"
+        )
+        calls = {
+            node.func.id
+            for node in ast.walk(capture)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        attributes = {
+            node.func.attr
+            for node in ast.walk(capture)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        self.assertNotIn("_resource_snapshot", calls)
+        self.assertNotIn("run", attributes)
 
     def test_live_factory_keeps_l2_and_cosine_workload_identities_isolated(self) -> None:
         from vdbench.exp008_acquisition import build_live_runtime

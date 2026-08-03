@@ -66,8 +66,10 @@ from .policy import (
     QualificationResult,
 )
 from .runner import load_dataset
+from .shadow_artifacts import load_persisted_shadow_trace_envelope
 from .shadow_event_source import FileShadowTraceEventSource
 from .shadow_event_types import MonitorStreamKey
+from .shadow_window import assemble_shadow_window
 from .workload_monitor import (
     DryRunPolicyInputProvider,
     DryRunPolicyInputs,
@@ -80,10 +82,13 @@ __all__ = [
     "EXP008_DETECTOR_SEED",
     "EXP008AcquisitionError",
     "Exp008Configuration",
+    "Exp008CaptureResult",
     "Exp008Runtime",
     "Exp008RunResult",
     "Exp008Stream",
     "build_live_runtime",
+    "capture_exp008",
+    "finalize_exp008",
     "prepare_exp008_configuration",
     "run_exp008",
 ]
@@ -150,6 +155,18 @@ class Exp008RunResult:
     output_dir: Path
     manifest_path: Path
     completion_path: Path
+    evaluated_stream_count: int
+    trace_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class Exp008CaptureResult:
+    """Completed live-query phase, awaiting a fresh-process finalization."""
+
+    output_dir: Path
+    receipt_path: Path
+    started_at_utc: str
+    preflight: Mapping[MonitorStreamKey, ServingPreflightResult]
     evaluated_stream_count: int
     trace_count: int
 
@@ -630,7 +647,7 @@ def _run_manifest(
     *,
     configuration: Exp008Configuration,
     output_dir: Path,
-    repository: Path,
+    git_metadata: Mapping[str, object],
     started_at_utc: str,
     preflight: Mapping[MonitorStreamKey, ServingPreflightResult],
 ) -> dict[str, object]:
@@ -638,7 +655,7 @@ def _run_manifest(
         "schema_version": _RUN_SCHEMA_VERSION,
         "execution_mode": PolicyMode.DRY_RUN.value,
         "started_at_utc": started_at_utc,
-        "git": git_state(repository),
+        "git": dict(git_metadata),
         "environment_pins": _json_value(ENV001_PINS),
         "dataset": {
             "directory": str(configuration.dataset_dir),
@@ -682,39 +699,42 @@ def _raise_if_incomplete_preflight(
         raise EXP008AcquisitionError("SERVING_PREFLIGHT_INCOMPLETE")
 
 
-def run_exp008(
+def capture_exp008(
     *,
     configuration: Exp008Configuration,
     runtime: Exp008Runtime,
     output_dir: str | os.PathLike[str],
     clock: Callable[[], str] | None = None,
-    resource_snapshot: Callable[[str], Mapping[str, object]] | None = None,
-    repository: str | os.PathLike[str] = _REPOSITORY_ROOT,
-    pre_run_resources: Mapping[str, object] | None = None,
-) -> Exp008RunResult:
-    """Run the registered 1,200-request read-only EXP-008 stationary capture."""
+    pre_run_resources: Mapping[str, object],
+    capture_git: Mapping[str, object],
+) -> Exp008CaptureResult:
+    """Run only the gRPC-owning capture phase, then close its clients.
+
+    The caller must obtain the resource snapshot and Git state *before*
+    constructing live clients.  Finalization happens in a fresh process so
+    host-snapshot subprocesses can never fork from a live gRPC runtime.
+    """
 
     if not isinstance(configuration, Exp008Configuration):
         raise TypeError("configuration must be an Exp008Configuration")
     if not isinstance(runtime, Exp008Runtime):
         raise TypeError("runtime must be an Exp008Runtime")
-    repository_path = Path(repository)
     root = Path(output_dir)
     if root.exists():
         raise FileExistsError(f"refusing to overwrite EXP-008 evidence: {root}")
     root.mkdir(parents=True, mode=0o700)
     root.chmod(0o700)
     utc_clock = clock or _StrictUtcClock()
-    snapshot = resource_snapshot or (lambda timestamp: _resource_snapshot(timestamp_utc=timestamp))
     closed = False
     try:
-        pre_snapshot = (
-            dict(pre_run_resources)
-            if pre_run_resources is not None
-            else dict(snapshot(utc_clock()))
-        )
+        pre_snapshot = dict(pre_run_resources)
         if not isinstance(pre_snapshot.get("timestamp_utc"), str):
             raise EXP008AcquisitionError("PRE_RUN_RESOURCE_SNAPSHOT_INVALID")
+        if (
+            not isinstance(capture_git.get("commit"), str)
+            or not isinstance(capture_git.get("dirty"), bool)
+        ):
+            raise EXP008AcquisitionError("CAPTURE_GIT_STATE_INVALID")
         write_immutable_json(root / "pre_run_resources.json", pre_snapshot)
         preflight = runtime.serving.preflight()
         write_immutable_json(root / "serving_preflight.json", _preflight_document(preflight))
@@ -827,23 +847,11 @@ def run_exp008(
         _raise_if_incomplete_preflight(postflight)
         runtime.close()
         closed = True
-        write_immutable_json(root / "post_run_resources.json", dict(snapshot(utc_clock())))
-
-        manifest = _run_manifest(
-            configuration=configuration,
-            output_dir=root,
-            repository=repository_path,
-            started_at_utc=pre_snapshot["timestamp_utc"],
-            preflight=preflight,
-        )
-        manifest["artifact_sha256"] = dict(_artifact_hashes(root))
-        manifest["self_sha256"] = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
-        manifest_path = root / "run_manifest.json"
-        write_immutable_json(manifest_path, manifest)
-        completion = {
+        receipt = {
             "schema_version": _RUN_SCHEMA_VERSION,
-            "status": "COMPLETE",
-            "manifest_sha256": sha256_file(manifest_path),
+            "status": "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION",
+            "capture_git": dict(capture_git),
+            "started_at_utc": pre_snapshot["timestamp_utc"],
             "trace_count": 24,
             "foreground_request_count": len(receipts),
             "worker_cycle_count": len(worker_cycles),
@@ -862,12 +870,13 @@ def run_exp008(
                 "milvus_configuration_mutation_called": False,
             },
         }
-        completion_path = root / "completion.json"
-        write_immutable_json(completion_path, completion)
-        return Exp008RunResult(
+        receipt_path = root / "capture_receipt.json"
+        write_immutable_json(receipt_path, receipt)
+        return Exp008CaptureResult(
             output_dir=root,
-            manifest_path=manifest_path,
-            completion_path=completion_path,
+            receipt_path=receipt_path,
+            started_at_utc=pre_snapshot["timestamp_utc"],
+            preflight=preflight,
             evaluated_stream_count=len(evaluated),
             trace_count=24,
         )
@@ -893,9 +902,262 @@ def run_exp008(
         raise
 
 
+def _load_capture_receipt(root: Path) -> Mapping[str, object]:
+    try:
+        receipt = json.loads((root / "capture_receipt.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise EXP008AcquisitionError("CAPTURE_RECEIPT_UNAVAILABLE") from exc
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != _RUN_SCHEMA_VERSION:
+        raise EXP008AcquisitionError("CAPTURE_RECEIPT_INVALID")
+    if receipt.get("status") != "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION":
+        raise EXP008AcquisitionError("CAPTURE_RECEIPT_NOT_FINALIZABLE")
+    return receipt
+
+
+def _preflight_from_document(
+    configuration: Exp008Configuration, document: object
+) -> Mapping[MonitorStreamKey, ServingPreflightResult]:
+    if not isinstance(document, Mapping):
+        raise EXP008AcquisitionError("PREFLIGHT_DOCUMENT_INVALID")
+    results: dict[MonitorStreamKey, ServingPreflightResult] = {}
+    for stream in configuration.streams:
+        value = document.get(stream.stream_key.stream_id)
+        if not isinstance(value, Mapping):
+            raise EXP008AcquisitionError("PREFLIGHT_DOCUMENT_INVALID")
+        complete = value.get("complete")
+        checked = value.get("checked_stream_count")
+        reasons = value.get("reason_codes")
+        if (
+            not isinstance(complete, bool)
+            or isinstance(checked, bool)
+            or not isinstance(checked, int)
+            or not isinstance(reasons, list)
+            or not all(isinstance(reason, str) for reason in reasons)
+        ):
+            raise EXP008AcquisitionError("PREFLIGHT_DOCUMENT_INVALID")
+        results[stream.stream_key] = ServingPreflightResult(
+            complete=complete,
+            checked_stream_count=checked,
+            reason_codes=tuple(reasons),
+        )
+    if len(document) != len(results):
+        raise EXP008AcquisitionError("PREFLIGHT_DOCUMENT_INVALID")
+    return MappingProxyType(results)
+
+
+def _verify_capture_artifacts(
+    *, root: Path, configuration: Exp008Configuration, receipt: Mapping[str, object]
+) -> Mapping[MonitorStreamKey, ServingPreflightResult]:
+    """Re-derive completion predicates before immutable finalization."""
+
+    try:
+        preflight_document = json.loads((root / "serving_preflight.json").read_text(encoding="utf-8"))
+        postflight_document = json.loads((root / "serving_postflight.json").read_text(encoding="utf-8"))
+        receipts = json.loads((root / "foreground_receipts.json").read_text(encoding="utf-8"))
+        worker_cycles = json.loads((root / "worker_cycles.json").read_text(encoding="utf-8"))
+        monitor_records = json.loads((root / "monitor_audit_records.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise EXP008AcquisitionError("CAPTURE_ARTIFACT_LOAD_FAILED") from exc
+    preflight = _preflight_from_document(configuration, preflight_document)
+    _raise_if_incomplete_preflight(preflight)
+    _raise_if_incomplete_preflight(_preflight_from_document(configuration, postflight_document))
+    if (
+        not isinstance(receipts, list)
+        or len(receipts) != 1200
+        or not all(
+            isinstance(item, Mapping)
+            and item.get("served_success") is True
+            and item.get("observation_status") == "ACCEPTED"
+            for item in receipts
+        )
+    ):
+        raise EXP008AcquisitionError("CAPTURE_FOREGROUND_EVIDENCE_INVALID")
+    counts = {stream.stream_key.stream_id: 0 for stream in configuration.streams}
+    for item in receipts:
+        stream_id = item.get("stream_id")
+        if stream_id not in counts:
+            raise EXP008AcquisitionError("CAPTURE_FOREGROUND_STREAM_INVALID")
+        counts[stream_id] += 1
+    if set(counts.values()) != {600}:
+        raise EXP008AcquisitionError("CAPTURE_FOREGROUND_CARDINALITY_INVALID")
+    if (
+        not isinstance(worker_cycles, list)
+        or len(worker_cycles) != 24
+        or not all(
+            isinstance(item, Mapping)
+            and item.get("drained_observation_count") == 50
+            and item.get("captured_trace_count") == 1
+            and item.get("published_trace_count") == 1
+            and item.get("rejected_observation_count") == 0
+            and item.get("blocked_stream_count") == 0
+            and item.get("reason_codes") == []
+            for item in worker_cycles
+        )
+    ):
+        raise EXP008AcquisitionError("CAPTURE_WORKER_EVIDENCE_INVALID")
+    groups: dict[tuple[str, int, str], list[tuple[int, object]]] = {}
+    outbox_root = (root / "outbox").resolve()
+    for event_path in sorted((root / "outbox" / "acknowledged").glob("*.json")):
+        try:
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            stream = event["stream_key"]["stream_id"]
+            sequence = event["window_sequence"]
+            window_id = event["window_id"]
+            trace_index = event["trace_sequence_index"]
+            relative_envelope_path = Path(event["envelope_path"])
+            expected_trace_sha256 = event["expected_trace_sha256"]
+        except (OSError, TypeError, KeyError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID") from exc
+        if (
+            relative_envelope_path.is_absolute()
+            or relative_envelope_path.parts[:1] != ("traces",)
+            or len(relative_envelope_path.parts) != 2
+            or relative_envelope_path.suffix != ".json"
+            or not isinstance(expected_trace_sha256, str)
+        ):
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID")
+        envelope_path = (outbox_root / relative_envelope_path).resolve()
+        if not envelope_path.is_relative_to(outbox_root):
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID")
+        try:
+            envelope = load_persisted_shadow_trace_envelope(envelope_path)
+        except (OSError, TypeError, UnicodeError, ValueError) as exc:
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID") from exc
+        if envelope.expected_trace_sha256 != expected_trace_sha256:
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID")
+        if not isinstance(stream, str) or not isinstance(sequence, int) or not isinstance(window_id, str) or not isinstance(trace_index, int):
+            raise EXP008AcquisitionError("CAPTURE_EVENT_OR_TRACE_INVALID")
+        groups.setdefault((stream, sequence, window_id), []).append((trace_index, envelope))
+    if len(groups) != 6 or sum(len(values) for values in groups.values()) != 24:
+        raise EXP008AcquisitionError("CAPTURE_TRACE_CARDINALITY_INVALID")
+    for (stream_id, sequence, window_id), values in groups.items():
+        if stream_id not in counts or sequence not in range(3) or len(values) != 4:
+            raise EXP008AcquisitionError("CAPTURE_TRACE_GROUP_INVALID")
+        window = assemble_shadow_window(
+            window_id=window_id,
+            envelopes=tuple(envelope for _, envelope in sorted(values)),
+        )
+        if not window.complete or len(window.query_records) != 200:
+            raise EXP008AcquisitionError("CAPTURE_WINDOW_ASSEMBLY_INVALID")
+    if any((root / "outbox" / "pending").glob("*.json")):
+        raise EXP008AcquisitionError("CAPTURE_PENDING_EVENTS_PRESENT")
+    evaluated = [
+        item
+        for item in monitor_records
+        if isinstance(item, Mapping) and item.get("status") == "EVALUATED"
+    ] if isinstance(monitor_records, list) else []
+    if (
+        len(evaluated) != 2
+        or {item.get("detector_state") for item in evaluated} != {"NO_DRIFT"}
+        or {item.get("policy_action") for item in evaluated} != {"NO_CHANGE"}
+        or any(item.get("reason_codes") != [] for item in evaluated)
+        or receipt.get("no_actuation", {}).get("policy_mode_dry_run") is not True
+    ):
+        raise EXP008AcquisitionError("CAPTURE_MONITOR_EVIDENCE_INVALID")
+    return preflight
+
+
+def finalize_exp008(
+    *,
+    configuration: Exp008Configuration,
+    output_dir: str | os.PathLike[str],
+    post_run_resources: Mapping[str, object],
+    repository: str | os.PathLike[str] = _REPOSITORY_ROOT,
+) -> Exp008RunResult:
+    """Finalize a complete capture only from a fresh non-gRPC process."""
+
+    root = Path(output_dir)
+    repository_path = Path(repository)
+    if (root / "run_manifest.json").exists() or (root / "completion.json").exists():
+        raise EXP008AcquisitionError("EXP008_ALREADY_FINALIZED")
+    if not isinstance(post_run_resources.get("timestamp_utc"), str):
+        raise EXP008AcquisitionError("POST_RUN_RESOURCE_SNAPSHOT_INVALID")
+    receipt = _load_capture_receipt(root)
+    capture_git = receipt.get("capture_git")
+    if not isinstance(capture_git, Mapping):
+        raise EXP008AcquisitionError("CAPTURE_GIT_STATE_INVALID")
+    current_git = git_state(repository_path)
+    if current_git["commit"] != capture_git.get("commit"):
+        raise EXP008AcquisitionError("CAPTURE_COMMIT_CHANGED_BEFORE_FINALIZATION")
+    preflight = _verify_capture_artifacts(
+        root=root, configuration=configuration, receipt=receipt
+    )
+    write_immutable_json(root / "post_run_resources.json", dict(post_run_resources))
+    manifest = _run_manifest(
+        configuration=configuration,
+        output_dir=root,
+        git_metadata=current_git,
+        started_at_utc=receipt["started_at_utc"],
+        preflight=preflight,
+    )
+    manifest["artifact_sha256"] = dict(_artifact_hashes(root))
+    manifest["self_sha256"] = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
+    manifest_path = root / "run_manifest.json"
+    write_immutable_json(manifest_path, manifest)
+    completion = {
+        "schema_version": _RUN_SCHEMA_VERSION,
+        "status": "COMPLETE",
+        "manifest_sha256": sha256_file(manifest_path),
+        "trace_count": receipt["trace_count"],
+        "foreground_request_count": receipt["foreground_request_count"],
+        "worker_cycle_count": receipt["worker_cycle_count"],
+        "evaluated_stream_count": receipt["evaluated_stream_count"],
+        "detector_states": receipt["detector_states"],
+        "policy_actions": receipt["policy_actions"],
+        "no_actuation": receipt["no_actuation"],
+    }
+    completion_path = root / "completion.json"
+    write_immutable_json(completion_path, completion)
+    return Exp008RunResult(
+        output_dir=root,
+        manifest_path=manifest_path,
+        completion_path=completion_path,
+        evaluated_stream_count=int(receipt["evaluated_stream_count"]),
+        trace_count=int(receipt["trace_count"]),
+    )
+
+
+def run_exp008(
+    *,
+    configuration: Exp008Configuration,
+    runtime: Exp008Runtime,
+    output_dir: str | os.PathLike[str],
+    clock: Callable[[], str] | None = None,
+    resource_snapshot: Callable[[str], Mapping[str, object]] | None = None,
+    repository: str | os.PathLike[str] = _REPOSITORY_ROOT,
+) -> Exp008RunResult:
+    """In-process helper for fake-runtime tests only.
+
+    Production callers must use :func:`capture_exp008` followed by a fresh
+    process invoking :func:`finalize_exp008`.  A caller has to inject both
+    snapshots here so this convenience helper cannot accidentally launch a
+    host subprocess after a real gRPC client has existed in the process.
+    """
+
+    utc_clock = clock or _StrictUtcClock()
+    if resource_snapshot is None:
+        raise TypeError("resource_snapshot is required for in-process fake-runtime use")
+    snapshot = resource_snapshot
+    repository_path = Path(repository)
+    capture = capture_exp008(
+        configuration=configuration,
+        runtime=runtime,
+        output_dir=output_dir,
+        clock=utc_clock,
+        pre_run_resources=dict(snapshot(utc_clock())),
+        capture_git=git_state(repository_path),
+    )
+    return finalize_exp008(
+        configuration=configuration,
+        output_dir=capture.output_dir,
+        post_run_resources=dict(snapshot(utc_clock())),
+        repository=repository_path,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--uri", required=True)
+    parser.add_argument("--uri")
     parser.add_argument("--dataset-dir", type=Path, required=True)
     parser.add_argument("--l2-baseline", type=Path, required=True)
     parser.add_argument("--cosine-baseline", type=Path, required=True)
@@ -903,6 +1165,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-seed", type=int, default=EXP008_DETECTOR_SEED)
     parser.add_argument("--etcd-container", default="milvus-etcd")
     parser.add_argument("--minio-container", default="milvus-minio")
+    parser.add_argument(
+        "--finalize-only",
+        action="store_true",
+        help=(
+            "finalize a completed capture in a fresh non-gRPC process; "
+            "never opens a Milvus client"
+        ),
+    )
     return parser
 
 
@@ -915,21 +1185,48 @@ def main(argv: list[str] | None = None) -> int:
         l2_baseline_path=args.l2_baseline,
         cosine_baseline_path=args.cosine_baseline,
     )
-    pre_run_resources = _resource_snapshot(timestamp_utc=_StrictUtcClock()())
+    clock = _StrictUtcClock()
+    if args.finalize_only:
+        result = finalize_exp008(
+            configuration=configuration,
+            output_dir=args.output_dir,
+            post_run_resources=_resource_snapshot(timestamp_utc=clock()),
+        )
+        print(json.dumps(_json_value(result), sort_keys=True))
+        return 0
+    if not isinstance(args.uri, str) or not args.uri:
+        raise EXP008AcquisitionError("URI_REQUIRED_FOR_CAPTURE")
+    pre_run_resources = _resource_snapshot(timestamp_utc=clock())
+    capture_git = git_state(_REPOSITORY_ROOT)
     runtime = build_live_runtime(
         configuration=configuration,
         uri=args.uri,
         etcd_container=args.etcd_container,
         minio_container=args.minio_container,
     )
-    result = run_exp008(
+    capture = capture_exp008(
         configuration=configuration,
         runtime=runtime,
         output_dir=args.output_dir,
+        clock=clock,
         pre_run_resources=pre_run_resources,
+        capture_git=capture_git,
     )
-    print(json.dumps(_json_value(result), sort_keys=True))
-    return 0
+    del capture
+    forwarded = list(sys.argv[1:] if argv is None else argv)
+    if "--finalize-only" in forwarded:
+        raise AssertionError("capture invocation unexpectedly includes --finalize-only")
+    os.execv(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "vdbench.exp008_acquisition",
+            *forwarded,
+            "--finalize-only",
+        ],
+    )
+    raise AssertionError("os.execv unexpectedly returned")
 
 
 if __name__ == "__main__":
