@@ -1283,3 +1283,103 @@ Deliberate live H1/H4 evidence captured on 2026-08-03 under clean commit `76600f
 Conclusion:
 
 EXP-008 is VERIFIED for the reference in-process host-observation composition: H1 foreground isolation, H2 trace/window production, H3 live read-only DRY_RUN evaluation, and H4 deliberate failure/restart containment all have immutable live evidence. This verification does not claim an external serving-application deployment, does not authorize full-traffic tuning, and does not authorize automatic actuation; a separately designed and evidenced human-gated canary/rollback step remains required.
+
+---
+
+### EXP-009: Human-gated 60-of-600 canary and rollback validation
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Date: 2026-08-03
+Risk level: CRITICAL (ADR-008 candidate routing, confidence evidence, approval security, and rollback safety)
+
+Objective:
+
+Validate the prerequisites for exactly one controlled, human-gated adjacent HNSW query-time-`ef` canary transition. The experiment must prove the statistical/workload contract before implementation, then prove approval, bounded routing, failback, and restoration without claiming an external serving deployment or authorizing automatic/full-traffic tuning.
+
+Scope:
+
+- **In scope:** an immutable 600-occurrence workload manifest; 60-of-600 deterministic candidate selection; a calibrated confidence-bound estimator; one-time signed operator approval; pre-action shadow/health/identity gates; candidate routing through the verified reference host seam; append-only audit records; mandatory rollback; restart and expiry failback; and a final 50-query restoration audit.
+- **Out of scope:** automatic approval generation, automatic full-traffic application, persistent Milvus/index/schema/configuration mutation, external HTTP/gRPC serving deployment, multi-host coordination, multi-tenant routing, and a claim that a controlled replay represents IID production traffic.
+
+Hypotheses:
+
+- **H1 — Workload/routing cardinality:** a frozen, identity-bound 600-occurrence workload admits exactly 60 candidate routes and 540 last-known-good routes at a strict 10% cap, with no duplicate occurrence identity and no candidate route outside the approved manifest.
+- **H2 — Statistical gate validity:** the declared recall-lower and p95-latency-upper estimators meet their pre-registered coverage/calibration criteria under the declared sampling model. A distribution-free p95 maximum bound uses at least 59 candidate observations; this experiment uses 60 and must not claim independent-sample coverage if its workload design cannot support it.
+- **H3 — Approval containment:** only a valid, unexpired, one-time grant bound to the exact decision, identities, workload digest, routing seed, and transition can install a route. Every invalid, expired, replayed, or mismatched grant fails closed before candidate traffic.
+- **H4 — Foreground and restart safety:** foreground routing uses only a non-blocking immutable route lookup. Approval verification, audit persistence, health checks, detector/policy evaluation, shadow capture, and rollback verification remain off the served-query path; restart/expiry/identity failure immediately fails back to the persisted last-known-good `ef`.
+- **H5 — Controlled rollback truthfulness:** a deliberately triggered hard, recall, and latency failure each clears candidate routing, records the exact trigger, restores last-known-good routing, and proves restoration with health/identity plus a 50-query FLAT/oracle audit. No alternate candidate and no automatic re-enable occurs.
+
+Frozen contract (before implementation):
+
+- **Candidate cardinality:** exactly 60 candidate occurrences from exactly 600 eligible occurrences. The route fraction is exactly `0.10`, never rounded upward. A 50-of-500 implementation is prohibited by ADR-008 for this experiment.
+- **Sampling declaration:** before Stage 2, record the target population, whether occurrence IDs map one-to-one to vectors, any vector reuse, independence/temporal-dependence assumptions, selection method, seed-generation method, and the exact calibration rule. DATASET-001’s 200 measured query IDs cannot silently satisfy the 600-occurrence requirement.
+- **Confidence rule:** report a one-sided 95% recall lower bound and p95 latency upper bound only when their estimator, assumptions, and Stage-1 calibration are accepted. If a distribution-free maximum is used for p95, record the exact coverage formula and achieved coverage; if another estimator is used, compare it against this conservative baseline without selecting it post hoc.
+- **Approval scope:** the grant binds EXP-009 authorization, decision/audit digest, metric/stratum, current/candidate/last-known-good `ef`, configuration/index/data/FLAT identities, workload-manifest digest, routing seed, maximum fraction, issue/expiry, and rollback pre-authorization. Private keys and raw payloads are prohibited from artifacts.
+- **Live transition candidate:** only after all prior stages pass, the first controlled transition may evaluate the ADR-002 L2 / `target-075` `ef=400 → 800` quality-recovery exception. It requires the exact exception identity, `<=1.50×` relative latency ceiling, `<=10 ms` absolute ceiling, and `>=0.005` recall improvement. If no authentic, eligible `START_CANARY` decision and qualified last-known-good state exist, the live stage is blocked rather than fabricated.
+
+Required stages and pass criteria:
+
+1. **Stage 1 — workload and confidence preflight (offline)**
+   - Define and checksum the 600-occurrence manifest; independently verify cardinality, uniqueness, vector-binding disclosure, and no hidden mutation of DATASET-001.
+   - Calibrate the estimators on pre-registered stationary replays without changing the estimator after viewing evaluation results. Report point estimates, bounds, coverage, invalid intervals, and every assumption.
+   - Pass only if the declared sampling model is supportable, the p95 upper-bound method has at least its claimed one-sided coverage, recall bound behavior is specified and calibrated, and all results are reproducible from committed inputs/seeds. Otherwise stop before route/approval implementation.
+2. **Stage 2 — approval and routing contracts (offline)**
+   - Test valid, missing, invalid-signature, expired, revoked, wrong-decision, wrong-identity, wrong-workload, wrong-seed, duplicate/replayed, and audit-write-failure grants.
+   - Test 59/60/61 candidate and 599/600/601 workload boundaries; exact candidate/LKG partitions; duplicate occurrence IDs; route installation/removal atomicity; and state recovery after process restart.
+   - Pass only if every unsafe condition records an explicit non-sensitive refusal and issues zero candidate search/routing calls.
+3. **Stage 3 — rollback containment (offline)**
+   - Inject every ADR-002 hard/recall/latency rollback trigger, route-store corruption, grant expiry, identity change, restoration-audit failure, and automatic-action-controller disable state.
+   - Pass only if each event removes the candidate route, restores LKG, writes an append-only record, prevents any alternate candidate/re-enable, and fails closed when restoration cannot be verified.
+4. **Stage 4 — controlled live canary (only if Stages 1–3 are verified)**
+   - Run only from a clean commit against verified ENV-001 with a human-signed, one-time exact grant; capture raw preflight, approval, route partition, all 600 foreground outcomes, candidate/LKG observations, bounds, audit records, identity/health results, and post-run restoration check.
+   - Pass only if every pre-action gate is real and passing; exposure is exactly 60/600; no Milvus mutation API is called; results meet the declared SLO/bound contract; and a separately authorized deliberate rollback run proves failback/restoration. A blocked precondition is an honest blocked result, not a reason to synthesize a grant or outcome.
+
+Metrics:
+
+- Candidate/LKG route counts, candidate fraction, duplicate/missing/unexpected occurrence-ID count, and foreground route-lookup latency.
+- Estimator coverage, bound validity rate, p95/max latency, recall mean/lower bound, paired recall difference, and sensitivity to declared dependence assumptions.
+- Grant validation/refusal counts by reason; grant-to-action/audit binding completeness; replay detection count; expiry and restart failback latency.
+- Pre-action/shadow/health/identity gate outcomes; candidate failures/timeouts/threshold/semantic violations; rollback trigger and restoration-audit outcomes.
+- Milvus mutation/configuration API call count (must be zero), policy/actuation/routing call counts, artifact checksum/inventory verification, and process-clean/dirty binding.
+
+Acceptance criteria:
+
+- Stage 1 establishes a reviewed estimator/workload basis before any candidate-routing code or live query-time transition exists.
+- All Stage 2/3 failure cases are deliberately tested with raw output and prove zero candidate traffic on denial plus deterministic LKG failback on safety failures.
+- The live stage, if reached, is human-gated, exactly bounded, read-only at the Milvus administration/configuration layer, reproducible, identity-bound, and has a raw deliberate rollback/restoration evidence bundle.
+- Full repository and focused suites pass. EXP-009 may authorize only the tested, exact human-gated transition class after review; it never authorizes autonomous, unbounded, multi-transition, external-host, or full-traffic tuning.
+
+Dependencies:
+
+- ADR-002 for action ladder, SLOs, conservative bounds, and rollback conditions.
+- ADR-004 for evidence provenance and identity binding.
+- ADR-005 through ADR-007 plus verified EXP-005–EXP-008 for the durable observation/monitor reference path.
+- `76600f8` for strict EXP-008 H1/H4 artifact verification; `fec0b86` for verified EXP-008 state documentation and evidence publication.
+
+Dataset ID:
+
+DATASET-001 remains immutable and may be consumed only as declared input. A 600-occurrence canary workload is a new, separately checksummed contract; whether it is a new deterministic dataset version, an approved occurrence schedule, or a real-host workload must be decided and validated in Stage 1.
+
+Hardware:
+
+For any live stage, record ENV-001 image/digest/version pins, collection identities, container health, host/Docker resource allocation, background workload disclosure, pre/post resource snapshots, Python environment/lock checksum, and clean git state. Performance claims remain secondary to safety and confidence validity.
+
+Git commit:
+
+TBD at execution; pin every approval, routing, estimator, policy/actuation, audit, host-seam, test, and evidence-verifier dependency.
+
+Random seed:
+
+TBD before Stage 1. It must be generated/committed under the declared selection model before candidate results are read and bound into the workload/approval artifacts; no seed may be selected after inspecting canary outcomes.
+
+Raw output location:
+
+Planned: `artifacts/exp-009/<UTC-run-id>/`.
+
+Result:
+
+Not run.
+
+Conclusion:
+
+EXP-009 is the mandatory statistical, approval, routing, and rollback gate for any candidate query-time-`ef` transition. Until it is verified, every policy path remains DRY_RUN-only and the existing offline actuation code remains non-authorizing.

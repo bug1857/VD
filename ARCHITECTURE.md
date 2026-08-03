@@ -918,6 +918,86 @@ Research references:
 
 ---
 
+### ADR-008: Require a validated 60-of-600, human-gated canary contract before any candidate routing
+
+Status: Proposed — statistics contract, workload contract, implementation, and EXP-009 evidence required
+Date: 2026-08-03
+Risk level: CRITICAL
+Evidence status: INFERRED mathematical correction and safety design. This ADR authorizes neither candidate routing nor rollback against live traffic.
+
+Problem:
+
+ADR-002 requires a one-sided 95% upper confidence bound for p95 latency while its canary contract fixes exactly 50 candidate queries from a 500-query batch. That combination is not distribution-free valid. Even the most conservative order-statistic upper bound—the maximum of 50 independent observations—covers a population p95 with probability only `1 - 0.95^50 = 0.923055024723`. At least 59 candidate observations are required to reach 95% coverage (`1 - 0.95^59 = 0.951505474751`); this ADR chooses 60 to preserve a strict 10% exposure cap with a 600-query batch.
+
+There is an independent workload gap: DATASET-001 contains 200 measured query IDs, while the existing `MilvusActuationClient` contract requires 500 unique canary IDs. Repeating a vector under invented IDs, or calling a deterministic replay sample independent when it is not, would weaken the scientific claim and must not be silently introduced.
+
+The current policy deliberately consumes confidence bounds without estimating them, and the current actuation adapter deliberately models query-time `ef` routing without a host routing authority. These are appropriate offline seams, but insufficient to support a real candidate route. A human approval boundary, an explicit sampling model, an immutable workload definition, and an independently verifiable rollback path are required first.
+
+Decision drivers:
+
+- Preserve the ADR-002 one-sided 95% confidence promise instead of weakening it after evidence collection.
+- Keep candidate exposure at or below 10%; no server-side index/configuration mutation is involved because `ef` is query-time only.
+- Bind a human approval to one exact detector/policy decision, metric/stratum, identities, transition, workload, and expiry.
+- Make process restart fail to last-known-good routing, never to a partially remembered candidate state.
+- Distinguish a controlled reference replay from an external production-serving deployment and from a claim of IID production traffic.
+
+Alternatives considered:
+
+| Option | Statistical validity | Safety | Cost/complexity | Decision |
+|---|---|---|---|---|
+| A — Retain 50 candidate queries and call the resulting maximum a 95% p95 upper bound | Invalid: maximum coverage is 92.3055% | Appears conservative but violates the stated confidence contract | Lowest | Rejected |
+| B — Retain 50 and use a parametric/bootstrap bound | Potentially useful only under declared, calibrated assumptions; not distribution-free | Unsafe to use before calibration and sensitivity analysis | Medium | Deferred; may be evaluated only as an EXP-009 comparator |
+| C — Require 60 candidate queries from a 600-occurrence workload, with a precommitted sampling model and human-gated route | Supports at least 95.1505% order-statistic coverage under the declared independent sampling model; otherwise fails closed | Explicit approval, bounded route, restart-to-LKG, durable audit | Higher but bounded | Chosen, subject to EXP-009 validation |
+| D — Change a persistent Milvus/index setting for a canary | Does not solve the confidence issue and contradicts query-time `ef` semantics | Broad blast radius and hard rollback | High | Rejected |
+
+Chosen solution:
+
+No candidate route may be implemented or enabled until EXP-009 validates the following proposed contract.
+
+1. **Workload and sampling contract.** A canary consumes exactly 600 distinct *occurrence IDs* and routes exactly 60 to the candidate (`0.10`), with all 600 occurrence IDs, vector bindings, threshold/range/limit, metric, stratum, and ordering frozen in an immutable manifest before any query result is read. The manifest must state whether occurrence IDs map one-to-one to unique vectors or intentionally reuse a vector, and must not call reused observations independent. If the workload cannot supply a scientifically justified 600-occurrence sampling population, candidate routing is prohibited; DATASET-001 alone does not satisfy this requirement today.
+2. **Confidence-bound contract.** The experiment must define one estimator for mean capped-recall lower bounds and one for p95-latency upper bounds, their exact target population, their assumptions, and their coverage-calibration procedure. A distribution-free p95 upper bound may use the sample maximum only with at least 59 candidate observations from the declared independent sampling model. If temporal dependence, replay duplication, or a finite-population design invalidates that model, the estimator must be recalibrated by an independently pre-registered stationary replay; absent calibration, the policy receives no applicable bound and fails closed.
+3. **Approval contract.** A `CanaryApprovalGrant` is an immutable, signed, one-time record from an externally managed operator key. It binds the exact `PolicyDecision` digest and audit ID; EXP authorization ID; metric/stratum; current/candidate/last-known-good `ef`; configuration/index/data/FLAT identities; 600-occurrence workload-manifest digest; routing seed; maximum traffic fraction `0.10`; issue and expiry timestamps; and a rollback pre-authorization for that exact transition. The verifier uses an injected public-key trust store; private keys, credentials, and raw query payloads never enter the repository or audit artifacts. Missing, expired, invalid, replayed, revoked, or mismatched grants fail closed before a candidate query is sent.
+4. **Routing contract.** An approved route is an immutable in-memory plan consumed by the existing host serving seam. Foreground routing performs only an atomic plan read and deterministic occurrence-ID membership lookup; it does not read an approval file, verify a signature, contact Milvus health endpoints, write an audit record, wait for a worker, or invoke policy. The route selects exactly the manifest’s 60 candidate occurrence IDs; every other eligible occurrence uses the persisted last-known-good `ef`. There is exactly one routing authority—no competing route inside `MilvusActuationClient`, the host executor, or the policy.
+5. **Lifecycle and rollback contract.** A coordinator validates grant, policy gates, pre-action health/identity, last-known-good persistence, and a paired 50-query shadow audit before atomically installing the route. It writes an append-only approval/action record before activation. Any hard failure, SLO failure, process restart, grant expiry, identity change, or unable-to-verify state clears the candidate route immediately and restores last-known-good routing. The grant’s explicit rollback pre-authorization permits this safety restoration only; it does not authorize another candidate or a full-traffic change. Successful rollback requires the existing health/identity checks and a 50-query FLAT/oracle restoration audit; failure disables further actions and requires operator intervention.
+6. **Scope.** The first implementation remains a controlled reference canary. It performs HNSW query-time `ef` routing only; it does not mutate a Milvus collection, index, schema, or server configuration. It does not create an HTTP/gRPC service, integrate an external application, or authorize autonomous/full-traffic tuning.
+
+Safety invariants:
+
+- `DRY_RUN` remains the default and the only available mode until a verified approval grant is presented to the coordinator.
+- A policy decision alone is insufficient to route a candidate; `START_CANARY` without a valid exact grant is a logged, non-actioning refusal.
+- The candidate route is capped at exactly 60 of 600 eligible occurrence IDs and may not be expanded in-place.
+- A restart or incomplete recovery defaults to the persisted last-known-good `ef`; no candidate route is reconstructed from volatile memory.
+- Every approval, refusal, activation, candidate result, rollback trigger, restoration check, and operator re-enable is append-only auditable with non-sensitive identities and digests.
+- No confidence interval, recall claim, latency claim, or production-traffic claim may be reported outside its declared sampling population.
+
+Consequences:
+
+- ADR-002’s 50-query canary sizing is superseded for any future candidate-routing implementation; its existing offline tests and DRY_RUN behavior remain valid, but they are not live-actuation evidence.
+- `CANARY_QUERY_COUNT`, the 500-ID adapter workload constraint, deterministic selector, policy tests, and all related contracts must not be changed until EXP-009 is pre-registered and its Stage 1 statistics/workload gates are accepted.
+- The project gains an explicit path to test a real reversible query-time transition without inventing a production host, but incurs a larger controlled workload and a new signed-approval/trust-store boundary.
+- If EXP-009 cannot validate the sampling/estimator contract, the system remains DRY_RUN-only. This is a correct safety outcome, not a reason to relax SLO confidence requirements.
+
+Verification plan:
+
+1. Pre-register EXP-009 before code. It must separately validate the workload population, bound-estimator calibration, approval cryptography/expiry/replay handling, foreground non-blocking routing, candidate route cardinality, and rollback/restart behavior.
+2. Unit-test invalid/missing/expired/replayed grant, wrong decision/identity/workload/seed, 59-vs-60 boundary, 600/60 routing cardinality, approval-audit write failure, restart/expiry failback, and every rollback trigger with no alternate candidate.
+3. Run a stationary replay to measure coverage of the selected confidence estimators under the declared design; report empirical coverage and interval failures without retuning the estimator on the evaluation replay.
+4. Before any live candidate route, require a clean commit, verified DATASET/workload manifest, healthy ENV-001 stack, qualified last-known-good, exact action-class authorization, and raw preflight evidence.
+5. In the controlled live stage, demonstrate one approved adjacent transition and its deliberate rollback path with raw candidate/last-known-good observations, identity checks, no server-side mutation, restoration audit, restart behavior, and immutable artifact verification. This stage remains human-gated; no automatic full-traffic action is authorized.
+
+Modules affected:
+
+Future approval-grant verifier, canary coordinator/routing-plan boundary, host-serving adapter injection point, confidence-bound estimator, actuation workload/selector, audit persistence, focused tests, and EXP-009 artifacts. `drift.py` remains a detector; `policy.py` remains pure; no module may duplicate their decisions. Existing `SafeActuationBoundary` and `MilvusActuationClient` may be composed only through their public contracts after the workload/statistical interfaces are revised.
+
+Research references:
+
+- ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
+- ADR-004 for immutable provenance binding.
+- ADR-005 through ADR-007 and EXP-008 for the verified reference observation/evidence path.
+- Order-statistic coverage identity: for independent observations and a population 95th percentile, `P(max(X_1…X_n) ≥ q_0.95) = 1 - 0.95^n`.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
