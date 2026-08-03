@@ -491,6 +491,183 @@ Modules affected: detector-owned provenance value type; shadow extraction; drift
 
 ---
 
+### ADR-005: Define the online workload monitor and DRY_RUN orchestration boundary
+
+Status: Proposed — design review required before implementation  
+Date: 2026-08-03  
+Risk level: CRITICAL  
+Evidence status: INFERRED design contract. No automatic actuation is authorized.
+
+Problem:
+
+The EXP-001 benchmark harness in `runner.py` and the ADR-002 detector in `drift.py` are disconnected. `runner.py` performs bounded benchmark runs; it does not consume live query evidence or invoke the detector. `drift.py` accepts finalized `WindowEvidence`; it has no facility to acquire, persist, group, or continuously assemble live shadow traces.
+
+EXP-005 established a reviewed read-only path for one stationary capture, but it is not an online monitor: it captures a preplanned twelve-trace experiment and exits. The system therefore lacks a restart-safe component that can continuously assemble eligible live shadow observations into immutable windows, evaluate the detector and policy in `DRY_RUN`, and record every outcome without modifying Milvus.
+
+Scope:
+
+In scope:
+
+- Continuous assembly of 200-query raw windows from persisted 50-query `ShadowAuditTrace` envelopes.
+- An immutable reference window plus two ordered, non-overlapping current windows per compatible metric/threshold/identity stream.
+- Detector evaluation using the existing extraction and drift interfaces.
+- Policy evaluation exclusively in `DRY_RUN`.
+- Restart-safe monitor state and append-only audit records for successful, incomplete, and rejected evaluations.
+
+Out of scope:
+
+- Automatic full-traffic apply, canary execution, rollback execution, or any Milvus mutation.
+- Changing `ef`, index rebuilds, collection changes, or serving-parameter changes.
+- Multi-backend, multi-tenant, k-NN tuning, hybrid search, and policy transfer; these remain Future Work.
+- Replacing EXP-005’s controlled acquisition runner or redefining `ShadowAuditTrace`, `AssembledShadowWindow`, detector statistics, or policy gates.
+
+Alternatives considered:
+
+| Option | Coupling | Testability | Scope-creep risk | Existing-interface fit |
+|---|---|---|---|---|
+| A — Polling loop inside `runner.py` | High: joins benchmark lifecycle to monitoring | Weak: requires benchmark/Milvus setup | High: EXP-001 code becomes an online service | Poor: `runner.py` emits benchmark records, not persisted trace envelopes |
+| B — Standalone `workload_monitor.py` consuming persisted trace-event queue/buffer | Low: depends on explicit protocols and immutable artifacts | Strong: source, state store, policy-input provider, and audit sink are injectable | Low to medium: narrow orchestration boundary | Strong: composes `assemble_shadow_window`, `extract_window_evidence`, `evaluate_drift_decision`, and `evaluate_tuning_policy` unchanged |
+| C — Extend `exp005_acquisition.py` into a continuous runner | Medium: reuses capture machinery but mixes experiment and service lifecycles | Moderate | High: controlled EXP-005 artifacts risk becoming an undeclared production protocol | Partial: useful producer code, but its fixed twelve-trace lifecycle does not model continuous state |
+
+Chosen solution:
+
+Choose **Option B**: a standalone, dependency-injected `workload_monitor.py`.
+
+It preserves the benchmark harness as a controlled measurement tool, reuses EXP-005’s validated persistence/assembly path, and makes the online loop independently replayable from immutable trace artifacts. `exp005_acquisition.py` remains a controlled trace producer and reference implementation, not a daemon.
+
+Architecture and interface contract:
+
+A trace producer must persist each envelope with `persist_shadow_trace_envelope(...)` before publishing an event. The monitor consumes only a reference to an immutable persisted envelope; it never trusts an unpersisted in-memory trace as evidence.
+
+```python
+@dataclass(frozen=True, slots=True)
+class MonitorStreamKey:
+    metric: Metric
+    threshold_stratum: str
+    configuration_identity: str
+    data_identity: str
+    flat_binding_id: str
+    hnsw_binding_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowTraceEvent:
+    event_id: str
+    stream_key: MonitorStreamKey
+    window_id: int | str
+    envelope_path: Path
+    expected_trace_sha256: str
+
+
+class ShadowTraceEventSource(Protocol):
+    def poll(self, *, limit: int) -> tuple[ShadowTraceEvent, ...]: ...
+
+
+class MonitorStateStore(Protocol):
+    def load(self, stream_key: MonitorStreamKey) -> MonitorStreamState: ...
+    def save(self, state: MonitorStreamState) -> None: ...
+
+
+class DryRunPolicyInputProvider(Protocol):
+    def resolve(
+        self,
+        *,
+        decision: DriftDecision,
+        provenance: EvidenceProvenance,
+    ) -> DryRunPolicyInputs: ...
+
+
+class MonitorAuditSink(Protocol):
+    def append(self, record: MonitorDecisionRecord) -> None: ...
+
+
+class WorkloadMonitor:
+    def run_once(self, *, max_events: int) -> tuple[MonitorCycleResult, ...]: ...
+```
+
+For every event, the monitor must:
+
+1. Load it with `load_persisted_shadow_trace_envelope`.
+2. Verify its trace checksum matches the event declaration.
+3. Group only four envelopes sharing one immutable `MonitorStreamKey` and externally assigned `window_id`.
+4. Call:
+
+```python
+assemble_shadow_window(window_id=..., envelopes=...)
+```
+
+5. Retain an accepted immutable reference window; it cannot be replaced automatically after a drift outcome.
+6. For two subsequent complete current windows, call:
+
+```python
+extract_window_evidence(
+    reference_window=reference,
+    current_window=current,
+    metric=stream_key.metric,
+    detector_seed=frozen_detector_seed,
+)
+```
+
+7. Call:
+
+```python
+evaluate_drift_decision(
+    previous=reference_to_current_1,
+    current=reference_to_current_2,
+)
+```
+
+8. Resolve the complete policy context externally, then call:
+
+```python
+evaluate_tuning_policy(
+    detector=decision,
+    current_ef=...,
+    response_estimates=...,
+    pre_action=...,
+    canary_observation=None,
+    qualification_windows=None,
+    last_known_good=...,
+    mode=PolicyMode.DRY_RUN,
+    threshold_stratum=stream_key.threshold_stratum,
+    audit_id=externally_reserved_audit_id,
+)
+```
+
+The monitor does not create response estimates, invent a last-known-good value, derive the policy audit ID, contact PyMilvus, or call a canary/rollback executor.
+
+Safety invariants:
+
+1. **DRY_RUN only.** The monitor hardcodes `PolicyMode.DRY_RUN`; it exposes no configuration path to `CANARY_ENABLED`.
+2. **No automatic actuation.** It must not import or call a Milvus actuation client or safe-actuation executor. Any future transition from a recorded recommendation to an execution path requires a separate approved ADR and experiment authorization.
+3. **Fail closed.** A malformed event, checksum failure, duplicate event, incompatible identity, incomplete trace/window, chronology failure, extraction failure, missing policy input, or provenance mismatch produces an audited invalid result and stops before detector, policy, or actuation processing as appropriate.
+4. **Immutable reference.** A drift result never triggers automatic rebaselining. Rebaseline requires an explicit human-approved workflow.
+5. **No evidence fabrication.** The monitor must not impute traces, substitute query IDs, reuse a prior audit sample, or coerce incomplete evidence to `NO_DRIFT`.
+6. **Audit every outcome.** Every consumed event group records source envelope IDs/hashes, stream key, window IDs, assembled manifest hashes, reason codes, detector result when reached, policy result when reached, and an externally reserved immutable audit ID.
+7. **Restart safety.** Deduplication state, the accepted reference window, pending envelope groups, prior/current `WindowEvidence`, and audit cursor must survive restart atomically. A missing or corrupt state store fails closed until manually repaired or rebaselined.
+8. **Foreground isolation.** Trace acquisition and monitor evaluation remain off the serving request’s timing path; monitor backpressure must drop/hold monitoring work, never delay live queries.
+
+Consequences:
+
+- `runner.py` remains a benchmark harness and stays decoupled from online monitoring.
+- EXP-005’s persistence, window assembly, extraction, provenance, detector, and policy contracts become the only allowed evidence path.
+- A future implementation requires a new CRITICAL experiment covering restart recovery, queue/event duplication, malformed envelopes, identity change, monitor backpressure, decision auditing, and proof that DRY_RUN never calls an actuation client.
+- This ADR does not authorize any live configuration change.
+
+Modules affected:
+
+New workload monitor/orchestration module; persisted trace-event source; monitor state store; audit sink; EXP-005 acquisition integration; `shadow_window.py`, `shadow_extraction.py`, `drift.py`, and `policy.py` as composed dependencies only.
+
+Research references:
+
+- ADR-001 for backend/benchmark separation.
+- ADR-002 for detector, policy, audit, dry-run, and rollback constraints.
+- ADR-003 for corrected MMD implementation.
+- ADR-004 for immutable evidence provenance.
+- EXP-005 for persisted live-shadow evidence and no-mutation verification.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
