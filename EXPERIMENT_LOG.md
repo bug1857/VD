@@ -492,7 +492,7 @@ Follow-up actions:
 
 ### EXP-005: Stationary live-shadow detector-to-policy dry-run integration
 
-Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Status: OFFLINE STAGES 1–3 IMPLEMENTED AND TESTED — LIVE ACQUISITION NOT IMPLEMENTED — NOT RUN
 Date: 2026-08-02
 Risk level: CRITICAL (actuation boundary integration; no live actuation authorized)
 
@@ -517,7 +517,7 @@ Configuration:
 
 ##### `AssembledShadowWindow`
 
-A proposed immutable, pure-data boundary containing one validated raw 200-query window assembled from exactly four compatible 50-query traces.
+An immutable, pure-data boundary containing one validated raw 200-query window assembled from exactly four compatible 50-query traces.
 
 It is not the existing `drift.WindowEvidence`.
 
@@ -530,11 +530,11 @@ It provides the raw inputs required to later calculate:
 
 ##### Existing `WindowEvidence`
 
-The existing ADR-002 detector object containing the finalized four-signal statistical family for one reference-versus-current comparison.
+The existing ADR-002 detector object containing the finalized four-signal statistical family for one reference-versus-current comparison. ADR-004 adds optional immutable `EvidenceProvenance`; it does not alias this object to `AssembledShadowWindow`.
 
 It must continue to be produced only from real `SignalEvidence` objects through the existing detector functions and completeness rules.
 
-Do not propose changing the existing `WindowEvidence` shape in this task.
+Do not alias an `AssembledShadowWindow` as `WindowEvidence`; extraction must use the actual detector signal functions.
 
 #### Source-trace envelope contract
 
@@ -551,14 +551,14 @@ Each envelope must provide:
 
 This is additive metadata around the current trace. It must not redefine or mutate `ShadowAuditTrace`.
 
-The envelope capture timestamp must use the repository’s existing RFC3339 UTC contract:
+The envelope capture timestamp must use strict RFC3339 UTC calendar parsing:
 
 * valid UTC timestamp ending in `Z`,
-* parsed using the same semantics as the current safe-actuation timestamp validator,
+* parsed as a real UTC calendar timestamp; invalid calendar values (for example month `13`) are rejected,
 * no local-time or offset timestamps,
 * all four timestamps within one window strictly increasing after parsing.
 
-Do not introduce a second incompatible timestamp grammar.
+This intentionally strengthens the existing regex-only safe-actuation validator for persisted EXP-005 trace provenance. It does not modify or weaken the safe-actuation validator.
 
 The experiment manifest must prove:
 
@@ -845,19 +845,20 @@ Do not coerce incomplete evidence to `NO_DRIFT`.
 
 #### Execution stages
 
-1. Implement the persisted trace envelope, canonical trace hashing, and four-trace-to-AssembledShadowWindow pure validation boundary.
-2. Add focused offline tests for valid assembly and every fail-closed condition.
-3. Add an offline detector → policy → safe-boundary integration test using actual production functions.
-4. Review implementation and raw test output.
-5. Separately authorize stationary live shadow acquisition.
-6. Capture the immutable reference and two current windows independently for each approved metric/stratum.
-7. Run detector and policy evaluation offline from the persisted traces:
+1. **Complete (Stage 1, commit `1585a3a`):** Implement the persisted trace envelope, canonical trace hashing, and four-trace-to-AssembledShadowWindow pure validation boundary.
+2. **Complete (Stages 1–2):** Add focused offline tests for valid assembly and every applicable fail-closed condition, then implement detector-input extraction using actual detector functions.
+3. **Complete offline (ADR-004, commit `83a7743`):** Add an offline detector → policy → safe-boundary integration test using actual production functions and twelve independently assembled traces.
+4. **Complete offline:** Review implementation and raw test output. This is not live EXP-005 evidence.
+5. Implement and review a persisted stationary live-shadow acquisition runner.
+6. Separately authorize stationary live shadow acquisition.
+7. Capture the immutable reference and two current windows independently for each approved metric/stratum.
+8. Run detector and policy evaluation offline from the persisted traces:
    1. reference and current `AssembledShadowWindow` objects are built independently,
    2. actual detector signal functions compare the immutable reference window with each current window,
    3. the existing `WindowEvidence` is finalized from those actual signal results,
    4. two current `WindowEvidence` objects are passed to `evaluate_drift_decision`.
-8. Verify the no-op actuation evidence.
-9. Review all artifacts before changing EXP-005 status.
+9. Verify the no-op actuation evidence and pre/post live no-mutation evidence.
+10. Review all artifacts before changing EXP-005 status.
 
 Live acquisition may record process/container resource snapshots to identify material collection overhead, but memory-footprint behavior is observational and is not an EXP-005 acceptance criterion unless separately pre-registered before execution.
 
@@ -942,4 +943,5 @@ A result other than the pre-registered stationary expectation must be recorded h
 
 Follow-up actions:
 
-1. Implement the four-trace-to-window assembler as a pure validated boundary (Stage 1).
+1. Implement and review the persisted read-only live-shadow acquisition runner, including an experiment manifest and pre/post no-mutation evidence capture.
+2. Separately authorize stationary live acquisition only after that runner and its deliberate-failure tests are reviewed.
