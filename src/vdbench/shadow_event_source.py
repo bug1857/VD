@@ -20,9 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import StrEnum
 import fcntl
 import hashlib
 import json
@@ -31,13 +29,22 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any, Protocol
+from typing import Any
 import unicodedata
 
 from .config import Metric
 from .shadow_artifacts import ShadowTraceArtifactError, load_persisted_shadow_trace_envelope, persist_shadow_trace_envelope
 from .shadow_window import PersistedShadowTraceEnvelope, SHA256_HEX, TRACE_QUERY_COUNT, hash_shadow_audit_trace
-from .workload_monitor import MonitorStreamKey, ShadowTraceEvent, ShadowTraceEventSource
+from .shadow_event_types import (
+    MonitorStreamKey,
+    PublicationStatus,
+    ShadowEventSourceError,
+    ShadowTraceEvent,
+    ShadowTraceEventSource,
+    ShadowTracePublisher,
+    TracePublicationContext,
+    TracePublicationReceipt,
+)
 
 
 EVENT_SCHEMA_VERSION = "live-shadow-event-v1"
@@ -71,61 +78,6 @@ _STREAM_KEY_FIELDS = frozenset(
 )
 
 
-class ShadowEventSourceError(ValueError):
-    """Raised when the producer/outbox cannot safely publish or deliver evidence."""
-
-
-class PublicationStatus(StrEnum):
-    """Explicit outcomes for background publication attempts."""
-
-    PUBLISHED = "PUBLISHED"
-    IDEMPOTENT = "IDEMPOTENT"
-    DROPPED_BACKPRESSURE = "DROPPED_BACKPRESSURE"
-
-
-@dataclass(frozen=True, slots=True)
-class TracePublicationContext:
-    """Externally assigned immutable membership for one 50-query trace."""
-
-    stream_key: MonitorStreamKey
-    window_id: int | str
-    window_sequence: int
-    trace_sequence_index: int
-    trace_id: str
-    captured_at_utc: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "window_id", _canonical_window_id(self.window_id))
-        if isinstance(self.window_sequence, bool) or not isinstance(self.window_sequence, int) or self.window_sequence < 0:
-            raise ValueError("window_sequence must be a non-negative integer")
-        if (
-            isinstance(self.trace_sequence_index, bool)
-            or not isinstance(self.trace_sequence_index, int)
-            or self.trace_sequence_index not in range(4)
-        ):
-            raise ValueError("trace_sequence_index must be one of 0, 1, 2, 3")
-        object.__setattr__(self, "trace_id", _canonical_nonempty(self.trace_id, name="trace_id"))
-        _parse_rfc3339_utc(self.captured_at_utc)
-
-
-@dataclass(frozen=True, slots=True)
-class TracePublicationReceipt:
-    """Result of one publish attempt; drops never contain a deliverable event."""
-
-    status: PublicationStatus
-    event_id: str
-    event: ShadowTraceEvent | None
-    reason_code: str | None = None
-
-
-class ShadowTracePublisher(Protocol):
-    """Boundary between an external background trace worker and the outbox."""
-
-    def publish(
-        self, *, trace: object, context: TracePublicationContext
-    ) -> TracePublicationReceipt: ...
-
-
 def _canonical_nonempty(value: object, *, name: str) -> str:
     if not isinstance(value, str):
         raise ShadowEventSourceError(f"{name.upper()}_INVALID")
@@ -146,6 +98,8 @@ def _canonical_window_id(value: object) -> int | str:
 
 
 def _parse_rfc3339_utc(value: object) -> datetime:
+    """Validate event-document timestamps independently of context construction."""
+
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         raise ShadowEventSourceError("CAPTURE_TIMESTAMP_INVALID")
     try:

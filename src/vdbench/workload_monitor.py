@@ -47,6 +47,7 @@ from .monitor_evidence import (
     encode_persisted_window_evidence,
 )
 from .shadow_window import AssembledShadowWindow, PersistedShadowTraceEnvelope, assemble_shadow_window
+from .shadow_event_types import MonitorStreamKey, ShadowTraceEvent, ShadowTraceEventSource
 
 
 _SCHEMA_VERSION = "workload-monitor-state-v2"
@@ -66,69 +67,6 @@ class MonitorRecordStatus(StrEnum):
     EVALUATED = "EVALUATED"
     REJECTED = "REJECTED"
     BLOCKED = "BLOCKED"
-
-
-@dataclass(frozen=True, slots=True)
-class MonitorStreamKey:
-    """Stable stream lineage plus the identity snapshot it is allowed to use."""
-
-    stream_id: str
-    metric: Metric
-    threshold_stratum: str
-    configuration_identity: str
-    data_identity: str
-    flat_binding_id: str
-    hnsw_binding_id: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.metric, Metric):
-            raise TypeError("metric must be a Metric")
-        for field in (
-            "stream_id",
-            "threshold_stratum",
-            "configuration_identity",
-            "data_identity",
-            "flat_binding_id",
-            "hnsw_binding_id",
-        ):
-            if not isinstance(getattr(self, field), str) or not getattr(self, field):
-                raise ValueError(f"{field} must be a non-empty string")
-
-
-@dataclass(frozen=True, slots=True)
-class ShadowTraceEvent:
-    """Reference to one already-persisted immutable trace envelope."""
-
-    event_id: str
-    stream_key: MonitorStreamKey
-    window_id: int | str
-    window_sequence: int
-    envelope_path: Path
-    expected_trace_sha256: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.event_id, str) or not self.event_id:
-            raise ValueError("event_id must be a non-empty string")
-        if isinstance(self.window_sequence, bool) or not isinstance(self.window_sequence, int):
-            raise ValueError("window_sequence must be an integer")
-        if self.window_sequence < 0:
-            raise ValueError("window_sequence must be non-negative")
-        if isinstance(self.window_id, bool) or not isinstance(self.window_id, (int, str)):
-            raise ValueError("window_id must be an integer or string")
-        if isinstance(self.window_id, str) and not self.window_id:
-            raise ValueError("window_id must be non-empty")
-        if not isinstance(self.envelope_path, Path):
-            raise TypeError("envelope_path must be a Path")
-        if not _is_sha256(self.expected_trace_sha256):
-            raise ValueError("expected_trace_sha256 must be lowercase SHA-256")
-
-
-class ShadowTraceEventSource(Protocol):
-    """At-least-once event source with explicit idempotent acknowledgement."""
-
-    def poll(self, *, limit: int) -> tuple[ShadowTraceEvent, ...]: ...
-
-    def acknowledge(self, event_ids: tuple[str, ...]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
