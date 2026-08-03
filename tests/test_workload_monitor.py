@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from vdbench.config import IndexTrack, Metric
+from vdbench.actuation import ActuationContext, ActuationOutcome, SafeActuationBoundary
 from vdbench.drift import (
     EvidenceProvenance,
     Signal,
@@ -311,24 +313,26 @@ class WorkloadMonitorTests(unittest.TestCase):
     def test_valid_path_uses_real_assembly_extraction_detector_and_dry_run_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            key = _stream_key()
-            events = [
-                *_persist_events(root, stream_key=key, window_sequence=0),
-                *_persist_events(root, stream_key=key, window_sequence=1),
-                *_persist_events(root, stream_key=key, window_sequence=2),
-            ]
-            monitor, source, _, sink, provider = self._monitor(root, events)
+            for metric in (Metric.L2, Metric.COSINE):
+                with self.subTest(metric=metric):
+                    key = _stream_key(metric=metric, stream_id=f"stream-{metric.value.lower()}")
+                    events = [
+                        *_persist_events(root, stream_key=key, window_sequence=0),
+                        *_persist_events(root, stream_key=key, window_sequence=1),
+                        *_persist_events(root, stream_key=key, window_sequence=2),
+                    ]
+                    monitor, source, _, sink, provider = self._monitor(root, events)
 
-            results = monitor.run_once(max_events=12)
+                    results = monitor.run_once(max_events=12)
 
-            evaluated = [result for result in results if result.policy_decision is not None]
-            self.assertEqual(len(evaluated), 1)
-            self.assertEqual(evaluated[0].drift_decision.state.value, "NO_DRIFT")
-            self.assertEqual(evaluated[0].policy_decision.action, PolicyAction.NO_CHANGE)
-            self.assertEqual(evaluated[0].policy_decision.mode, PolicyMode.DRY_RUN)
-            self.assertEqual(len(provider.calls), 1)
-            self.assertEqual(source.acknowledged, [event.event_id for event in events])
-            self.assertEqual(len({record.record_id for record in sink.records}), len(sink.records))
+                    evaluated = [result for result in results if result.policy_decision is not None]
+                    self.assertEqual(len(evaluated), 1)
+                    self.assertEqual(evaluated[0].drift_decision.state.value, "NO_DRIFT")
+                    self.assertEqual(evaluated[0].policy_decision.action, PolicyAction.NO_CHANGE)
+                    self.assertEqual(evaluated[0].policy_decision.mode, PolicyMode.DRY_RUN)
+                    self.assertEqual(len(provider.calls), 1)
+                    self.assertEqual(source.acknowledged, [event.event_id for event in events])
+                    self.assertEqual(len({record.record_id for record in sink.records}), len(sink.records))
 
     def test_restart_recovery_matches_uninterrupted_replay_and_rebuilds_prior_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -360,6 +364,37 @@ class WorkloadMonitorTests(unittest.TestCase):
             self.assertEqual(
                 [record.record_id for record in baseline_sink.records],
                 [record.record_id for record in restart_sink.records],
+            )
+
+    def test_restart_uses_checksum_bound_persisted_prior_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = _stream_key()
+            events = [
+                *_persist_events(root, stream_key=key, window_sequence=0),
+                *_persist_events(root, stream_key=key, window_sequence=1),
+                *_persist_events(root, stream_key=key, window_sequence=2),
+            ]
+            store = FileMonitorStateStore(root / "restart-state")
+            with patch(
+                "vdbench.workload_monitor.extract_window_evidence",
+                side_effect=_fast_evidence,
+            ) as extraction:
+                first, _, _, sink, _ = self._monitor(root, events[:8], store=store)
+                first.run_once(max_events=8)
+                persisted = store.load(key)
+                self.assertIsNotNone(persisted.previous_current_evidence)
+                extraction.reset_mock()
+
+                restarted, _, _, _, provider = self._monitor(root, events[8:], store=store)
+                restarted.audit_sink = sink
+                results = restarted.run_once(max_events=4)
+
+            self.assertEqual(extraction.call_count, 1)
+            self.assertEqual(len(provider.calls), 1)
+            self.assertEqual(
+                next(result for result in results if result.policy_decision).policy_decision.action,
+                PolicyAction.NO_CHANGE,
             )
 
     def test_redelivery_drains_durable_outbox_before_duplicate_check(self) -> None:
@@ -442,6 +477,53 @@ class WorkloadMonitorTests(unittest.TestCase):
 
             self.assertFalse(result.accepted)
             self.assertIn("ENVELOPE_LOAD_FAILED", result.reason_codes)
+            self.assertEqual(provider.calls, [])
+            self.assertEqual(len(sink.records), 1)
+
+    def test_all_registered_malformed_envelope_variants_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = _stream_key()
+            baseline = _persist_events(root, stream_key=key, window_sequence=0)[0]
+            variants = {
+                "invalid_schema": {"schema_version": "persisted-shadow-trace-envelope-v1"},
+                "invalid_timestamp": {"captured_at_utc": "not-a-timestamp"},
+                "checksum_mismatch": {"expected_trace_sha256": "0" * 64},
+                "count_mismatch": {"declared_observation_count": 49},
+            }
+            for name, mutation in variants.items():
+                with self.subTest(name=name):
+                    path = root / f"{name}.json"
+                    document = json.loads(baseline.envelope_path.read_text(encoding="utf-8"))
+                    if name == "invalid_schema":
+                        document = mutation
+                    else:
+                        document.update(mutation)
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    event = replace(
+                        baseline,
+                        event_id=f"event:{name}",
+                        envelope_path=path,
+                    )
+                    monitor, _, _, sink, provider = self._monitor(root, [event])
+
+                    result = monitor.run_once(max_events=1)[0]
+
+                    self.assertFalse(result.accepted)
+                    self.assertIn("ENVELOPE_LOAD_FAILED", result.reason_codes)
+                    self.assertEqual(provider.calls, [])
+                    self.assertEqual(len(sink.records), 1)
+
+    def test_missing_nonreference_state_fails_closed_before_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            event = _persist_events(root, stream_key=_stream_key(), window_sequence=1)[0]
+            monitor, _, _, sink, provider = self._monitor(root, [event])
+
+            result = monitor.run_once(max_events=1)[0]
+
+            self.assertFalse(result.accepted)
+            self.assertIn("STATE_MISSING_FOR_NONREFERENCE", result.reason_codes)
             self.assertEqual(provider.calls, [])
             self.assertEqual(len(sink.records), 1)
 
@@ -540,6 +622,70 @@ class WorkloadMonitorTests(unittest.TestCase):
         self.assertIn("mode=PolicyMode.DRY_RUN", monitor_source)
         self.assertIn("canary_observation=None", monitor_source)
         self.assertNotIn("CANARY_ENABLED", monitor_source)
+
+    def test_real_safe_boundary_is_a_zero_call_noop_for_monitor_policy_output(self) -> None:
+        class TrapClient:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def __getattr__(self, name: str):
+                self.calls.append(name)
+                raise AssertionError(f"unexpected actuation call: {name}")
+
+        class BoundaryAudit:
+            def __init__(self) -> None:
+                self.records = {}
+
+            def contains(self, audit_id: str) -> bool:
+                return audit_id in self.records
+
+            def append(self, record) -> None:
+                self.records[record.audit_id] = record
+
+        class Controller:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def disable_automatic_actions(self, *, audit_id: str, reason: str) -> None:
+                self.calls.append((audit_id, reason))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = _stream_key()
+            events = [
+                *_persist_events(root, stream_key=key, window_sequence=0),
+                *_persist_events(root, stream_key=key, window_sequence=1),
+                *_persist_events(root, stream_key=key, window_sequence=2),
+            ]
+            monitor, _, _, _, _ = self._monitor(root, events)
+            policy = next(
+                item.policy_decision
+                for item in monitor.run_once(max_events=12)
+                if item.policy_decision is not None
+            )
+            client = TrapClient()
+            sink = BoundaryAudit()
+            controller = Controller()
+            result = SafeActuationBoundary(client, sink, controller).execute(
+                policy,
+                ActuationContext(
+                    metric=Metric.L2,
+                    threshold_stratum="target-075",
+                    collection_name="monitor_l2_hnsw",
+                    configuration_identity="config-v1",
+                    index_identity="l2-hnsw-binding-v1",
+                    flat_index_identity="l2-flat-binding-v1",
+                    data_identity="dataset-v1",
+                    audited_query_ids=tuple(range(50)),
+                    last_known_good=QualificationResult(False, None, ("EXP006",)),
+                    occurred_at_utc="2026-08-03T12:00:00Z",
+                ),
+            )
+
+        self.assertEqual(result.outcome, ActuationOutcome.NO_OP)
+        self.assertFalse(result.executed)
+        self.assertEqual(client.calls, [])
+        self.assertEqual(controller.calls, [])
 
 
 if __name__ == "__main__":

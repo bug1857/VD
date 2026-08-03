@@ -41,10 +41,15 @@ from .policy import (
 )
 from .shadow_artifacts import ShadowTraceArtifactError, load_persisted_shadow_trace_envelope
 from .shadow_extraction import extract_window_evidence
+from .monitor_evidence import (
+    MonitorEvidenceCodecError,
+    decode_persisted_window_evidence,
+    encode_persisted_window_evidence,
+)
 from .shadow_window import AssembledShadowWindow, PersistedShadowTraceEnvelope, assemble_shadow_window
 
 
-_SCHEMA_VERSION = "workload-monitor-state-v1"
+_SCHEMA_VERSION = "workload-monitor-state-v2"
 _SHA256_HEX = frozenset("0123456789abcdef")
 
 
@@ -193,6 +198,7 @@ class MonitorStreamState:
     next_window_sequence: int = 0
     reference: _WindowEvents | None = None
     previous_current: _WindowEvents | None = None
+    previous_current_evidence: WindowEvidence | None = None
     pending_windows: tuple[_WindowEvents, ...] = ()
     processed_event_ids: tuple[str, ...] = ()
     blocked_reason_codes: tuple[str, ...] = ()
@@ -535,6 +541,7 @@ class WorkloadMonitor:
                 state = replace(
                     state,
                     previous_current=window,
+                    previous_current_evidence=current_evidence,
                     next_window_sequence=state.next_window_sequence + 1,
                 )
                 state = _enqueue(
@@ -554,19 +561,17 @@ class WorkloadMonitor:
                 reasons = ("SAVED_WINDOW_LOAD_FAILED",)
                 state = _block_window(state, window, *reasons)
                 break
-            try:
-                previous_evidence = extract_window_evidence(
-                    reference_window=reference_window,
-                    current_window=previous_window,
-                    metric=state.stream_key.metric,
-                    detector_seed=self.detector_seed,
-                )
-            except Exception:
-                reasons = ("PREVIOUS_EXTRACTION_RAISED",)
+            previous_evidence = state.previous_current_evidence
+            if previous_evidence is None:
+                reasons = ("STATE_PREVIOUS_EVIDENCE_MISSING",)
                 state = _block_window(state, window, *reasons)
                 break
-            if not previous_evidence.complete:
-                reasons = ("PREVIOUS_EXTRACTION_INCOMPLETE", *previous_evidence.reason_codes)
+            if not _evidence_matches_window(
+                previous_evidence,
+                previous_window,
+                state.stream_key,
+            ):
+                reasons = ("STATE_PREVIOUS_EVIDENCE_MISMATCH",)
                 state = _block_window(state, window, *reasons)
                 break
             decision = evaluate_drift_decision(previous_evidence, current_evidence)
@@ -605,6 +610,7 @@ class WorkloadMonitor:
             state = replace(
                 state,
                 previous_current=window,
+                previous_current_evidence=current_evidence,
                 next_window_sequence=state.next_window_sequence + 1,
             )
             state = _enqueue(
@@ -689,6 +695,30 @@ def _find_pending(state: MonitorStreamState, sequence: int) -> _WindowEvents | N
     return next(
         (window for window in state.pending_windows if window.window_sequence == sequence),
         None,
+    )
+
+
+def _evidence_matches_window(
+    evidence: WindowEvidence,
+    window: AssembledShadowWindow,
+    stream_key: MonitorStreamKey,
+) -> bool:
+    """Bind restored evidence to the exact prior immutable window and stream."""
+
+    provenance = evidence.provenance
+    return bool(
+        evidence.complete
+        and evidence.metric is stream_key.metric
+        and evidence.window_id == window.window_id
+        and provenance is not None
+        and provenance.metric is stream_key.metric
+        and provenance.threshold_stratum == stream_key.threshold_stratum
+        and provenance.current_window_id == window.window_id
+        and provenance.current_manifest_sha256 == window.manifest_sha256
+        and provenance.configuration_identity == stream_key.configuration_identity
+        and provenance.data_identity == stream_key.data_identity
+        and provenance.flat_binding_id == stream_key.flat_binding_id
+        and provenance.hnsw_binding_id == stream_key.hnsw_binding_id
     )
 
 
@@ -951,6 +981,11 @@ def _state_document(state: MonitorStreamState) -> dict[str, object]:
         "next_window_sequence": state.next_window_sequence,
         "reference": _window_document(state.reference),
         "previous_current": _window_document(state.previous_current),
+        "previous_current_evidence": (
+            None
+            if state.previous_current_evidence is None
+            else encode_persisted_window_evidence(state.previous_current_evidence)
+        ),
         "pending_windows": [_window_document(window) for window in state.pending_windows],
         "processed_event_ids": list(state.processed_event_ids),
         "blocked_reason_codes": list(state.blocked_reason_codes),
@@ -961,6 +996,7 @@ def _state_document(state: MonitorStreamState) -> dict[str, object]:
 def _state_from_document(value: object) -> MonitorStreamState:
     required = {
         "schema_version", "stream_key", "next_window_sequence", "reference", "previous_current",
+        "previous_current_evidence",
         "pending_windows", "processed_event_ids", "blocked_reason_codes", "outbox",
     }
     if not isinstance(value, dict) or frozenset(value) != required:
@@ -971,11 +1007,30 @@ def _state_from_document(value: object) -> MonitorStreamState:
         "pending_windows", "processed_event_ids", "blocked_reason_codes", "outbox"
     )):
         raise ValueError("state array schema mismatch")
+    previous_current = _window_from_document(value["previous_current"])
+    encoded_evidence = value["previous_current_evidence"]
+    if (previous_current is None) != (encoded_evidence is None):
+        raise ValueError("previous evidence/state mismatch")
+    try:
+        previous_current_evidence = (
+            None
+            if encoded_evidence is None
+            else decode_persisted_window_evidence(encoded_evidence)
+        )
+    except MonitorEvidenceCodecError as exc:
+        raise ValueError("previous evidence is untrusted") from exc
+    if (
+        previous_current is not None
+        and previous_current_evidence is not None
+        and previous_current_evidence.window_id != previous_current.window_id
+    ):
+        raise ValueError("previous evidence window mismatch")
     return MonitorStreamState(
         stream_key=_key_from_document(value["stream_key"]),
         next_window_sequence=value["next_window_sequence"],
         reference=_window_from_document(value["reference"]),
-        previous_current=_window_from_document(value["previous_current"]),
+        previous_current=previous_current,
+        previous_current_evidence=previous_current_evidence,
         pending_windows=tuple(_window_from_document(item) for item in value["pending_windows"]),
         processed_event_ids=tuple(value["processed_event_ids"]),
         blocked_reason_codes=tuple(value["blocked_reason_codes"]),
