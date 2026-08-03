@@ -31,7 +31,9 @@ def detector(
     return DriftDecision(
         state=state,
         classification=classification,
-        decision_confidence=0.995 if state is DetectorState.DRIFT else None,
+        significance_evidence_score=(
+            0.995 if state is DetectorState.DRIFT else None
+        ),
         drift_magnitude=1.25 if state is DetectorState.DRIFT else None,
     )
 
@@ -234,6 +236,23 @@ def decide(
 
 
 class DetectorAndDirectionTests(unittest.TestCase):
+    def test_drift_below_old_confidence_floor_is_not_blocked(self) -> None:
+        result = decide(
+            drift=DriftDecision(
+                state=DetectorState.DRIFT,
+                classification=DriftClassification.QUALITY_DRIFT,
+                significance_evidence_score=0.98,
+                drift_magnitude=1.25,
+            )
+        )
+
+        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        self.assertEqual(result.detector_confidence, 0.98)
+        self.assertNotIn(
+            "DETECTOR_CONFIDENCE",
+            {gate.name for gate in result.safety_gate_results},
+        )
+
     def test_no_drift_and_insufficient_evidence_emit_no_change(self) -> None:
         cases = (
             (DetectorState.NO_DRIFT, "DETECTOR_NO_DRIFT"),

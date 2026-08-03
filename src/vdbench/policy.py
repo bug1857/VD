@@ -43,7 +43,6 @@ L2_TARGET_075_RELATIVE_LATENCY_CEILING = 1.50
 MINIMUM_RECALL_IMPROVEMENT = 0.01
 MINIMUM_LATENCY_REDUCTION_FRACTION = 0.05
 EXCEPTION_MINIMUM_RECALL_IMPROVEMENT = 0.005
-DETECTOR_CONFIDENCE_FLOOR = 0.99
 DRIFT_MAGNITUDE_FLOOR = 1.0
 QUALIFICATION_QUERY_COUNT = 200
 CANARY_QUERY_COUNT = 50
@@ -454,7 +453,7 @@ def _decision(
         predicted_recall_improvement=recall_improvement,
         predicted_latency_reduction_fraction=latency_reduction,
         reason=reason,
-        detector_confidence=detector.decision_confidence,
+        detector_confidence=detector.significance_evidence_score,
         detector_magnitude=detector.drift_magnitude,
         safety_gate_results=tuple(gates),
         mode=mode,
@@ -1007,12 +1006,6 @@ def _pre_action_gates(
             )
             == 1,
             "normal transition must move exactly one ladder step",
-        ),
-        _gate(
-            "DETECTOR_CONFIDENCE",
-            detector.decision_confidence is not None
-            and detector.decision_confidence >= DETECTOR_CONFIDENCE_FLOOR,
-            "detector confidence must be >= 0.99",
         ),
         _gate(
             "DRIFT_MAGNITUDE",

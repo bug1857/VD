@@ -79,6 +79,19 @@ class IncompleteEvidenceError(ValueError):
     """Raised internally when a statistic cannot be computed under ADR-002."""
 
 
+class _IncompleteMMDEvidenceError(IncompleteEvidenceError):
+    """MMD failure retaining pooled zero-variance exclusion evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        excluded_dimension_indices: tuple[int, ...],
+    ) -> None:
+        super().__init__(message)
+        self.excluded_dimension_indices = excluded_dimension_indices
+
+
 CanonicalValue = int | str
 BatchStatistic = Callable[[np.ndarray], np.ndarray]
 
@@ -103,7 +116,7 @@ class PermutationEvidence:
 
 @dataclass(frozen=True, slots=True)
 class MMDResult:
-    """Hand-checkable MMD² statistic and reference-fixed kernel bandwidth."""
+    """Hand-checkable MMD² statistic and pooled kernel bandwidth."""
 
     statistic: float
     sigma: float
@@ -150,6 +163,8 @@ class SignalEvidence:
     effect: float | None
     effect_floor: float
     raw_p_value: float | None
+    excluded_dimension_count: int = 0
+    excluded_dimension_indices: tuple[int, ...] = ()
     adjusted_p_value: float | None = None
     seed: SeedMaterial | None = None
     reason: str | None = None
@@ -198,7 +213,7 @@ class DriftDecision:
     state: DetectorState
     classification: DriftClassification
     triggering_signals: tuple[Signal, ...] = ()
-    decision_confidence: float | None = None
+    significance_evidence_score: float | None = None
     drift_magnitude: float | None = None
     reason_codes: tuple[str, ...] = ()
 
@@ -210,6 +225,8 @@ class _PreparedMMD:
     kernel: np.ndarray
     reference_count: int
     current_count: int
+    excluded_dimension_count: int
+    excluded_dimension_indices: tuple[int, ...]
 
 
 _SIGNAL_ORDER = (
@@ -483,19 +500,21 @@ def _prepare_mmd(
     if reference_values.shape[1] != current_values.shape[1]:
         raise IncompleteEvidenceError("reference/current dimensions must match")
 
+    pooled_values = np.vstack((reference_values, current_values))
     if normalized_metric is Metric.L2:
-        mean = np.mean(reference_values, axis=0, dtype=np.float64)
-        deviation = np.std(reference_values, axis=0, ddof=0, dtype=np.float64)
+        mean = np.mean(pooled_values, axis=0, dtype=np.float64)
+        deviation = np.std(pooled_values, axis=0, ddof=0, dtype=np.float64)
         variable = deviation > 0.0
-        transformed_reference = np.zeros_like(reference_values, dtype=np.float64)
-        transformed_current = np.zeros_like(current_values, dtype=np.float64)
-        transformed_reference[:, variable] = (
-            reference_values[:, variable] - mean[variable]
+        excluded_dimension_indices = tuple(
+            int(index) for index in np.flatnonzero(~variable)
+        )
+        transformed_pooled = (
+            pooled_values[:, variable] - mean[variable]
         ) / deviation[variable]
-        transformed_current[:, variable] = (
-            current_values[:, variable] - mean[variable]
-        ) / deviation[variable]
+        transformed_reference = transformed_pooled[: reference_values.shape[0]]
+        transformed_current = transformed_pooled[reference_values.shape[0] :]
     else:
+        excluded_dimension_indices = ()
         reference_norms = np.linalg.norm(reference_values, axis=1)
         current_norms = np.linalg.norm(current_values, axis=1)
         if np.any(reference_norms == 0.0) or np.any(current_norms == 0.0):
@@ -507,22 +526,25 @@ def _prepare_mmd(
         transformed_reference = reference_values / reference_norms[:, None]
         transformed_current = current_values / current_norms[:, None]
 
-    reference_squared = _pairwise_squared_distances(transformed_reference)
-    upper = np.sqrt(
-        reference_squared[
-            np.triu_indices(transformed_reference.shape[0], k=1)
-        ]
-    )
-    positive = upper[np.isfinite(upper) & (upper > 0.0)]
-    if positive.size == 0:
-        raise IncompleteEvidenceError("median-heuristic sigma is undefined")
-    sigma = float(np.median(positive))
-    if not np.isfinite(sigma) or sigma <= 0.0:
-        raise IncompleteEvidenceError("median-heuristic sigma must be positive")
-
     combined = np.vstack((transformed_reference, transformed_current))
-    squared = _pairwise_squared_distances(combined)
-    kernel = np.exp(-squared / (2.0 * sigma * sigma)).astype(np.float64)
+    pooled_squared = _pairwise_squared_distances(combined)
+    upper = np.sqrt(
+        pooled_squared[np.triu_indices(combined.shape[0], k=1)]
+    )
+    finite = upper[np.isfinite(upper)]
+    if finite.size == 0 or not np.any(finite > 0.0):
+        raise _IncompleteMMDEvidenceError(
+            "median-heuristic sigma is undefined",
+            excluded_dimension_indices=excluded_dimension_indices,
+        )
+    sigma = float(np.median(finite))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        raise _IncompleteMMDEvidenceError(
+            "median-heuristic sigma must be positive",
+            excluded_dimension_indices=excluded_dimension_indices,
+        )
+
+    kernel = np.exp(-pooled_squared / (2.0 * sigma * sigma)).astype(np.float64)
     statistic = _mmd_from_kernel(kernel, transformed_reference.shape[0])
     if not np.isfinite(statistic):
         raise IncompleteEvidenceError("MMD squared statistic is non-finite")
@@ -532,6 +554,8 @@ def _prepare_mmd(
         kernel=kernel,
         reference_count=transformed_reference.shape[0],
         current_count=transformed_current.shape[0],
+        excluded_dimension_count=len(excluded_dimension_indices),
+        excluded_dimension_indices=excluded_dimension_indices,
     )
 
 
@@ -541,7 +565,7 @@ def mmd_squared(
     *,
     metric: Metric | str,
 ) -> MMDResult:
-    """Return unbiased Gaussian-kernel MMD² with reference-fixed preprocessing."""
+    """Return unbiased Gaussian-kernel MMD² with pooled preprocessing."""
 
     prepared = _prepare_mmd(reference, current, metric=metric)
     return MMDResult(statistic=prepared.statistic, sigma=prepared.sigma)
@@ -595,17 +619,27 @@ def query_vector_signal_test(
 
     reference_count = _first_dimension_count(reference)
     current_count = _first_dimension_count(current)
+    excluded_dimension_indices: tuple[int, ...] = ()
     try:
         prepared = _prepare_mmd(reference, current, metric=metric)
+        excluded_dimension_indices = prepared.excluded_dimension_indices
+        batch_statistic = _mmd_batch_statistic(prepared)
+        true_membership = np.zeros(
+            (1, prepared.reference_count + prepared.current_count), dtype=bool
+        )
+        true_membership[0, : prepared.reference_count] = True
+        permutation_observed_statistic = float(
+            batch_statistic(true_membership)[0]
+        )
         permutation = deterministic_permutation_p_value(
-            observed_statistic=prepared.statistic,
+            observed_statistic=permutation_observed_statistic,
             total_count=prepared.reference_count + prepared.current_count,
             reference_count=prepared.reference_count,
             detector_seed=detector_seed,
             metric=metric,
             window_id=window_id,
             signal=Signal.QUERY_VECTOR,
-            batch_statistic=_mmd_batch_statistic(prepared),
+            batch_statistic=batch_statistic,
         )
         return SignalEvidence(
             signal=Signal.QUERY_VECTOR,
@@ -616,9 +650,14 @@ def query_vector_signal_test(
             effect=prepared.statistic,
             effect_floor=_EFFECT_FLOORS[Signal.QUERY_VECTOR],
             raw_p_value=permutation.p_value,
+            excluded_dimension_count=prepared.excluded_dimension_count,
+            excluded_dimension_indices=prepared.excluded_dimension_indices,
             seed=permutation.seed,
         )
     except (IncompleteEvidenceError, TypeError, ValueError) as exc:
+        excluded_dimension_indices = getattr(
+            exc, "excluded_dimension_indices", excluded_dimension_indices
+        )
         return SignalEvidence(
             signal=Signal.QUERY_VECTOR,
             complete=False,
@@ -628,6 +667,8 @@ def query_vector_signal_test(
             effect=None,
             effect_floor=_EFFECT_FLOORS[Signal.QUERY_VECTOR],
             raw_p_value=None,
+            excluded_dimension_count=len(excluded_dimension_indices),
+            excluded_dimension_indices=excluded_dimension_indices,
             reason=str(exc),
         )
 
@@ -1019,12 +1060,12 @@ def evaluate_drift_decision(
         classification = DriftClassification.QUALITY_DRIFT
 
     ordered_triggers = tuple(signal for signal in _SIGNAL_ORDER if signal in consecutive)
-    confidence_values: list[float] = []
+    significance_evidence_scores: list[float] = []
     magnitude_values: list[float] = []
     for signal in ordered_triggers:
         previous_evidence = previous_signals[signal]
         current_evidence = current_signals[signal]
-        confidence_values.extend(
+        significance_evidence_scores.extend(
             (
                 1.0 - float(previous_evidence.adjusted_p_value),
                 1.0 - float(current_evidence.adjusted_p_value),
@@ -1040,7 +1081,7 @@ def evaluate_drift_decision(
         state=DetectorState.DRIFT,
         classification=classification,
         triggering_signals=ordered_triggers,
-        decision_confidence=min(confidence_values),
+        significance_evidence_score=min(significance_evidence_scores),
         drift_magnitude=min(magnitude_values),
     )
 

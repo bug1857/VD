@@ -1,11 +1,13 @@
 import math
 import unittest
+from dataclasses import fields
 
 import numpy as np
 
 from vdbench.drift import (
     DetectorState,
     DriftClassification,
+    DriftDecision,
     RecallAuditSample,
     Signal,
     SignalEvidence,
@@ -21,6 +23,7 @@ from vdbench.drift import (
     recall_signal_test,
     select_audit_sample,
     two_sample_ks_statistic,
+    _prepare_mmd,
 )
 
 
@@ -125,12 +128,71 @@ class SerializationAndPermutationTests(unittest.TestCase):
 
 
 class StatisticTests(unittest.TestCase):
+    def test_l2_pooled_preprocessing_is_symmetric(self) -> None:
+        reference = [[0.0], [2.0]]
+        current = [[4.0], [6.0]]
+
+        forward = _prepare_mmd(reference, current, metric="L2")
+        reversed_groups = _prepare_mmd(current, reference, metric="L2")
+
+        self.assertAlmostEqual(forward.sigma, 3.0 / math.sqrt(5.0), places=15)
+        self.assertAlmostEqual(reversed_groups.sigma, forward.sigma, places=15)
+        self.assertAlmostEqual(
+            reversed_groups.statistic, forward.statistic, places=15
+        )
+
+    def test_l2_reference_only_zero_variance_dimension_is_not_excluded(self) -> None:
+        prepared = _prepare_mmd(
+            [[0.0, 5.0], [2.0, 5.0]],
+            [[4.0, 4.0], [6.0, 6.0]],
+            metric="L2",
+        )
+
+        self.assertEqual(prepared.excluded_dimension_count, 0)
+        self.assertEqual(prepared.excluded_dimension_indices, ())
+
+    def test_l2_pooled_zero_variance_dimension_is_excluded_and_recorded(
+        self,
+    ) -> None:
+        reference = [[0.0, 5.0], [2.0, 5.0]]
+        current = [[4.0, 5.0], [6.0, 5.0]]
+
+        prepared = _prepare_mmd(reference, current, metric="L2")
+        evidence = query_vector_signal_test(
+            reference,
+            current,
+            metric="L2",
+            detector_seed=7,
+            window_id="pooled-zero-variance",
+        )
+
+        self.assertEqual(prepared.excluded_dimension_count, 1)
+        self.assertEqual(prepared.excluded_dimension_indices, (1,))
+        self.assertTrue(evidence.complete)
+        self.assertEqual(evidence.excluded_dimension_count, 1)
+        self.assertEqual(evidence.excluded_dimension_indices, (1,))
+
+    def test_zero_median_from_off_diagonal_duplicates_is_insufficient(self) -> None:
+        evidence = query_vector_signal_test(
+            [[0.0], [0.0], [0.0]],
+            [[0.0], [0.0], [1.0]],
+            metric="L2",
+            detector_seed=7,
+            window_id="zero-pooled-median",
+        )
+
+        self.assertFalse(evidence.complete)
+        self.assertIsNone(evidence.statistic)
+        self.assertIn("sigma must be positive", evidence.reason)
+
     def test_mmd_squared_matches_hand_computed_two_by_two_kernel(self) -> None:
         result = mmd_squared([[0.0], [1.0]], [[2.0], [3.0]], metric="L2")
-        expected = 2.0 * math.exp(-0.5) - 0.5 * (
-            2.0 * math.exp(-2.0) + math.exp(-4.5) + math.exp(-0.5)
+        expected = 2.0 * math.exp(-2.0 / 9.0) - 0.5 * (
+            2.0 * math.exp(-8.0 / 9.0)
+            + math.exp(-2.0)
+            + math.exp(-2.0 / 9.0)
         )
-        self.assertEqual(result.sigma, 2.0)
+        self.assertAlmostEqual(result.sigma, 3.0 / math.sqrt(5.0), places=15)
         self.assertAlmostEqual(result.statistic, expected, places=15)
 
     def test_mmd_permutation_path_matches_fixed_small_contract_vector(self) -> None:
@@ -142,11 +204,11 @@ class StatisticTests(unittest.TestCase):
             window_id="mmd-small",
         )
         self.assertTrue(evidence.complete)
-        self.assertAlmostEqual(evidence.statistic, 0.7689062080632163, places=15)
+        self.assertAlmostEqual(evidence.statistic, 0.7223261722497185, places=15)
         self.assertEqual(evidence.raw_p_value, 0.3323)
         self.assertEqual(evidence.seed.seed_u64, 10_010_057_822_588_224_695)
 
-    def test_l2_zero_variance_dimension_is_held_at_zero(self) -> None:
+    def test_l2_pooled_variable_dimension_contributes_to_mmd(self) -> None:
         one_dimension = mmd_squared(
             [[0.0], [1.0]], [[2.0], [3.0]], metric="L2"
         )
@@ -155,10 +217,10 @@ class StatisticTests(unittest.TestCase):
             [[2.0, 999.0], [3.0, -999.0]],
             metric="L2",
         )
-        self.assertEqual(
+        self.assertNotEqual(
             with_constant_reference_dimension.sigma, one_dimension.sigma
         )
-        self.assertAlmostEqual(
+        self.assertNotAlmostEqual(
             with_constant_reference_dimension.statistic,
             one_dimension.statistic,
             places=15,
@@ -169,6 +231,15 @@ class StatisticTests(unittest.TestCase):
         scaled = np.array([[10.0, 0.0], [0.0, 3.0]])
         result = mmd_squared(base, scaled, metric="COSINE")
         self.assertLessEqual(result.statistic, 0.0)
+        self.assertAlmostEqual(result.sigma, math.sqrt(2.0), places=15)
+
+    def test_cosine_sigma_uses_pooled_normalized_vectors(self) -> None:
+        result = mmd_squared(
+            [[1.0, 0.0], [2.0, 0.0]],
+            [[0.0, 1.0], [0.0, -1.0]],
+            metric="COSINE",
+        )
+
         self.assertAlmostEqual(result.sigma, math.sqrt(2.0), places=15)
 
     def test_two_sample_ks_matches_hand_computed_empirical_cdfs(self) -> None:
@@ -323,9 +394,25 @@ class DegenerateEvidenceTests(unittest.TestCase):
         self.assertFalse(evidence.complete)
         self.assertIsNone(evidence.statistic)
         self.assertIn("sigma is undefined", evidence.reason)
+        self.assertEqual(evidence.excluded_dimension_count, 3)
+        self.assertEqual(evidence.excluded_dimension_indices, (0, 1, 2))
 
 
 class DecisionTests(unittest.TestCase):
+    def test_drift_decision_exposes_significance_evidence_score_only(self) -> None:
+        decision = DriftDecision(
+            state=DetectorState.DRIFT,
+            classification=DriftClassification.INPUT_DRIFT,
+            significance_evidence_score=0.98,
+            drift_magnitude=1.25,
+        )
+
+        field_names = {field.name for field in fields(DriftDecision)}
+        self.assertEqual(decision.significance_evidence_score, 0.98)
+        self.assertIn("significance_evidence_score", field_names)
+        self.assertNotIn("decision_confidence", field_names)
+        self.assertFalse(hasattr(decision, "decision_confidence"))
+
     def test_identical_no_breach_windows_emit_no_drift(self) -> None:
         decision = evaluate_drift_decision(
             complete_window("previous"), complete_window("current")
@@ -356,7 +443,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(
             decision.triggering_signals, (Signal.THRESHOLD, Signal.RECALL)
         )
-        self.assertGreaterEqual(decision.decision_confidence, 0.99)
+        self.assertGreaterEqual(decision.significance_evidence_score, 0.99)
         self.assertGreaterEqual(decision.drift_magnitude, 1.0)
 
     def test_single_class_consecutive_breaches_preserve_attribution(self) -> None:

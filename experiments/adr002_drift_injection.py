@@ -634,7 +634,7 @@ def score_scenario(
             current,
             first_decision.triggering_signals,
         ),
-        detector_confidence=first_decision.decision_confidence,
+        detector_confidence=first_decision.significance_evidence_score,
         detector_magnitude=first_decision.drift_magnitude,
         pre_injection_drift_pairs=pre_injection_drift_pairs,
         decision_states=tuple(decision.state.value for decision in decisions),

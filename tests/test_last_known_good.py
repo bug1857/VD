@@ -300,7 +300,7 @@ print(json.dumps(payload, sort_keys=True))
             drift = DriftDecision(
                 state=DetectorState.DRIFT,
                 classification=DriftClassification.QUALITY_DRIFT,
-                decision_confidence=0.995,
+                significance_evidence_score=0.995,
                 drift_magnitude=1.25,
             )
             keywords = {
