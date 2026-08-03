@@ -961,3 +961,119 @@ The complete implementation path landed in commits `1585a3a` (four-trace assembl
 **Result and conclusion:** For each metric, all three persisted 200-query windows assembled as complete with checksum-valid trace envelopes and no reason codes. The real detector returned `NO_DRIFT`, the real policy in `DRY_RUN` returned `NO_CHANGE`, and the safe-actuation boundary returned an audited `NO_OP` using a fake client that would fail if called. Each capture's five live no-actuation flags — collection creation, collection mutation, restore last-known-good, rollback, and canary start — were all `false`.
 
 **Hypothesis verification:** H1 is VERIFIED for L2 and COSINE independently; H2 is VERIFIED; H3 is VERIFIED; H4 is VERIFIED by the eight deliberate offline fail-closed categories in `a5731fe`. No acceptance claim relies on synthetic response estimates, and no automatic actuation was authorized or performed.
+
+### EXP-006: Online workload monitor offline safety and recovery validation
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN  
+Date: 2026-08-03  
+Risk level: CRITICAL (ADR-005 monitor/orchestration boundary; no live Milvus or actuation authorized)
+
+Objective:
+
+Validate the future `workload_monitor.py` offline against ADR-005’s CRITICAL correctness, restart-safety, event-integrity, backpressure, and non-actuation requirements before any live integration is considered.
+
+This experiment validates only the monitor’s composition of persisted trace events, `assemble_shadow_window`, `extract_window_evidence`, `evaluate_drift_decision`, and `evaluate_tuning_policy(..., mode=DRY_RUN)`. It must not contact Milvus, construct a real PyMilvus client, invoke a canary, restore a configuration, or modify a collection.
+
+Hypothesis:
+
+- **H1 — Restart recovery:** A monitor restarted after persisting partial stream state resumes deterministically and reaches the same valid assembled windows, detector output, policy output, and audit sequence as an uninterrupted replay of the same immutable event stream.
+- **H2 — Event integrity:** Duplicate, malformed, incompatible, or identity-changing events fail closed and cannot be incorporated into a detector window or trigger a policy evaluation.
+- **H3 — Bounded processing:** Backpressure is handled deterministically without dropping evidence silently, blocking a foreground query path, or combining events across monitor streams.
+- **H4 — Non-actuation:** Every monitor path remains `DRY_RUN`; no actuation-client method, canary operation, rollback operation, restore operation, collection mutation, or serving-parameter change occurs.
+
+Configuration:
+
+- **Execution mode:** offline only; no live Milvus URI, no PyMilvus import, and no network dependency.
+- **Trace source:** deterministic fake `ShadowTraceEventSource` supplying persisted fixture envelopes and replayable delivery order.
+- **Persistence:** test `MonitorStateStore` implementation exercising durable pending-window state, accepted immutable reference state, prior/current `WindowEvidence`, deduplication state, and audit cursor across simulated process restart.
+- **Audit sink:** append-only fake/file-backed `MonitorAuditSink` capturing every accepted, incomplete, rejected, and policy-evaluated cycle.
+- **Policy input:** injected deterministic `DryRunPolicyInputProvider`; all calls use `PolicyMode.DRY_RUN`, `canary_observation=None`, externally reserved non-empty audit IDs, and no fabricated live-canary evidence.
+- **Metrics:** L2 and COSINE fixture streams remain independently keyed and never pooled. At least one valid complete replay must traverse reference, current-1, and current-2 windows to prove the actual extraction → detector → policy composition.
+- **Random seed:** freeze and record all fixture, event-order, and detector seeds before execution.
+- **Raw output location:** planned `artifacts/exp-006/<UTC-run-id>/`, including exact command, fixture identities/checksums, event delivery order, monitor state snapshots, audit records, test output, and Git commit.
+
+Required scenarios and pass criteria:
+
+1. **Restart recovery**
+   - Simulate a restart after partial receipt of a four-envelope window and again after a completed reference/current window but before the next monitor cycle.
+   - Pass only if resumed processing accepts each remaining eligible envelope exactly once, reconstructs the same assembled manifest hashes and provenance as uninterrupted replay, and produces identical detector/policy outputs and ordered audit records.
+   - A missing or corrupted persisted monitor state must fail closed with an explicit audited reason and no detector/policy/actuation call.
+
+2. **Queue/event duplication**
+   - Deliver duplicate event IDs, duplicate envelope references, and replayed previously acknowledged events, including at least one duplicate after restart.
+   - Pass only if no duplicate trace enters an assembled window, no duplicate decision/audit outcome is emitted for the same completed evaluation, and conflicting duplicate identity/checksum evidence fails closed with an explicit reason code.
+
+3. **Malformed envelopes**
+   - Supply invalid schema, malformed JSON, invalid timestamp, invalid or mismatched checksum, and envelope/trace count disagreement fixtures.
+   - Pass only if each case produces an explicit audited invalid result; no `AssembledShadowWindow.complete=True`, extraction, detector decision, policy evaluation, or actuation-client call may follow the invalid envelope.
+
+4. **Identity change mid-stream**
+   - Change one of metric, threshold stratum, configuration identity, data identity, FLAT binding, or HNSW binding after a reference has been accepted.
+   - Pass only if the monitor rejects the incompatible stream/window, preserves the original immutable reference without automatic rebaseline, records the precise mismatch, and makes no policy or actuation call for the invalid comparison.
+
+5. **Monitor backpressure**
+   - Provide more events than one `run_once(max_events=...)` cycle may process, including events from at least two independent streams.
+   - Pass only if processing is deterministic and bounded by `max_events`; unprocessed events remain durably pending or are explicitly rejected/audited. The monitor must not silently drop/reorder evidence, merge streams, or perform unbounded work in one cycle.
+   - The monitor API must not block on foreground query work; this is demonstrated by using only the injected source and no live-query dependency.
+
+6. **DRY_RUN non-actuation proof**
+   - Run a complete valid stationary replay and all failure scenarios with a trap/fake actuation client whose every method raises if called.
+   - Pass only if valid evidence reaches the real policy in `DRY_RUN` and yields a recorded non-actuating outcome, while all trap-client call counters remain zero.
+   - No `START_CANARY`, `ROLLBACK`, `shadow_candidate`, `start_canary`, `stop_candidate`, `restore_last_known_good`, collection mutation, or serving-parameter mutation may occur.
+
+Acceptance criteria:
+
+- Every required scenario has raw test output and immutable audit evidence.
+- All expected failure cases are fail-closed with explicit reason codes.
+- Valid replay uses the real assembly, extraction, detector, and policy functions; no statistic, `SignalEvidence`, `WindowEvidence`, or `DriftDecision` may be fabricated.
+- L2 and COSINE evidence remains independently stratified.
+- Restarted and uninterrupted replay results are byte-for-byte or field-for-field identical where deterministic contracts require equality.
+- No test imports PyMilvus, contacts a live database, or performs a live Milvus operation.
+- All actuation-client call counters are zero in every scenario.
+- A failing scenario, incomplete evidence, or monitor-state corruption must never be coerced to `NO_DRIFT`.
+- No automatic actuation authorization, implementation acceptance, or production-readiness claim follows from this offline experiment.
+
+Dataset ID:
+
+Not applicable to the primary assertion. Fixtures consist of versioned, deterministic persisted shadow-trace envelopes; their source, checksums, identities, and seeds must be recorded in the run artifacts.
+
+Hardware:
+
+TBD at execution. Record Python version, OS, architecture, and storage location for restart-durability evidence. Performance measurements are out of scope.
+
+Git commit:
+
+TBD at execution; record the exact `workload_monitor.py`, state-store, event-source, and test implementation commit.
+
+Random seed:
+
+TBD before execution; record fixture generation, event-order, and detector seeds separately.
+
+Metrics measured:
+
+- Scenario pass/fail counts with raw reason codes.
+- Assembled-window completeness and manifest-hash equality across restart.
+- Duplicate suppression/rejection counts.
+- Audit-record count, ordering, and immutability.
+- Detector state/classification and policy action for valid stationary replay.
+- Actuation-client call counts for every scenario.
+- Bounded event-processing count versus `max_events`.
+
+Raw output location:
+
+Planned: `artifacts/exp-006/<UTC-run-id>/`.
+
+Result:
+
+NOT RUN — contract only. No workload-monitor implementation or empirical evidence exists under this EXP entry.
+
+Conclusion:
+
+Pending implementation, offline CRITICAL failure validation, raw-output review, and separate human authorization. This contract does not authorize live monitor integration or any automatic actuation.
+
+Follow-up actions:
+
+1. Review and approve this contract before creating `workload_monitor.py`.
+2. Implement the monitor through injectable protocols only, with no PyMilvus or actuation-client dependency.
+3. Run the required offline scenarios and preserve raw artifacts under a unique EXP-006 run directory.
+4. Design a separate live integration experiment only after this offline contract passes review.
