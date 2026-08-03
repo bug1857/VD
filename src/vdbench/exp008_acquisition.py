@@ -87,6 +87,7 @@ __all__ = [
     "Exp008RunResult",
     "Exp008Stream",
     "build_live_runtime",
+    "capture_host_resource_snapshot",
     "capture_exp008",
     "finalize_exp008",
     "prepare_exp008_configuration",
@@ -621,6 +622,17 @@ def _resource_snapshot(*, timestamp_utc: str) -> dict[str, object]:
         "docker_stats": _command_snapshot(("docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}")),
         "processes": _command_snapshot(("ps", "-axo", "pid,ppid,%cpu,%mem,comm")),
     }
+
+
+def capture_host_resource_snapshot(*, timestamp_utc: str) -> Mapping[str, object]:
+    """Capture host evidence outside every live gRPC-owning process.
+
+    The function is public solely for EXP-008's companion failure-probe
+    capture.  Callers take a pre-run snapshot before opening a client and a
+    post-run snapshot only from a freshly exec'd finalizer.
+    """
+
+    return MappingProxyType(_resource_snapshot(timestamp_utc=timestamp_utc))
 
 
 def _artifact_hashes(root: Path) -> Mapping[str, str]:
@@ -1190,13 +1202,13 @@ def main(argv: list[str] | None = None) -> int:
         result = finalize_exp008(
             configuration=configuration,
             output_dir=args.output_dir,
-            post_run_resources=_resource_snapshot(timestamp_utc=clock()),
+            post_run_resources=capture_host_resource_snapshot(timestamp_utc=clock()),
         )
         print(json.dumps(_json_value(result), sort_keys=True))
         return 0
     if not isinstance(args.uri, str) or not args.uri:
         raise EXP008AcquisitionError("URI_REQUIRED_FOR_CAPTURE")
-    pre_run_resources = _resource_snapshot(timestamp_utc=clock())
+    pre_run_resources = capture_host_resource_snapshot(timestamp_utc=clock())
     capture_git = git_state(_REPOSITORY_ROOT)
     runtime = build_live_runtime(
         configuration=configuration,

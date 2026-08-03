@@ -343,7 +343,7 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
                 return_value=_configuration(),
             ),
             patch(
-                "vdbench.exp008_acquisition._resource_snapshot",
+                "vdbench.exp008_acquisition.capture_host_resource_snapshot",
                 return_value={"timestamp_utc": "2026-08-03T00:01:00Z"},
             ),
             patch(

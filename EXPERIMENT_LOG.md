@@ -1194,7 +1194,7 @@ Follow-up actions:
 
 ### EXP-008: Reference host-observation integration and live DRY_RUN validation
 
-Status: IMPLEMENTED — LIVE STATIONARY EVIDENCE CAPTURED — H4 FAILURE PROBES PENDING — NOT VERIFIED
+Status: IMPLEMENTED — LIVE STATIONARY EVIDENCE CAPTURED — H4 PROBE HARNESS FAKE-TESTED — LIVE H4 RUN PENDING — NOT VERIFIED
 Date: 2026-08-03
 Risk level: CRITICAL (ADR-007 foreground/worker separation; live ENV-001 reads only; no automatic actuation)
 
@@ -1280,4 +1280,4 @@ Stationary live evidence captured on 2026-08-03 under clean commit `2403799` (`2
 
 Conclusion:
 
-The isolated EXP-008 composition root, strict monitor-audit sink, and fresh-process evidence finalizer are implemented. Stationary live DRY_RUN evidence is captured, but the registered deliberate live failure probes (H4) remain pending; EXP-008 must not be marked VERIFIED and no external host deployment or automatic actuation is authorized.
+The isolated EXP-008 composition root, strict monitor-audit sink, fresh-process evidence finalizer, and H4 failure-probe harness are implemented. The H4 harness is fake-component tested and uses real live foreground serving only when explicitly invoked; it injects queue, publisher, executor, identity, and restart faults strictly after the served response. Stationary live DRY_RUN evidence is captured, but the registered live H4 probes remain pending; EXP-008 must not be marked VERIFIED and no external host deployment or automatic actuation is authorized.
