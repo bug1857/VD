@@ -12,6 +12,19 @@ from experiments.exp007_validate import Exp007ValidationError, run_validation
 
 
 class Exp007ValidationTests(unittest.TestCase):
+    def test_validation_handles_dangling_quarantined_symlink_with_relative_output_path(self) -> None:
+        """The scanner must never dereference a rejected path during inspection."""
+
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            result = run_validation(
+                output_dir=Path(directory) / "exp-007", detector_seed=20260804
+            )
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertGreaterEqual(
+            result["data_minimization"]["ignored_unsafe_symlink_paths"], 1
+        )
+
     def test_validation_writes_complete_evidence_for_all_registered_scenarios(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "exp-007"

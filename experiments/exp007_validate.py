@@ -563,7 +563,14 @@ def _scenario_composition(root: Path) -> tuple[bool, dict[str, object]]:
 def _data_minimization(root: Path) -> tuple[bool, dict[str, object]]:
     trace_occurrences = 0
     non_trace_occurrences = 0
+    ignored_unsafe_symlink_paths = 0
     for path in root.rglob("*.json"):
+        # A deliberate safety test leaves a dangling symlink behind when its
+        # target cannot be trusted.  Inspection must not dereference such a
+        # path: the source already rejects it, and a symlink has no payload.
+        if path.is_symlink():
+            ignored_unsafe_symlink_paths += 1
+            continue
         text = path.read_text(encoding="utf-8")
         occurrences = sum(text.count(value) for value in _SENTINELS)
         if "traces" in path.relative_to(root).parts:
@@ -573,6 +580,7 @@ def _data_minimization(root: Path) -> tuple[bool, dict[str, object]]:
     return trace_occurrences > 0 and non_trace_occurrences == 0, {
         "trace_payload_sentinel_occurrences": trace_occurrences,
         "non_trace_sentinel_occurrences": non_trace_occurrences,
+        "ignored_unsafe_symlink_paths": ignored_unsafe_symlink_paths,
         "sentinels_only_in_trace_payload": trace_occurrences > 0 and non_trace_occurrences == 0,
     }
 
