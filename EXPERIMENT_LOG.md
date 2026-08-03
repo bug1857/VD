@@ -1194,7 +1194,7 @@ Follow-up actions:
 
 ### EXP-008: Reference host-observation integration and live DRY_RUN validation
 
-Status: IMPLEMENTED — OFFLINE CONSTRUCTION TESTED — LIVE RUN PENDING
+Status: IMPLEMENTED — LIVE STATIONARY EVIDENCE CAPTURED — H4 FAILURE PROBES PENDING — NOT VERIFIED
 Date: 2026-08-03
 Risk level: CRITICAL (ADR-007 foreground/worker separation; live ENV-001 reads only; no automatic actuation)
 
@@ -1272,12 +1272,12 @@ TBD before execution; freeze request scheduling, deterministic audit selection, 
 
 Raw output location:
 
-Planned: `artifacts/exp-008/<UTC-run-id>/`.
+Latest stationary evidence: `artifacts/exp-008/run-20260803T171620Z/`.
 
 Result:
 
-NOT RUN — contract only.
+Stationary live evidence captured on 2026-08-03 under clean commit `2403799` (`2403799271f5bad205a752b9d407bf95ad3be852`): `run_manifest.json` SHA-256 `0df310713eb067266187fd6f055b462dd5a2415531e0073a8527673f45b2fc95`. The fresh-process finalizer independently verified all 62 recorded artifact checksums; both resource snapshots had empty stderr (including no inherited gRPC fork warning). The bundle records 1,200 accepted foreground requests (600 per stream), 24 successful 50-query traces, six complete 200-query windows, and two audited evaluations: L2 / `target-075` and COSINE / `target-025` each reached `NO_DRIFT → NO_CHANGE`. `policy_mode_dry_run=true`; configuration mutation, canary start, rollback, and safe-boundary construction are all `false`. This is stationary H2/H3 evidence only; it does not satisfy the registered deliberate-failure/restart scenarios or authorize automatic actuation.
 
 Conclusion:
 
-The isolated EXP-008 composition root, strict monitor-audit sink, and fake-component construction tests are implemented. The registered live DRY_RUN capture and its deliberate live failure probes remain pending; no external host deployment or automatic actuation is authorized.
+The isolated EXP-008 composition root, strict monitor-audit sink, and fresh-process evidence finalizer are implemented. Stationary live DRY_RUN evidence is captured, but the registered deliberate live failure probes (H4) remain pending; EXP-008 must not be marked VERIFIED and no external host deployment or automatic actuation is authorized.
