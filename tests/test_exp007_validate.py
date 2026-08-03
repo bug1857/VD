@@ -63,6 +63,20 @@ class Exp007ValidationTests(unittest.TestCase):
             self.assertEqual(receipt["manifest_sha256"], manifest["self_sha256"])
             self.assertEqual(receipt["raw_result_sha256"], raw_result["self_sha256"])
             self.assertTrue(manifest["artifact_sha256"])
+            self.assertTrue(manifest["filesystem_type"])
+            self.assertTrue(manifest["architecture"])
+            self.assertEqual(manifest["outbox_root_mode"], "0o700")
+            self.assertIsInstance(manifest["outbox_root_owner_uid"], int)
+            self.assertEqual(
+                manifest["queue_limits"],
+                {
+                    "durable_pending_byte_cap": 131072,
+                    "durable_pending_event_cap": 32,
+                    "in_memory_observation_cap": None,
+                    "in_memory_observation_cap_status": "NOT_APPLICABLE_SOURCE_V1_HOST_SAMPLER_UNIMPLEMENTED",
+                    "monitor_poll_max_events": 24,
+                },
+            )
             self.assertEqual(
                 set(manifest["symlink_target_sha256"]),
                 {

@@ -50,6 +50,11 @@ from vdbench.workload_monitor import (
 
 EXP007_DETECTOR_SEED = 20260804
 EXP007_FIXTURE_SEED = 20260805
+STANDARD_PENDING_EVENT_CAP = 32
+STANDARD_PENDING_BYTE_CAP = 131072
+BACKPRESSURE_PENDING_EVENT_CAP = 1
+BACKPRESSURE_PENDING_BYTE_CAP = 4096
+MONITOR_POLL_MAX_EVENTS = 24
 _SENTINELS = ("98765.25", "54321.125", "24680.75")
 
 
@@ -273,7 +278,12 @@ def _context(metric: Metric, *, window: int, index: int) -> TracePublicationCont
     )
 
 
-def _source(root: Path, *, count: int = 32, bytes_limit: int = 131072) -> FileShadowTraceEventSource:
+def _source(
+    root: Path,
+    *,
+    count: int = STANDARD_PENDING_EVENT_CAP,
+    bytes_limit: int = STANDARD_PENDING_BYTE_CAP,
+) -> FileShadowTraceEventSource:
     return FileShadowTraceEventSource(root, max_pending_events=count, max_pending_bytes=bytes_limit)
 
 
@@ -434,7 +444,11 @@ def _scenario_duplicates(root: Path) -> tuple[bool, dict[str, object]]:
 
 
 def _scenario_backpressure(root: Path) -> tuple[bool, dict[str, object]]:
-    source = _source(root / "outbox", count=1, bytes_limit=4096)
+    source = _source(
+        root / "outbox",
+        count=BACKPRESSURE_PENDING_EVENT_CAP,
+        bytes_limit=BACKPRESSURE_PENDING_BYTE_CAP,
+    )
     first = source.publish(trace=_trace(Metric.L2, offset=0), context=_context(Metric.L2, window=0, index=0))
     foreground_calls = 1
     trace_count_before = len(tuple((source.root / "traces").glob("*.json")))
@@ -504,7 +518,11 @@ def _scenario_safety(root: Path) -> tuple[bool, dict[str, object]]:
 
 
 def _scenario_composition(root: Path) -> tuple[bool, dict[str, object]]:
-    source = _source(root / "outbox", count=32, bytes_limit=131072)
+    source = _source(
+        root / "outbox",
+        count=STANDARD_PENDING_EVENT_CAP,
+        bytes_limit=STANDARD_PENDING_BYTE_CAP,
+    )
     for metric in (Metric.L2, Metric.COSINE):
         for window in range(3):
             _publish_window(source, metric, window=window)
@@ -517,7 +535,7 @@ def _scenario_composition(root: Path) -> tuple[bool, dict[str, object]]:
         audit_sink=audit,
         detector_seed=EXP007_DETECTOR_SEED,
     )
-    results = monitor.run_once(max_events=24)
+    results = monitor.run_once(max_events=MONITOR_POLL_MAX_EVENTS)
     evaluated: dict[str, int] = {}
     valid = True
     for metric in (Metric.L2, Metric.COSINE):
@@ -549,12 +567,18 @@ def _scenario_composition(root: Path) -> tuple[bool, dict[str, object]]:
     ))
     source_text = source_path.read_text(encoding="utf-8")
     no_prohibited = not forbidden and "WorkloadMonitor" not in source_text
-    valid = valid and len(results) == 24 and not source.poll(limit=24) and not trap.calls and no_prohibited
+    valid = (
+        valid
+        and len(results) == MONITOR_POLL_MAX_EVENTS
+        and not source.poll(limit=MONITOR_POLL_MAX_EVENTS)
+        and not trap.calls
+        and no_prohibited
+    )
     return valid, {
         "processed_event_count": len(results),
         "evaluated_by_metric": evaluated,
         "trap_client_calls": trap.calls,
-        "pending_after_monitor": len(source.poll(limit=24)),
+        "pending_after_monitor": len(source.poll(limit=MONITOR_POLL_MAX_EVENTS)),
         "prohibited_imports": list(forbidden),
         "no_prohibited_source_dependencies": no_prohibited,
     }
@@ -602,6 +626,21 @@ def _artifact_inventory(root: Path) -> tuple[dict[str, str], dict[str, str]]:
         elif path.is_file():
             regular[relative] = _sha256(path)
     return regular, symlink_targets
+
+
+def _filesystem_type(path: Path) -> str:
+    """Return the host filesystem name or fail rather than inventing one."""
+
+    command = (
+        ["stat", "-f", "%T", str(path)]
+        if sys.platform == "darwin"
+        else ["stat", "-f", "-c", "%T", str(path)]
+    )
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        raise Exp007ValidationError("filesystem type could not be recorded")
+    return value
 
 
 def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]:
@@ -669,7 +708,19 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
         "working_tree_porcelain": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "python": sys.version,
         "platform": platform.platform(),
+        "architecture": platform.machine(),
+        "filesystem_type": _filesystem_type(output_dir),
+        "outbox_root_owner_uid": (output_dir / "composition" / "outbox").stat().st_uid,
         "outbox_root_mode": oct((output_dir / "composition" / "outbox").stat().st_mode & 0o777),
+        "queue_limits": {
+            "durable_pending_event_cap": STANDARD_PENDING_EVENT_CAP,
+            "durable_pending_byte_cap": STANDARD_PENDING_BYTE_CAP,
+            "monitor_poll_max_events": MONITOR_POLL_MAX_EVENTS,
+            # ADR-006's host sampler is intentionally not implemented here;
+            # source v1 receives only already-complete traces.
+            "in_memory_observation_cap": None,
+            "in_memory_observation_cap_status": "NOT_APPLICABLE_SOURCE_V1_HOST_SAMPLER_UNIMPLEMENTED",
+        },
         "artifact_sha256": artifact_sha256,
         "symlink_target_sha256": symlink_target_sha256,
     }
