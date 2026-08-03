@@ -30,12 +30,12 @@ from .actuation import ShadowResult
 from .artifacts import canonical_json_bytes, git_state, sha256_file, write_immutable_json
 from .config import ENV001_PINS, RESULT_LIMIT, IndexTrack, Metric
 from .exp005_acquisition import (
-    DockerHealthProbe,
     Exp005AcquisitionError,
     IdentityBaseline,
     derive_exp005_identities,
     load_identity_baseline,
 )
+from .docker_health import DockerSocketHealthProbe
 from .host_observation import (
     BackgroundShadowWorker,
     BoundedHostObservationRecorder,
@@ -459,6 +459,7 @@ class Exp008Runtime:
 
     serving: Exp008ServingExecutor
     shadow: Exp008ShadowExecutor
+    close: Callable[[], None] = lambda: None
 
     def __post_init__(self) -> None:
         if not callable(getattr(self.serving, "preflight", None)) or not callable(
@@ -467,6 +468,8 @@ class Exp008Runtime:
             raise TypeError("serving must implement EXP-008 preflight and execute")
         if not callable(getattr(self.shadow, "capture", None)):
             raise TypeError("shadow must implement capture")
+        if not callable(self.close):
+            raise TypeError("close must be callable")
 
 
 def build_live_runtime(
@@ -480,18 +483,20 @@ def build_live_runtime(
 
     serving: dict[MonitorStreamKey, MilvusRangeServingExecutor] = {}
     shadow: dict[MonitorStreamKey, MilvusHostShadowExecutor] = {}
+    adapters: list[MilvusActuationClient] = []
     for stream in configuration.streams:
         adapter = MilvusActuationClient.from_uri(
             uri,
             workload=_workload_for_stream(configuration, stream),
             routing_seed=EXP008_DETECTOR_SEED,
             bound_estimator=_NoCanaryBoundEstimator(),
-            stack_health_probe=DockerHealthProbe(
+            stack_health_probe=DockerSocketHealthProbe(
                 etcd_container=etcd_container,
                 minio_container=minio_container,
             ),
             initial_ef=stream.served_ef,
         )
+        adapters.append(adapter)
         read_only_adapter = _ReadOnlyShadowAdapter(adapter)
         serving[stream.stream_key] = MilvusRangeServingExecutor(
             client=adapter.client,
@@ -519,8 +524,23 @@ def build_live_runtime(
             },
             clock=_StrictUtcClock(),
         )
+    closed = False
+
+    def close() -> None:
+        nonlocal closed
+        if closed:
+            return
+        for adapter in adapters:
+            callback = getattr(adapter.client, "close", None)
+            if not callable(callback):
+                raise EXP008AcquisitionError("MILVUS_CLIENT_CLOSE_UNAVAILABLE")
+            callback()
+        closed = True
+
     return Exp008Runtime(
-        serving=_StreamServingRouter(serving), shadow=_StreamShadowRouter(shadow)
+        serving=_StreamServingRouter(serving),
+        shadow=_StreamShadowRouter(shadow),
+        close=close,
     )
 
 
@@ -670,6 +690,7 @@ def run_exp008(
     clock: Callable[[], str] | None = None,
     resource_snapshot: Callable[[str], Mapping[str, object]] | None = None,
     repository: str | os.PathLike[str] = _REPOSITORY_ROOT,
+    pre_run_resources: Mapping[str, object] | None = None,
 ) -> Exp008RunResult:
     """Run the registered 1,200-request read-only EXP-008 stationary capture."""
 
@@ -685,8 +706,15 @@ def run_exp008(
     root.chmod(0o700)
     utc_clock = clock or _StrictUtcClock()
     snapshot = resource_snapshot or (lambda timestamp: _resource_snapshot(timestamp_utc=timestamp))
+    closed = False
     try:
-        pre_snapshot = dict(snapshot(utc_clock()))
+        pre_snapshot = (
+            dict(pre_run_resources)
+            if pre_run_resources is not None
+            else dict(snapshot(utc_clock()))
+        )
+        if not isinstance(pre_snapshot.get("timestamp_utc"), str):
+            raise EXP008AcquisitionError("PRE_RUN_RESOURCE_SNAPSHOT_INVALID")
         write_immutable_json(root / "pre_run_resources.json", pre_snapshot)
         preflight = runtime.serving.preflight()
         write_immutable_json(root / "serving_preflight.json", _preflight_document(preflight))
@@ -797,6 +825,8 @@ def run_exp008(
         postflight = runtime.serving.preflight()
         write_immutable_json(root / "serving_postflight.json", _preflight_document(postflight))
         _raise_if_incomplete_preflight(postflight)
+        runtime.close()
+        closed = True
         write_immutable_json(root / "post_run_resources.json", dict(snapshot(utc_clock())))
 
         manifest = _run_manifest(
@@ -842,6 +872,11 @@ def run_exp008(
             trace_count=24,
         )
     except Exception as exc:
+        if not closed:
+            try:
+                runtime.close()
+            except Exception:
+                pass
         failure = {
             "schema_version": _RUN_SCHEMA_VERSION,
             "status": "INCOMPLETE",
@@ -880,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         l2_baseline_path=args.l2_baseline,
         cosine_baseline_path=args.cosine_baseline,
     )
+    pre_run_resources = _resource_snapshot(timestamp_utc=_StrictUtcClock()())
     runtime = build_live_runtime(
         configuration=configuration,
         uri=args.uri,
@@ -890,6 +926,7 @@ def main(argv: list[str] | None = None) -> int:
         configuration=configuration,
         runtime=runtime,
         output_dir=args.output_dir,
+        pre_run_resources=pre_run_resources,
     )
     print(json.dumps(_json_value(result), sort_keys=True))
     return 0

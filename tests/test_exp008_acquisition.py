@@ -174,14 +174,22 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
         configuration = _configuration()
         serving = _FakeServing()
         shadow = _FakeShadow()
-        runtime = Exp008Runtime(serving=serving, shadow=shadow)
+        close_calls: list[str] = []
+        runtime = Exp008Runtime(
+            serving=serving,
+            shadow=shadow,
+            close=lambda: close_calls.append("closed"),
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "exp008"
             result = run_exp008(
                 configuration=configuration,
                 runtime=runtime,
                 output_dir=root,
-                resource_snapshot=lambda timestamp: {"timestamp_utc": timestamp, "synthetic": True},
+                resource_snapshot=lambda timestamp: {
+                    "timestamp_utc": timestamp,
+                    "runtime_closed": bool(close_calls),
+                },
             )
 
             self.assertEqual(len(serving.calls), 1200)
@@ -193,6 +201,8 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             self.assertIn('"policy_mode_dry_run":true', completion)
             self.assertTrue((root / "monitor-audit.jsonl").is_file())
             self.assertTrue((root / "run_manifest.json").is_file())
+            self.assertEqual(close_calls, ["closed"])
+            self.assertIn('"runtime_closed":true', (root / "post_run_resources.json").read_text(encoding="utf-8"))
 
     def test_failed_preflight_stops_before_foreground_or_shadow_work(self) -> None:
         from vdbench.exp008_acquisition import (
