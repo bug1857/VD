@@ -87,8 +87,13 @@ class Exp008FailureProbeTests(unittest.TestCase):
                 pre_run_resources={"timestamp_utc": "2026-08-03T00:00:00Z"},
                 capture_git={"commit": "fake-capture-commit", "dirty": False},
             )
-            self.assertTrue((root / "serving_preflight.json").is_file())
-            self.assertTrue((root / "serving_postflight.json").is_file())
+            for name in ("serving_preflight.json", "serving_postflight.json"):
+                document = json.loads((root / name).read_text(encoding="utf-8"))
+                self.assertEqual(
+                    set(document),
+                    {"exp008-l2-stationary", "exp008-cosine-stationary"},
+                )
+                self.assertNotIn("MonitorStreamKey(", "".join(document))
 
     def test_fresh_finalizer_writes_complete_manifest_only_for_valid_capture(self) -> None:
         from experiments.exp008_failure_probes import finalize_failure_probes

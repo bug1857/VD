@@ -275,7 +275,7 @@ def run_failure_probes(
         if len(preflight) != 2 or not all(item.complete for item in preflight.values()):
             raise EXP008FailureProbeError("SERVING_PREFLIGHT_INCOMPLETE")
         write_immutable_json(root / "pre_run_resources.json", dict(pre_run_resources))
-        write_immutable_json(root / "serving_preflight.json", _json_value(preflight))
+        write_immutable_json(root / "serving_preflight.json", _preflight_document(preflight))
 
         queue_recorder = BoundedHostObservationRecorder(max_pending_observations=1)
         queue_responses = _serve(
@@ -444,7 +444,7 @@ def run_failure_probes(
         postflight = runtime.serving.preflight()
         if len(postflight) != 2 or not all(item.complete for item in postflight.values()):
             raise EXP008FailureProbeError("SERVING_POSTFLIGHT_INCOMPLETE")
-        write_immutable_json(root / "serving_postflight.json", _json_value(postflight))
+        write_immutable_json(root / "serving_postflight.json", _preflight_document(postflight))
         receipt = {
             "schema_version": "exp008-h4-failure-probes-v1",
             "status": "CAPTURE_COMPLETE_AWAITING_FRESH_PROCESS_FINALIZATION",
@@ -501,6 +501,7 @@ _PROBE_EXPECTATIONS = MappingProxyType(
         "worker_restart_partial_loss": "RESTART_LOSS_COUNT_EXACT",
     }
 )
+_STREAM_IDS = frozenset({"exp008-l2-stationary", "exp008-cosine-stationary"})
 
 
 def _artifact_hashes(root: Path) -> dict[str, str]:
@@ -521,11 +522,25 @@ def _load_json(path: Path, *, reason: str) -> object:
         raise EXP008FailureProbeError(reason) from exc
 
 
+def _preflight_document(preflight: Mapping[object, object]) -> dict[str, object]:
+    """Serialize immutable runtime keys by their stable stream IDs only."""
+
+    document: dict[str, object] = {}
+    for key, value in preflight.items():
+        stream_id = getattr(key, "stream_id", None)
+        if not isinstance(stream_id, str) or stream_id in document:
+            raise EXP008FailureProbeError("SERVING_PREFLIGHT_DOCUMENT_INVALID")
+        document[stream_id] = _json_value(value)
+    if frozenset(document) != _STREAM_IDS:
+        raise EXP008FailureProbeError("SERVING_PREFLIGHT_DOCUMENT_INVALID")
+    return document
+
+
 def _verify_preflight_document(path: Path) -> None:
     document = _load_json(path, reason="SERVING_PREFLIGHT_ARTIFACT_UNAVAILABLE")
     if (
         not isinstance(document, dict)
-        or len(document) != 2
+        or frozenset(document) != _STREAM_IDS
         or not all(
             isinstance(value, dict)
             and value.get("complete") is True
