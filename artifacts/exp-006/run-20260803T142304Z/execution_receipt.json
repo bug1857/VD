@@ -1,0 +1,15 @@
+{
+  "commands": [
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m experiments.exp006_validate --output-dir artifacts/exp-006/run-20260803T142304Z --detector-seed 20260804",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest tests.test_exp006_validate -v",
+    "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover tests -q --failfast"
+  ],
+  "git_commit": "6650c066b07b7f91420b70463e875c322800d4a0",
+  "raw_output_sha256": {
+    "raw_focused_test_output.txt": "6ce7139cb185d7cf2a58ddfb35894345cdb12856fe73bad25d89b7655293aa61",
+    "raw_full_test_output.txt": "2c8dc138d7e7a32c8266ab27ec67e908895ff970c80bb3b62135db2619d47f63",
+    "raw_validator_output.txt": "6c165840623a87e672e9742d39a2f39a15d42f56e34d9ca53d5b0d8f05193805"
+  },
+  "recorded_at_utc": "2026-08-03T14:24:23.343089Z",
+  "schema_version": "exp006-execution-receipt-v1"
+}

@@ -29,7 +29,8 @@ A phase cannot be marked complete until: objectives met, tests complete, benchma
 
 | Module | Status (not started / in progress / blocked / verified) | Risk level | Notes |
 |---|---|---|---|
-| Workload monitor | not started | — | |
+| Workload monitor | verified | CRITICAL | ADR-005 DRY_RUN monitor, restart-durable evidence persistence, and EXP-006 offline safety/recovery validation are complete through `6650c06`. The live event source remains a separate unbuilt boundary; no live actuation is authorized. |
+| Live shadow-trace event source | in progress | CRITICAL | ADR-006 source/outbox implementation is offline-tested in the working tree: persist-before-publish, at-least-once acknowledgement, bounded backpressure, path/permission hardening, and real DRY_RUN monitor composition. EXP-007’s reproducible evidence harness remains required; the host query sampler/shadow worker is explicitly separate. |
 | Drift detector | in progress | CRITICAL | Implemented, offline tested, and empirically validated through stationary false-positive and drift-injection experiments. Not live integrated. |
 | Tuning policy | in progress | CRITICAL | Implemented and offline tested, including detector-policy integration scenarios. Not live integrated. |
 | Safe actuation layer | in progress | CRITICAL | Offline boundary, restart-durable audit/controller stores, optional `ShadowAuditTrace` collector, and the Milvus-backed actuation adapter are built and tested through commit `59a7655` (`138/138` tests). `ShadowAuditTrace` collects one read-only 50-query audit trace but does not yet assemble complete 200-query detector windows. The adapter is not yet integrated into the live benchmark harness, and no live automatic actuation is authorized. |
@@ -53,11 +54,11 @@ Estimated effort to resolve:
 
 ## NEXT HIGHEST-PRIORITY TASK
 
-ADR-001, ADR-002, and ADR-004 are accepted. EXP-001 already supplies the verified Milvus range/threshold baseline. EXP-005's four-trace assembler, detector-input extraction, immutable evidence-provenance binding, and offline twelve-trace dry-run pipeline are implemented and tested. The experiment's real stationary live-shadow acquisition, persisted live artifacts, and live no-mutation evidence are not yet implemented or run.
+EXP-001 supplies the verified Milvus range/threshold baseline. EXP-005 supplies verified L2 and COSINE stationary live-shadow evidence. EXP-006 verifies the standalone workload monitor's offline restart recovery, integrity rejection, bounded processing, and DRY_RUN non-actuation behavior at commit `6650c06`. ADR-006 and EXP-007 now pre-register the remaining Core event-source boundary: a host-side durable outbox that supplies persisted immutable trace events without delaying serving traffic.
 
 Options considered:
 
-- **Implement the EXP-005 live-shadow acquisition/persistence runner next:** closes the remaining evidence gap by capturing twelve independently persisted traces per metric/stratum, exercising workload construction, deterministic 500-to-50 routing, paired candidate/last-known-good observations, health and identity bindings, durable audit output, and no-mutation verification. Because this is CRITICAL actuation work, the path must remain non-actuating/DRY_RUN until raw stationary and deliberate-failure evidence is reviewed.
-- **Run EXP-001 unchanged first:** reconfirms the already-verified baseline but does not exercise the adapter or reduce its integration risk. Repeat EXP-001 only if environment identity or frozen baseline inputs have changed.
+- **Implement and validate the ADR-006 durable source/outbox offline:** add a single-host, at-least-once `ShadowTraceEventSource` plus publisher using the established trace-envelope persistence and monitor protocols. EXP-007 must prove atomic publication ordering, restart/redelivery, duplicate conflicts, backpressure, path/permission safety, data minimization, and DRY_RUN composition before a host integration is considered.
+- **Rerun EXP-001 unchanged first:** reconfirms an already-verified benchmark baseline but does not supply continuous events to the monitor or reduce live-source integration risk. Repeat it only if the frozen environment or baseline inputs change.
 
-**Recommendation:** Implement and review the EXP-005 live-shadow acquisition/persistence runner before separately authorizing a stationary live capture. An unchanged EXP-001 rerun would consume resources without validating the newly built integration boundary. No automatic actuation is authorized. Do not enable automatic actuation or mark the safe-actuation layer verified until the live integration run, deliberate failures, rollback, restart persistence, and raw audit evidence pass review.
+**Recommendation:** Implement the ADR-006 source/outbox through new modules only, then run EXP-007's deliberate offline failures before any live host hook is enabled. The source must persist before publish, remain off the foreground request path, fail closed, enforce bounded queue/backpressure semantics, minimize sensitive event payloads, and remain DRY_RUN-only. No automatic actuation is authorized.

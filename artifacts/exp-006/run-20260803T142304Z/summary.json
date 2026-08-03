@@ -1,0 +1,28 @@
+{
+  "actuation_trap_calls": [],
+  "audit_record_counts": {
+    "COSINE": 15,
+    "L2": 15
+  },
+  "event_integrity_case_status": {
+    "checksum_mismatch": true,
+    "count_mismatch": true,
+    "duplicate_envelope_reference": true,
+    "duplicate_event": true,
+    "identity_change": true,
+    "invalid_schema": true,
+    "invalid_timestamp": true,
+    "malformed_json": true,
+    "replay_after_restart": true
+  },
+  "metrics": [
+    "COSINE",
+    "L2"
+  ],
+  "scenarios": {
+    "backpressure": true,
+    "dry_run_noop": true,
+    "event_integrity": true,
+    "restart_recovery": true
+  }
+}

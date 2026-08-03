@@ -1,0 +1,8 @@
+test_artifact_write_failure_leaves_no_partial_or_temporary_file (tests.test_exp006_validate.Exp006ValidationTests.test_artifact_write_failure_leaves_no_partial_or_temporary_file) ... ok
+test_validator_fails_closed_after_persisting_incomplete_evidence (tests.test_exp006_validate.Exp006ValidationTests.test_validator_fails_closed_after_persisting_incomplete_evidence) ... ok
+test_validator_writes_reproducible_offline_evidence_for_all_scenarios (tests.test_exp006_validate.Exp006ValidationTests.test_validator_writes_reproducible_offline_evidence_for_all_scenarios) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 7.805s
+
+OK

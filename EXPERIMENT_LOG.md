@@ -964,7 +964,7 @@ The complete implementation path landed in commits `1585a3a` (four-trace assembl
 
 ### EXP-006: Online workload monitor offline safety and recovery validation
 
-Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN  
+Status: VERIFIED
 Date: 2026-08-03  
 Risk level: CRITICAL (ADR-005 monitor/orchestration boundary; no live Milvus or actuation authorized)
 
@@ -1039,15 +1039,15 @@ Not applicable to the primary assertion. Fixtures consist of versioned, determin
 
 Hardware:
 
-TBD at execution. Record Python version, OS, architecture, and storage location for restart-durability evidence. Performance measurements are out of scope.
+macOS `26.5.2` on `arm64`; Python `3.14.5`; evidence stored at `artifacts/exp-006/run-20260803T142304Z/`. Performance measurements remain out of scope.
 
 Git commit:
 
-TBD at execution; record the exact `workload_monitor.py`, state-store, event-source, and test implementation commit.
+`6650c066b07b7f91420b70463e875c322800d4a0` (`6650c06`), including the committed monitor, restart-durable evidence codec, and fail-closed EXP-006 validator.
 
 Random seed:
 
-TBD before execution; record fixture generation, event-order, and detector seeds separately.
+`20260804`, frozen for fixture generation, event delivery, and detector sampling.
 
 Metrics measured:
 
@@ -1061,19 +1061,127 @@ Metrics measured:
 
 Raw output location:
 
-Planned: `artifacts/exp-006/<UTC-run-id>/`.
+`artifacts/exp-006/run-20260803T142304Z/`.
 
 Result:
 
-NOT RUN — contract only. No workload-monitor implementation or empirical evidence exists under this EXP entry.
+See the verification result below. The original contract remains the pre-registration record.
 
 Conclusion:
 
-Pending implementation, offline CRITICAL failure validation, raw-output review, and separate human authorization. This contract does not authorize live monitor integration or any automatic actuation.
+Verified for the registered offline scope only. This result does not authorize live monitor integration or automatic actuation.
 
 Follow-up actions:
 
-1. Review and approve this contract before creating `workload_monitor.py`.
-2. Implement the monitor through injectable protocols only, with no PyMilvus or actuation-client dependency.
-3. Run the required offline scenarios and preserve raw artifacts under a unique EXP-006 run directory.
-4. Design a separate live integration experiment only after this offline contract passes review.
+1. Preserve the verified evidence bundle and execution receipt.
+2. Design and pre-register a separate CRITICAL experiment for the live `ShadowTraceEventSource` integration.
+3. Do not enable automatic actuation without a separate approved ADR and experiment evidence.
+
+#### Verification result — 2026-08-03
+
+**Status: VERIFIED.** The formal offline run completed at `artifacts/exp-006/run-20260803T142304Z/` under commit `6650c06` with detector seed `20260804`. Its manifest SHA-256 is `0f7dc9f78eb1bb415c88521478f263a6d04f2f2f00b7ed65133cde1a8fad3944`; its raw-result SHA-256 is `7c9304275dd057e21d6ed26059e5b7bfcf50feb9792d522a1b61b35af9a5e181`; and its execution-receipt SHA-256 is `d58bb62b1cd9fd3e2d5e77f6bdee9fdaa5c6fd451eeaac71bf279170c37504bb`.
+
+**Result and conclusion:** All 93 fixture, 14 monitor-state, and 3 audit checksums matched their manifest. The validator and its raw result agreed exactly. L2 and COSINE each produced one audited `NO_DRIFT` detector result and `NO_CHANGE` policy result. All nine explicit integrity cases passed with their registered reason codes and zero policy-input calls; restart recovery and bounded backpressure passed; and the DRY_RUN proof recorded no PyMilvus import, no actuation import, no `CANARY_ENABLED` reference, zero trap-client/controller calls, and a non-executed safe-boundary no-op.
+
+**Hypothesis verification:** H1, H2, H3, and H4 are VERIFIED for the registered offline scope. The focused validator tier passed 3 tests; the full repository suite passed 265 tests. No claim of live-monitor readiness or automatic actuation authorization follows from this result.
+
+### EXP-007: Durable live-shadow event-source offline safety and recovery validation
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Date: 2026-08-03
+Risk level: CRITICAL (ADR-006 producer/outbox boundary; no live Milvus, serving traffic, or automatic actuation authorized)
+
+Objective:
+
+Validate the ADR-006 host-side durable trace outbox offline before it is connected to any serving application. The experiment must prove that a complete immutable `ShadowAuditTrace` is persisted before a checksum-bound `ShadowTraceEvent` can be delivered to the real DRY_RUN workload monitor, while queue pressure and storage failures never delay or mutate the simulated foreground query path.
+
+Hypotheses:
+
+- **H1 — Persist-before-publish:** Every delivered event resolves to an immutable, checksum-valid envelope written before the event record; no event can reference a missing, incomplete, or different trace.
+- **H2 — Restart and duplicate safety:** Interrupted publication, producer restart, consumer redelivery, and idempotent acknowledgement preserve at-least-once delivery with one monitor effect and no conflicting trace substitution.
+- **H3 — Backpressure and data minimization:** Fixed in-memory/durable queue limits cause explicit non-sensitive drop/failure records without blocking the foreground simulator; pending event records contain no query vectors, thresholds, FLAT hits, or oracle payload.
+- **H4 — DRY_RUN end-to-end safety:** Valid source events may drive the actual monitor, extraction, detector, and policy only in `DRY_RUN`; no event-source path imports PyMilvus/policy/actuation, performs a Milvus operation, or invokes an actuation method.
+
+Configuration:
+
+- **Execution mode:** offline only; deterministic synthetic `ShadowAuditTrace` fixtures; no Milvus URI, PyMilvus import, network transport, or serving application.
+- **Transport:** single-host filesystem outbox with strict schema, owner-only directory checks, atomic writes, file/directory fsync, deterministic event ordering, and explicit at-least-once acknowledgement.
+- **Fixture streams:** independent L2 and COSINE streams, each preserving the immutable metric, threshold stratum, data identity, configuration identity, FLAT binding, and HNSW binding required by `MonitorStreamKey`.
+- **Queue limits:** freeze pending-event count, pending-byte cap, and in-memory observation cap in the experiment manifest before the run; require tests at exactly-full and one-over-limit boundaries.
+- **Randomness:** freeze and record any trace/observation scheduling seed. Event IDs themselves are derived only from canonical content, never runtime randomness.
+
+Required scenarios and pass criteria:
+
+1. **Atomic publication order and orphan handling**
+   - Inject failures before envelope write, after envelope fsync/before event creation, and after event creation/before acknowledgement.
+   - Pass only if no event becomes pollable without its matching checksum-valid envelope; an orphan is non-deliverable and recorded; no partial pending record remains.
+2. **Producer/consumer restart and redelivery**
+   - Restart after each durable boundary; redeliver an unacknowledged event; acknowledge it twice.
+   - Pass only if event identity and ordering are preserved, acknowledgement is idempotent, the real monitor has exactly one durable effect, and no trace is substituted.
+3. **Duplicate/conflicting publication**
+   - Publish the same context/payload twice, then reuse its event or trace identity with a changed checksum, context field, or envelope metadata.
+   - Pass only if the identical case is idempotent and every conflict fails closed with an explicit reason, with no monitor input for the conflicting item.
+4. **Backpressure and foreground isolation**
+   - Fill each configured queue to capacity and submit one further observation/publication using a foreground simulator whose operations are counted.
+   - Pass only if the final submission returns immediately with a drop/failure reason, performs no synchronous persistence, shadow query, monitor call, or retry, and leaves prior queue order intact.
+5. **Schema, permission, checksum, and path safety**
+   - Supply malformed event documents, corrupt envelopes, missing envelope paths, owner/group/world-readable directories, and symlink escape attempts.
+   - Pass only if each condition fails closed with an explicit reason; no poll result or monitor call follows.
+6. **Data-minimization inspection**
+   - Use distinctive sentinel vector/threshold/oracle values in fixtures and scan pending/acknowledged event documents plus non-sensitive diagnostics.
+   - Pass only if the sentinels occur only in the trace envelope and never in event records, acknowledgements, operational metrics, or errors.
+7. **DRY_RUN monitor composition**
+   - Feed three complete source-published windows through the real `WorkloadMonitor` with trap database/actuation objects whose methods raise on access.
+   - Pass only if the actual monitor produces its expected stationary detector/policy audit result, trap call counts remain zero, and static import inspection finds no prohibited dependencies in the new source module.
+
+Acceptance criteria:
+
+- All seven scenarios pass with raw output, immutable checksummed artifacts, and exact git commit/dirty-state capture.
+- The source uses the existing `PersistedShadowTraceEnvelope`, `persist_shadow_trace_envelope`, `ShadowTraceEvent`, and `WorkloadMonitor` contracts; it must not reserialize a trace with a competing canonical format or reimplement detector/policy logic.
+- Every failed input yields an explicit reason code and no event delivery or downstream monitor call.
+- L2 and COSINE streams remain strictly separate and are never combined by event ID, queue order, or recovery logic.
+- No queue/document outside the trace payload contains raw query vectors, thresholds, FLAT hits, sentinel hits, or oracle results.
+- The full repository suite and focused EXP-007 tests pass. A live database, live serving client, canary, rollback, or configuration mutation remains prohibited.
+
+Dataset ID:
+
+Not applicable to the primary assertion. Deterministic typed trace fixtures must have their hashes, identities, and scheduling seed recorded in the evidence manifest.
+
+Hardware:
+
+TBD at execution; record OS, architecture, Python version, filesystem type, and owner/permission mode of the outbox root. Performance claims are out of scope.
+
+Git commit:
+
+TBD at execution; pin the producer/outbox implementation, tests, and all committed composed dependencies.
+
+Random seed:
+
+TBD before execution; freeze any observation scheduling seed. Content-addressed event identity must be independently deterministic.
+
+Metrics measured:
+
+- Publication-to-poll ordering and envelope/event checksum agreement.
+- Duplicate and conflict rejection counts by reason code.
+- Restart/redelivery/acknowledgement outcomes and monitor-effect count.
+- Queue depth, pending bytes, oldest-event age, backpressure drops, orphan count, and persistence failures.
+- Forbidden-payload sentinel occurrence count outside trace envelopes.
+- Real monitor detector/policy output and prohibited call/import counts.
+
+Raw output location:
+
+Planned: `artifacts/exp-007/<UTC-run-id>/`.
+
+Result:
+
+NOT RUN — contract only.
+
+Conclusion:
+
+Pending offline implementation, deliberate-failure validation, raw-evidence review, and a separately authorized live host integration. This contract does not authorize automatic actuation.
+
+Follow-up actions:
+
+1. Implement the source/outbox in new modules only, through injected filesystem/clock hooks and without live database dependencies.
+2. Run the complete offline EXP-007 evidence harness and preserve its immutable artifact bundle.
+3. Design a separate live host-instrumentation experiment only after EXP-007 is verified.

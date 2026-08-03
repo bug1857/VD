@@ -493,10 +493,10 @@ Modules affected: detector-owned provenance value type; shadow extraction; drift
 
 ### ADR-005: Define the online workload monitor and DRY_RUN orchestration boundary
 
-Status: Proposed — design review required before implementation  
+Status: Accepted — implementation and offline safety/recovery evidence verified; live event source remains separately unimplemented
 Date: 2026-08-03  
 Risk level: CRITICAL  
-Evidence status: INFERRED design contract. No automatic actuation is authorized.
+Evidence status: VERIFIED for the monitor's offline DRY_RUN scope through EXP-006 (commit `6650c06`). No live event-source integration or automatic actuation is authorized.
 
 Problem:
 
@@ -665,6 +665,103 @@ Research references:
 - ADR-003 for corrected MMD implementation.
 - ADR-004 for immutable evidence provenance.
 - EXP-005 for persisted live-shadow evidence and no-mutation verification.
+
+---
+
+### ADR-006: Use a host-side durable trace outbox as the live `ShadowTraceEventSource`
+
+Status: Proposed — offline implementation and EXP-007 evidence required before live integration
+Date: 2026-08-03
+Risk level: CRITICAL
+Evidence status: INFERRED design contract. This ADR does not authorize serving-path mutation, live parameter changes, or automatic actuation.
+
+Problem:
+
+ADR-005 verifies a DRY_RUN-only monitor that consumes immutable persisted trace events, but the repository has no source that produces those events from an actual query-serving integration. The source must close that gap without placing database work, filesystem I/O, queue waits, or monitor evaluation on the foreground query path. It must also preserve the evidence invariants established by EXP-005: a monitor event may name only a checksum-valid, immutable 50-query `ShadowAuditTrace` envelope.
+
+Raw query vectors and threshold parameters are necessary detector evidence. They may be sensitive in a non-synthetic deployment, so the event transport must never duplicate them into queue records, logs, or monitor state.
+
+Alternatives considered:
+
+| Option | Advantages | Disadvantages | Coupling / safety assessment |
+|---|---|---|---|
+| A — Host-side instrumentation plus durable local trace outbox | Separates request path from auditing; reuses `ShadowAuditTrace`, `persist_shadow_trace_envelope`, `ShadowTraceEvent`, and `WorkloadMonitor`; deterministic at-least-once delivery; testable without a database | Requires the actual serving application to call an instrumentation hook; single-host outbox is not a multi-host broker | Strong fit. Bounded background work and persist-before-publish preserve the existing proof chain. |
+| B — Transparent network proxy / gRPC interceptor | Requires no application-library call at the apparent integration point | Cannot reliably reconstruct application-level metric/stratum/identity, oracle context, or post-response outcome; adds latency and a new failure domain | Rejected. It risks silently incomplete evidence and couples monitoring to protocol implementation details. |
+| C — Tail Milvus logs or database internals | No application changes | Milvus does not expose the complete application query, threshold, FLAT/oracle, and identity evidence required by `ShadowAuditTrace`; storage/server logs are not an evidence API | Rejected. It cannot satisfy the detector's complete-input contract. |
+| D — Extend `runner.py` or `exp005_acquisition.py` into a daemon | Reuses familiar test code | Turns controlled benchmark/acquisition code into serving infrastructure and cannot observe real host traffic | Rejected. It violates ADR-001/005 separation of experiment and online-service lifecycles. |
+
+Chosen solution:
+
+Choose **Option A**: the serving application invokes a narrow post-response instrumentation hook that enqueues an observation without blocking. A dedicated background trace worker owns all shadow auditing. Once it has a complete 50-query `ShadowAuditTrace`, it writes a checksum-valid envelope into a single-host durable outbox and only then publishes a `ShadowTraceEvent` to the existing monitor protocol.
+
+The initial implementation is deliberately **single-host and single-logical-consumer**. It exposes an at-least-once interface; the monitor's existing durable deduplication is the exactly-once-effect boundary. Multi-host brokers, remote transport, and distributed ordering are Future Work and must not be implied by v1.
+
+Interface contract:
+
+The producer boundary is split into two isolated paths:
+
+```python
+@dataclass(frozen=True, slots=True)
+class TracePublicationContext:
+    stream_key: MonitorStreamKey
+    window_id: int | str
+    window_sequence: int
+    trace_sequence_index: int  # exactly 0, 1, 2, or 3
+    trace_id: str
+    captured_at_utc: str
+
+
+class ShadowTracePublisher(Protocol):
+    def publish(
+        self,
+        *,
+        trace: ShadowAuditTrace,
+        context: TracePublicationContext,
+    ) -> TracePublicationReceipt: ...
+
+
+class ShadowTraceEventSource(Protocol):
+    def poll(self, *, limit: int) -> tuple[ShadowTraceEvent, ...]: ...
+    def acknowledge(self, event_ids: tuple[str, ...]) -> None: ...
+```
+
+1. The foreground serving hook records no disk state and never contacts Milvus beyond its already-completed serving query. It offers an immutable observation to a bounded in-memory queue. It returns immediately whether the observation was accepted or monitoring work was dropped.
+2. The worker batches compatible observations, performs only the existing read-only shadow/FLAT/oracle capture in a background context, and emits a complete or explicitly incomplete `ShadowAuditTrace`. This worker must not call `start_canary`, `stop_candidate`, `restore_last_known_good`, `verify_restoration`, `evaluate_tuning_policy`, or an actuation boundary.
+3. `ShadowTracePublisher.publish` validates the context, derives a deterministic event ID from canonical `live-shadow-event-v1` fields `(stream_key, window_id, window_sequence, trace_sequence_index, trace_id, expected_trace_sha256)`, and atomically persists the envelope before atomically creating its pending event record.
+4. Pending event records contain only event ID, `MonitorStreamKey`, window membership, envelope path, and expected checksum. They never contain query vectors, FLAT hits, oracle results, thresholds, or other trace payload data.
+5. `poll` returns a deterministic bounded pending prefix. `acknowledge` moves an exact pending event to an acknowledged ledger using an atomic same-filesystem rename and directory fsync. Replays before acknowledgement are expected and harmless; an event is never deleted merely because it was delivered.
+6. A duplicate publication with byte-identical context and checksum is idempotent. A reused event/trace identity with different context, payload checksum, or envelope metadata fails closed and emits an operator-visible conflict reason. A publisher never silently deduplicates conflicting evidence.
+7. The producer does not assign a four-trace window implicitly. The host-side scheduler supplies the `TracePublicationContext`; it must ensure one trace for each sequence index `0..3` per externally ordered window. The downstream assembler remains the authority that validates this invariant.
+
+Safety, privacy, and rollback invariants:
+
+1. **No serving-path delay:** Queue-full behavior returns `DROPPED_BACKPRESSURE` immediately and records only non-sensitive counters/reason codes. It may lose monitoring coverage but never hold, retry, or modify a serving request.
+2. **Persist before publish:** A pending event cannot become visible until its exact envelope exists, has passed checksum validation, and has been directory-fsynced. A crash after envelope persistence but before publication yields an unreachable orphan, not fabricated evidence; the publisher reports it for explicit recovery/retention handling.
+3. **Fail closed:** Invalid context, noncanonical timestamp/identity, incomplete trace, storage permission failure, malformed queue record, checksum mismatch, queue conflict, or capacity exhaustion yields no monitor event. A transient outbox failure does not retry on the foreground path.
+4. **Data minimization:** Only the encrypted-or-owner-only trace store may contain raw vectors. Queue/audit records carry identifiers and hashes only. The initial local store must reject group/world-readable directories and symbolic-link traversal; deployments requiring encryption at rest must provide it at the host-volume/key-management layer before live data is admitted.
+5. **Bounded resource use:** Both the in-memory observation queue and durable pending-event queue have configured count and byte limits. The producer exports drops, pending depth, oldest-pending age, orphan count, persistence failures, and acknowledged count. No unbounded retention or automatic destructive cleanup is permitted.
+6. **No actuation:** Producer and event-source modules may type-reference the immutable `ShadowAuditTrace` value, but must not construct or invoke `MilvusActuationClient`, import PyMilvus, `policy.py`, `actuation.py`, or `WorkloadMonitor`. They publish evidence only. The monitor remains hardcoded to `DRY_RUN` under ADR-005.
+7. **Recovery:** Reopening the outbox verifies every queued event and its envelope checksum before it is deliverable. Missing/corrupt state blocks only that item with an explicit reason; it must not reorder or substitute another trace. Manual recovery/rebaseline is separate from automatic source recovery.
+8. **Source rollback:** Disabling the host hook and stopping its worker halts new monitoring publication immediately and has no Milvus-side effect. Already-persisted evidence is retained for explicit operator disposition; no automatic deletion, rebaseline, canary, rollback, or configuration restore is performed.
+
+Consequences:
+
+- A new producer/outbox module can be tested entirely offline with synthetic immutable `ShadowAuditTrace` values, then used by a real host integration without changing detector, policy, monitor, or actuation code.
+- The v1 producer accepts a completed trace; it does not implement the host application's query sampler or shadow-audit scheduler. That host-owned component must remain background-only and earn separate live-integration evidence before continuous-traffic coverage is claimed.
+- The application integration is an explicit dependency, not an invisible proxy. Until a host calls the instrumentation hook, the system has no claim to continuous live-workload coverage.
+- The Core system gains a safe at-least-once evidence path, but not multi-host scalability or production authorization for automatic tuning.
+- EXP-007 is mandatory before a live host integration or capture. It must demonstrate publication ordering, crash/restart recovery, bounded backpressure, conflicting duplicate rejection, data-minimizing event records, and end-to-end monitor consumption in `DRY_RUN`.
+
+Modules affected:
+
+New `shadow_event_source.py` and tests; existing `shadow_artifacts.py`, `milvus_actuation.py`, and `workload_monitor.py` only through defined protocols. No detector, policy, monitor, or actuation logic may be duplicated or changed.
+
+Research references:
+
+- ADR-002 for DRY_RUN and no-actuation safety gates.
+- ADR-004 for immutable evidence provenance.
+- ADR-005 and EXP-006 for monitor/event semantics and fail-closed state handling.
+- EXP-005 for trace shape, persistence, and stationary live-shadow evidence.
 
 ---
 
