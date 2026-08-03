@@ -9,6 +9,7 @@ contained before a trace can become monitor input.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,7 +18,7 @@ import os
 from pathlib import Path
 import sys
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -168,7 +169,7 @@ def _json_value(value: object) -> object:
         return value.item()
     if isinstance(value, (tuple, list)):
         return [_json_value(item) for item in value]
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if hasattr(value, "value"):
         return getattr(value, "value")

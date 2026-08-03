@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from types import MappingProxyType
 import unittest
 from unittest.mock import patch
 
@@ -66,6 +67,28 @@ class Exp008FailureProbeTests(unittest.TestCase):
             self.assertEqual(result.monitor_call_count, 0)
             self.assertEqual(result.policy_call_count, 0)
             self.assertEqual(result.actuation_call_count, 0)
+
+    def test_capture_serializes_immutable_preflight_mapping(self) -> None:
+        from vdbench.exp008_acquisition import Exp008Runtime
+        from experiments.exp008_failure_probes import run_failure_probes
+
+        class _MappingPreflightServing(_FakeServing):
+            def preflight(self):  # type: ignore[no-untyped-def]
+                return MappingProxyType(dict(super().preflight()))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "failure-probes"
+            run_failure_probes(
+                configuration=_configuration(),
+                runtime=Exp008Runtime(
+                    serving=_MappingPreflightServing(), shadow=_FakeShadow()
+                ),
+                output_dir=root,
+                pre_run_resources={"timestamp_utc": "2026-08-03T00:00:00Z"},
+                capture_git={"commit": "fake-capture-commit", "dirty": False},
+            )
+            self.assertTrue((root / "serving_preflight.json").is_file())
+            self.assertTrue((root / "serving_postflight.json").is_file())
 
     def test_fresh_finalizer_writes_complete_manifest_only_for_valid_capture(self) -> None:
         from experiments.exp008_failure_probes import finalize_failure_probes
