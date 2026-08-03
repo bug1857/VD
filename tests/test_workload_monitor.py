@@ -484,35 +484,60 @@ class WorkloadMonitorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             key = _stream_key()
-            baseline = _persist_events(root, stream_key=key, window_sequence=0)[0]
             variants = {
-                "invalid_schema": {"schema_version": "persisted-shadow-trace-envelope-v1"},
-                "invalid_timestamp": {"captured_at_utc": "not-a-timestamp"},
-                "checksum_mismatch": {"expected_trace_sha256": "0" * 64},
-                "count_mismatch": {"declared_observation_count": 49},
+                "invalid_schema": (
+                    {"schema_version": "persisted-shadow-trace-envelope-v1"},
+                    "ENVELOPE_LOAD_FAILED",
+                    False,
+                ),
+                "invalid_timestamp": (
+                    {"captured_at_utc": "not-a-timestamp"},
+                    "TIMESTAMP_INVALID",
+                    True,
+                ),
+                "checksum_mismatch": (
+                    {"expected_trace_sha256": "0" * 64},
+                    "ENVELOPE_LOAD_FAILED",
+                    False,
+                ),
+                "count_mismatch": (
+                    {"declared_observation_count": 49},
+                    "DECLARED_OBSERVATION_COUNT_INVALID",
+                    True,
+                ),
             }
-            for name, mutation in variants.items():
+            for name, (mutation, expected_reason, requires_assembly) in variants.items():
                 with self.subTest(name=name):
-                    path = root / f"{name}.json"
-                    document = json.loads(baseline.envelope_path.read_text(encoding="utf-8"))
+                    case_root = root / name
+                    case_root.mkdir()
+                    events = _persist_events(
+                        case_root, stream_key=key, window_sequence=0
+                    )
+                    path = case_root / f"{name}.json"
+                    document = json.loads(
+                        events[0].envelope_path.read_text(encoding="utf-8")
+                    )
                     if name == "invalid_schema":
                         document = mutation
                     else:
                         document.update(mutation)
                     path.write_text(json.dumps(document), encoding="utf-8")
                     event = replace(
-                        baseline,
+                        events[0],
                         event_id=f"event:{name}",
                         envelope_path=path,
                     )
-                    monitor, _, _, sink, provider = self._monitor(root, [event])
+                    events = [event, *events[1:]] if requires_assembly else [event]
+                    monitor, _, _, sink, provider = self._monitor(case_root, events)
 
-                    result = monitor.run_once(max_events=1)[0]
+                    result = monitor.run_once(max_events=len(events))[-1]
 
                     self.assertFalse(result.accepted)
-                    self.assertIn("ENVELOPE_LOAD_FAILED", result.reason_codes)
+                    self.assertIn(expected_reason, result.reason_codes)
                     self.assertEqual(provider.calls, [])
-                    self.assertEqual(len(sink.records), 1)
+                    self.assertTrue(
+                        any(expected_reason in record.reason_codes for record in sink.records)
+                    )
 
     def test_missing_nonreference_state_fails_closed_before_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
