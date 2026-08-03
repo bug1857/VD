@@ -492,7 +492,7 @@ Follow-up actions:
 
 ### EXP-005: Stationary live-shadow detector-to-policy dry-run integration
 
-Status: OFFLINE STAGES 1–3 IMPLEMENTED AND TESTED — LIVE ACQUISITION NOT IMPLEMENTED — NOT RUN
+Status: VERIFIED
 Date: 2026-08-02
 Risk level: CRITICAL (actuation boundary integration; no live actuation authorized)
 
@@ -945,3 +945,19 @@ Follow-up actions:
 
 1. Implement and review the persisted read-only live-shadow acquisition runner, including an experiment manifest and pre/post no-mutation evidence capture.
 2. Separately authorize stationary live acquisition only after that runner and its deliberate-failure tests are reviewed.
+
+#### Verification result — 2026-08-03
+
+This block supersedes the contract-time `Result: NOT RUN` and `Conclusion: Pending execution` statements above; those original statements are retained as the pre-registration record.
+
+**Status: VERIFIED.** Both independently stratified stationary live-shadow captures completed and were evaluated offline from their persisted traces:
+
+- L2 / `target-075`: capture ID `exp005-l2-target075-001`, evidence commit `9a24299`.
+- COSINE / `target-025`: capture ID `exp005-cosine-target025-001`, evidence commit `5c95e07`.
+- Frozen detector seed: `20260804` for both captures.
+
+The complete implementation path landed in commits `1585a3a` (four-trace assembly), `2bfcc75` (detector-input extraction), `83a7743` (provenance binding), and `9e2575a` (restart-durable trace codec and reviewed-baseline acquisition runner). The live L2 evaluation is recorded in `9a24299`; the COSINE capture and evaluation evidence is recorded in `5c95e07`; deliberate H4 failure coverage is recorded in `a5731fe`.
+
+**Result and conclusion:** For each metric, all three persisted 200-query windows assembled as complete with checksum-valid trace envelopes and no reason codes. The real detector returned `NO_DRIFT`, the real policy in `DRY_RUN` returned `NO_CHANGE`, and the safe-actuation boundary returned an audited `NO_OP` using a fake client that would fail if called. Each capture's five live no-actuation flags — collection creation, collection mutation, restore last-known-good, rollback, and canary start — were all `false`.
+
+**Hypothesis verification:** H1 is VERIFIED for L2 and COSINE independently; H2 is VERIFIED; H3 is VERIFIED; H4 is VERIFIED by the eight deliberate offline fail-closed categories in `a5731fe`. No acceptance claim relies on synthetic response estimates, and no automatic actuation was authorized or performed.
