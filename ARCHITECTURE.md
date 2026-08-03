@@ -861,6 +861,26 @@ shadow result raises a non-sensitive executor error; a structurally incomplete
 captured trace is returned to the worker, which records the existing explicit
 trace rejection and never publishes it.
 
+Reference-serving refinement (implementation contract):
+
+`MilvusRangeServingExecutor` is a separate injected adapter for the reference
+gateway's *foreground* HNSW range query. Its immutable per-stream plan binds
+the HNSW and FLAT collection names/identities, threshold radius, vector
+dimension, and allowed served `ef` values to the exact `MonitorStreamKey`.
+`preflight()` is an explicit read-only admission check, run before a capture:
+it verifies stack health plus both tracks' `Loaded` state and identity bindings.
+It is never called from `execute()`.
+
+For every accepted request, `execute()` validates only in-memory stream, range,
+dimension, and `ef` values, then issues exactly one HNSW `MilvusHarness.search`
+call using the request's explicit range configuration. It neither contacts
+etcd/MinIO, describes an index, reads a load state, writes a file, retries,
+invokes the recorder, nor performs FLAT/oracle/shadow/policy/action work.
+It returns a minimal `ServedQueryOutcome`; a search exception becomes a
+non-sensitive failed/timeout outcome so the gateway preserves the host result
+and the worker later rejects that observation rather than manufacturing trace
+evidence. Collection/index/schema/configuration mutation is prohibited.
+
 Safety, resource, and privacy invariants:
 
 1. **Foreground isolation:** `offer()` is bounded and non-blocking. Full/closed/invalid monitoring state is observable but never a request failure.
