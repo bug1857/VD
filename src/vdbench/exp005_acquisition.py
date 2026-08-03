@@ -540,6 +540,30 @@ def _derived_identities(
     return configuration_identity, data_identity, radius
 
 
+def derive_exp005_identities(
+    *,
+    dataset_dir: Path,
+    metric: Metric,
+    stratum: str,
+    candidate_ef: int,
+    lkg_ef: int,
+) -> tuple[str, str, float]:
+    """Derive the reviewed EXP-005 lineage tuple without contacting Milvus.
+
+    EXP-008 reuses this canonical identity function instead of copying the
+    configuration-hash recipe, so a baseline remains bound to exactly the same
+    DATASET-001/range-query semantics across both experiments.
+    """
+
+    return _derived_identities(
+        dataset_dir=dataset_dir,
+        metric=metric,
+        stratum=stratum,
+        candidate_ef=candidate_ef,
+        lkg_ef=lkg_ef,
+    )
+
+
 def _preflight_live_adapter(
     adapter: MilvusActuationClient, baseline: IdentityBaseline
 ) -> dict[str, object]:

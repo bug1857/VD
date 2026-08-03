@@ -1194,7 +1194,7 @@ Follow-up actions:
 
 ### EXP-008: Reference host-observation integration and live DRY_RUN validation
 
-Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Status: IMPLEMENTED — OFFLINE CONSTRUCTION TESTED — LIVE RUN PENDING
 Date: 2026-08-03
 Risk level: CRITICAL (ADR-007 foreground/worker separation; live ENV-001 reads only; no automatic actuation)
 
@@ -1215,6 +1215,15 @@ Configuration:
 - **Reference workload:** separate deterministic stationary L2 and COSINE request streams, each with exactly 600 completed host observations (three 200-query windows / twelve 50-query traces). Their request order, seed, metric, stratum, candidate/LKG/sentinel `ef`, and collection identities must be frozen in the run manifest.
 - **Execution mode:** read-only data-plane queries plus downstream `PolicyMode.DRY_RUN`; no collection/index/schema/configuration mutation, `start_canary`, `stop_candidate`, `restore_last_known_good`, `verify_restoration`, or live action controller call.
 - **Recorder/worker limits:** freeze queue capacity, worker drain limit, maximum partial batches, maximum observation age, and every drop/restart reason in the manifest before execution. The v1 in-memory queue is host-owned and must be explicitly distinguished from ADR-006's durable outbox capacity.
+
+Frozen implementation parameters (2026-08-03; not evidence of a completed run):
+
+- **Dataset and scheduling:** DATASET-001 `generation_manifest.json` SHA-256 `b6cb56a3eee60f6728be1d08a465e2a2500eec4089b4466da76fe2e886b51da9`; deterministic scheduling/audit seed `20260805`; within each metric stream use measured query IDs `0…199` in canonical order for each of three windows. Each 200-query window is emitted as four contiguous 50-query worker groups.
+- **L2 stream:** `target-075`; candidate `ef=800`; last-known-good and served `ef=400`; sentinel `ef=100`; reviewed baseline `artifacts/exp-005/baselines/l2-target-075-ef800-lkg400.json` (file SHA-256 `15c587aa592f76edcfe8768df62c565c4aca90916cf0a3852679abe9f1ac27e2`; internal baseline SHA-256 `6e26b0793ca44732ec464fe08e09287d28c87356f0f0e8dd71691e3e8658dc52`).
+- **COSINE stream:** `target-025`; candidate `ef=400`; last-known-good and served `ef=200`; sentinel `ef=100`; reviewed baseline `artifacts/exp-005/baselines/cosine-target-025-ef400-lkg200.json` (file SHA-256 `47b2b5e0d182661019114405b841a63b87b89e4dcc286e7458038280e39921ca`; internal baseline SHA-256 `ad03acd55103be261bdac349500d96d80542f8dea1f0a436acfd365395a3e0c5`).
+- **Bounded host/outbox/monitor limits:** volatile host-observation capacity `50`; worker drain limit `50`; maximum partial streams `2`; maximum observation age `60` seconds; durable source pending-event capacity `28`; durable source pending-byte capacity `16,777,216`; monitor poll limit `28`. The manifest must record every actual receipt/drop/restart counter and distinguish the volatile host queue from the durable outbox.
+- **Read-only admission:** the runner must capture an explicit successful serving preflight for both streams before issuing any foreground request, and it must pin the reviewed baseline bindings in the manifest. The background executor still performs its required pre/post health/load/identity checks around every trace capture.
+- **Configuration isolation:** because `ActuationWorkload` binds exactly one immutable configuration identity, the L2 and COSINE streams must use separate read-only adapter/executor and serving-executor instances. A stream-key router may compose their existing interfaces, but it must never merge, rewrite, or substitute either configuration identity.
 
 Required scenarios and pass criteria:
 
@@ -1270,4 +1279,4 @@ NOT RUN — contract only.
 
 Conclusion:
 
-Pending ADR-007 implementation, deliberate-failure validation, and live DRY_RUN evidence. No external host deployment or automatic actuation is authorized.
+The isolated EXP-008 composition root, strict monitor-audit sink, and fake-component construction tests are implemented. The registered live DRY_RUN capture and its deliberate live failure probes remain pending; no external host deployment or automatic actuation is authorized.
