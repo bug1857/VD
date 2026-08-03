@@ -821,23 +821,28 @@ class ShadowAuditExecutor(Protocol):
     ) -> ShadowAuditTrace: ...
 
 
+class HostWorkerStateStore(Protocol):
+    def recover(self) -> HostWorkerState: ...
+    def save(self, state: HostWorkerState) -> None: ...
+
+
 class BackgroundShadowWorker:
     def run_once(self, *, max_observations: int) -> WorkerCycleResult: ...
 ```
 
 1. `offer()` uses only a bounded in-memory queue and a non-blocking insertion (`put_nowait` or equivalent). It may validate fixed-size scalar/identity fields, but must not contact Milvus, write any file, wait for the worker, retry, evaluate drift/policy, call the publisher, or invoke an actuation client. A full queue returns `DROPPED_BACKPRESSURE` with a non-sensitive reason; it never delays or modifies the served query.
 2. `CompletedRangeQueryObservation` is immutable and carries the canonical request ID, metric/stratum/index/data lineage, query vector, threshold/range filter, result limit, served `ef`, and a minimal immutable served outcome. Raw query payload exists only in volatile worker memory and the owner-only completed trace envelope; no event, monitor state, drop metric, or error log may duplicate it.
-3. The worker preserves FIFO order within every exact `MonitorStreamKey` and groups exactly 50 compatible observations. It assigns the externally documented `(window_id, window_sequence, trace_sequence_index)` only after a complete group is available. It never joins metric, stratum, data identity, configuration identity, FLAT binding, or HNSW binding across groups.
+3. The worker preserves FIFO order within every exact `MonitorStreamKey` and groups exactly 50 compatible observations. A strict, non-sensitive `HostWorkerStateStore` atomically persists each stream's next trace ordinal, blocked status, and partial-observation count—not raw observations. It derives `(window_sequence, trace_sequence_index) = divmod(next_trace_ordinal, 4)` and `window_id = f"{stream_id}:window:{window_sequence}"` only after a complete group is available. It never joins metric, stratum, data identity, configuration identity, FLAT binding, or HNSW binding across groups.
 4. The injected `ShadowAuditExecutor` is the sole component allowed to perform background read-only shadow, FLAT, and oracle work. It must return a complete trace whose 50 canonical query IDs match the supplied observations in order, metric/stratum/identity match the group, and candidate/LKG/sentinel settings are already registered. A mismatch, timeout, failed stage, or incomplete trace yields an explicit worker rejection and no source publication.
-5. Only after those checks pass does the worker call the existing `ShadowTracePublisher.publish(trace=..., context=...)`. Publication retains ADR-006 persist-before-publish, at-least-once, and fail-closed behavior. The worker does not implement a second trace serializer or queue ledger.
-6. The worker owns volatile partial batches. Process loss may discard observations that have not yet become a complete published trace; it must increment a non-sensitive loss/restart counter and must never fabricate a partial trace, replay unknown raw observations, or rebaseline the monitor. Published envelopes retain ADR-006 recovery semantics.
+5. Only after those checks pass does the worker call the existing `ShadowTracePublisher.publish(trace=..., context=...)`. Publication retains ADR-006 persist-before-publish, at-least-once, and fail-closed behavior. The worker advances the persisted trace ordinal only after `PUBLISHED` or `IDEMPOTENT`; an unknown/error publication outcome blocks that stream for explicit operator recovery rather than reusing an ambiguous slot. The worker does not implement a second trace serializer or queue ledger.
+6. The worker owns volatile partial batches. On startup, the state store's persisted partial counts become an exact, non-sensitive restart-loss record and are cleared before new evidence is accepted; their raw observations cannot be recovered. The worker must never fabricate a partial trace, replay unknown raw observations, or rebaseline the monitor. Published envelopes retain ADR-006 recovery semantics.
 7. The recorder, worker, executor, and reference gateway must not import `policy.py`, `actuation.py`, an automatic-action controller, or `WorkloadMonitor`. The executor may use a lazily imported Milvus client only in the background worker path. `DRY_RUN` policy evaluation remains downstream of the existing monitor only.
 
 Safety, resource, and privacy invariants:
 
 1. **Foreground isolation:** `offer()` is bounded and non-blocking. Full/closed/invalid monitoring state is observable but never a request failure.
 2. **Read-only background data plane:** shadow/FLAT/oracle calls use validated range parameters and never create/drop/load/index/mutate a collection or change `ef` server-side.
-3. **Bounded memory:** queue capacity, worker drain limit, partial-batch count, and maximum observation age are registered configuration values with explicit drop behavior. No hidden unbounded lists or retry loops.
+3. **Bounded memory and scheduling:** queue capacity, worker drain limit, partial-batch count, and maximum observation age are registered configuration values with explicit drop behavior. The persisted state store contains only schedule/counter/blocked-state metadata; no hidden unbounded lists, raw-payload persistence, or retry loops are allowed.
 4. **Privacy minimization:** request vectors and hit payloads never enter events, monitor state, policy input, drop counters, or exception text. Before live data is admitted, the trace/outbox host volume must meet ADR-006 owner-only/encryption requirements.
 5. **No automatic actuation:** this layer cannot evaluate or execute policy. `NO_CHANGE`, recommendations, canaries, rollbacks, and configuration writes remain outside its imports and call graph.
 6. **Operator rollback:** disable the host hook or stop the worker to halt new observations. Preserve already published evidence; do not delete, rebaseline, or modify Milvus automatically.
@@ -851,7 +856,7 @@ Consequences:
 
 Verification plan:
 
-1. Unit-test constant-time/non-blocking recorder behavior with traps for filesystem, Milvus, publisher, policy, and actuation access; test queue-full, invalid observation, FIFO grouping, identity isolation, partial-batch restart loss accounting, and executor/trace mismatch rejection.
+1. Unit-test constant-time/non-blocking recorder behavior with traps for filesystem, Milvus, publisher, policy, and actuation access; test queue-full, invalid observation, FIFO grouping, identity isolation, partial-batch restart loss accounting, durable trace-slot advancement/unknown-publication blocking, and executor/trace mismatch rejection.
 2. Unit-test a fake executor and reference gateway to prove the background worker is the only path that can invoke capture or publish.
 3. Pre-register EXP-008 before implementation. It must validate real ENV-001 read-only range queries through the reference gateway for separate L2 and COSINE stationary traffic, then prove `trace → source → monitor → NO_DRIFT → NO_CHANGE` with no actuation.
 4. Add deliberate live DRY_RUN failure probes: source unavailable, queue full, executor timeout/failure, identity change, and worker restart. Each must preserve served-query success and record an explicit non-sensitive reason.
