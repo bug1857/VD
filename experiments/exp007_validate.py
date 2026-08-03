@@ -585,13 +585,23 @@ def _data_minimization(root: Path) -> tuple[bool, dict[str, object]]:
     }
 
 
-def _artifact_hashes(root: Path) -> dict[str, str]:
+def _artifact_inventory(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Hash regular evidence files and link targets without dereferencing links."""
+
     excluded = {"manifest.json", "execution_receipt.json"}
-    return {
-        str(path.relative_to(root)): _sha256(path)
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and path.name not in excluded and ".tmp" not in path.name
-    }
+    regular: dict[str, str] = {}
+    symlink_targets: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.name in excluded or ".tmp" in path.name:
+            continue
+        relative = str(path.relative_to(root))
+        if path.is_symlink():
+            symlink_targets[relative] = hashlib.sha256(
+                os.fsencode(os.readlink(path))
+            ).hexdigest()
+        elif path.is_file():
+            regular[relative] = _sha256(path)
+    return regular, symlink_targets
 
 
 def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]:
@@ -647,6 +657,7 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
     raw_result["self_sha256"] = _content_sha256(raw_result)
     _write(output_dir / "raw_result.json", raw_result)
 
+    artifact_sha256, symlink_target_sha256 = _artifact_inventory(output_dir)
     manifest: dict[str, Any] = {
         "schema_version": "exp007-manifest-v1",
         "validation_status": status,
@@ -659,7 +670,8 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
         "python": sys.version,
         "platform": platform.platform(),
         "outbox_root_mode": oct((output_dir / "composition" / "outbox").stat().st_mode & 0o777),
-        "artifact_sha256": _artifact_hashes(output_dir),
+        "artifact_sha256": artifact_sha256,
+        "symlink_target_sha256": symlink_target_sha256,
     }
     manifest["self_sha256"] = _content_sha256(manifest)
     _write(output_dir / "manifest.json", manifest)

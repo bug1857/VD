@@ -63,6 +63,13 @@ class Exp007ValidationTests(unittest.TestCase):
             self.assertEqual(receipt["manifest_sha256"], manifest["self_sha256"])
             self.assertEqual(receipt["raw_result_sha256"], raw_result["self_sha256"])
             self.assertTrue(manifest["artifact_sha256"])
+            self.assertEqual(
+                set(manifest["symlink_target_sha256"]),
+                {
+                    "safety/symlinked/rejected/"
+                    "c1fc6eb6c60ea528f299b7c21a140c46e6ce26ccc9792d048d6e141117b6f757.json"
+                },
+            )
 
     def test_validator_fails_closed_after_writing_incomplete_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
