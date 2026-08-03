@@ -98,6 +98,23 @@ Used by: EXP-001 contract in `EXPERIMENT_LOG.md`.
 
 ---
 
+### DATASET-002: Deterministic canary-routing and recall-audit query workload
+
+Source: Planned deterministic independent standard-normal query vectors generated locally with NumPy `Generator(PCG64(20260809))`; DATASET-001's 10,000 base vectors and frozen thresholds are consumed read-only and are not regenerated, copied, or relabeled.
+License: Project-generated data. No external copyright-bearing data is included. Public redistribution remains blocked until the repository has an explicit license or the human assigns one.
+Dimensions: 128; little-endian IEEE-754 `float32`.
+Embedding model: None — synthetic vectors, not model embeddings.
+Number of vectors: 1,800 query vectors: 600 unique routing queries for the 60-of-600 candidate partition and 1,200 disjoint background candidate-recall audit queries. No query vector or occurrence identifier may appear in both roles.
+Metadata schema: Canonical integer query ID; role (`routing` or `recall_audit`); immutable DATASET-001 base/threshold identity; seed/generator/version metadata; byte size and SHA-256 for every artifact. The routing manifest additionally records the approval-bound routing seed and exact candidate/LKG partition only after the seed is committed before result collection.
+Ground truth method: Independent float64 oracle range search over the checksum-verified DATASET-001 base vectors, using the inherited frozen metric/radius/range/limit configuration; FLAT agreement is required before any HNSW candidate-recall value is usable.
+Version: Planned `DATASET-002-v1`; primary seed `20260809`; expected NumPy pin `2.5.1`. This entry is a registry contract only: artifacts are not generated and have no checksums yet.
+Artifact location: Planned `artifacts/exp-009/dataset/`.
+Use restrictions: EXP-009 Stage 1 only until its workload, estimator, and calibration gates are verified. The 600 routing vectors support the 60-of-600 latency tolerance-bound design. The 1,200 disjoint recall-audit vectors support the proposed one-sided bounded-mean Hoeffding recall bound with margin `sqrt(log(20)/(2*1200)) = 0.035330182290`; passing the ADR-002 recall floor requires an observed audit mean at least `0.985330182290`. These guarantees are conditional on the explicitly tested independent-query sampling model and do not imply IID latency or production-traffic coverage.
+Checksum procedure: Before use, write arrays, role/identity manifest, oracle records, and SHA-256 inventory atomically; independently reread and verify every byte size/hash plus the inventory hash. Record the inherited DATASET-001 generation-manifest SHA-256 and thresholds SHA-256 in DATASET-002's manifest. A separate verification command and unit tests must fail closed on role overlap, duplicate IDs, non-finite vectors, wrong dimensions/dtype, inherited-identity mismatch, missing oracle records, or any checksum mismatch.
+Used by: Planned EXP-009 Stage 1; no other experiment may consume it without an explicit registry update.
+
+---
+
 ## EXPERIMENT ENVIRONMENT REGISTRY
 
 ### ENV-001: Milvus range-query smoke environment
