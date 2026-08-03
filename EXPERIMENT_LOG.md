@@ -1087,7 +1087,7 @@ Follow-up actions:
 
 ### EXP-007: Durable live-shadow event-source offline safety and recovery validation
 
-Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Status: VERIFIED (offline source/outbox scope only; host integration and all actuation remain unauthorized)
 Date: 2026-08-03
 Risk level: CRITICAL (ADR-006 producer/outbox boundary; no live Milvus, serving traffic, or automatic actuation authorized)
 
@@ -1174,14 +1174,18 @@ Planned: `artifacts/exp-007/<UTC-run-id>/`.
 
 Result:
 
-NOT RUN — contract only.
+**VERIFIED — 2026-08-03.** The final formal offline run completed at `artifacts/exp-007/run-20260803T152516Z/` under commit `ad635c7` (`ad635c7043656cd41b57d6e6745e2c330d336eba`), detector seed `20260804`, and fixture scheduling seed `20260805`. The manifest file SHA-256 is `bd7f02acd730d17123e4ca5b2f71a50feb17a9de6cad23659b84e23ba33e3ba6`; raw-result file SHA-256 is `5b750a818f3c9f6fdc60e69b32a55ab6eb4706de73caa3fa0e9cf3a0862ee996`; execution-receipt file SHA-256 is `a36bb2b635c194e7e9ccc351f8cef046aeea799c3364e2084c702903fb1c6401`.
+
+All seven registered scenarios passed: persist-before-publish with an orphaned non-deliverable trace, source/consumer restart plus idempotent acknowledgement and one durable monitor evaluation, duplicate/conflict rejection, bounded backpressure with zero synchronous persistence/shadow/monitor calls on the dropped foreground submission, malformed/corrupt/missing/unsafe-permission/symlink rejection, data-minimizing event records, and real DRY_RUN composition. The composed L2 and COSINE streams each produced exactly one `NO_DRIFT` / `NO_CHANGE` result from the actual monitor. Static inspection found no PyMilvus, policy, actuation, or `WorkloadMonitor` dependency in the source module; trap-client calls remained zero.
+
+Independent verification recomputed and matched all 110 regular-artifact SHA-256 values and the one rejected-symlink target SHA-256 recorded in the manifest, the logical manifest/raw-result hashes, and receipt bindings. The manifest records `apfs`, owner UID `501`, owner-only outbox mode `0700`, and an explicit `NOT_APPLICABLE_SOURCE_V1_HOST_SAMPLER_UNIMPLEMENTED` in-memory-queue declaration: the source accepts only completed traces and does not claim an unbuilt host queue. H1, H2, H3, and H4 are VERIFIED for the registered offline scope only.
 
 Conclusion:
 
-Pending offline implementation, deliberate-failure validation, raw-evidence review, and a separately authorized live host integration. This contract does not authorize automatic actuation.
+The durable source/outbox is verified as an offline, single-host, at-least-once evidence boundary. The source accepts completed 50-query traces; it does not yet provide a serving application's non-blocking sampler or background shadow-audit worker. Any live host integration requires a separate design and experiment. This result does not authorize automatic actuation.
 
 Follow-up actions:
 
-1. Implement the source/outbox in new modules only, through injected filesystem/clock hooks and without live database dependencies.
-2. Run the complete offline EXP-007 evidence harness and preserve its immutable artifact bundle.
-3. Design a separate live host-instrumentation experiment only after EXP-007 is verified.
+1. Design the host-owned non-blocking observation sampler and background shadow-audit worker as a separate CRITICAL boundary.
+2. Pre-register and run a separate live host-integration experiment before claiming continuous-traffic coverage.
+3. Keep the monitor DRY_RUN-only; automatic actuation remains separately governed and unauthorized.

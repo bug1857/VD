@@ -670,10 +670,10 @@ Research references:
 
 ### ADR-006: Use a host-side durable trace outbox as the live `ShadowTraceEventSource`
 
-Status: Proposed — offline implementation and EXP-007 evidence required before live integration
+Status: Accepted — offline source/outbox implementation and EXP-007 evidence verified; host hook/worker and serving integration remain separately unimplemented
 Date: 2026-08-03
 Risk level: CRITICAL
-Evidence status: INFERRED design contract. This ADR does not authorize serving-path mutation, live parameter changes, or automatic actuation.
+Evidence status: VERIFIED for the offline single-host outbox at commit `ad635c7`, through EXP-007 run `artifacts/exp-007/run-20260803T152516Z/`. This ADR does not authorize serving-path mutation, live parameter changes, or automatic actuation.
 
 Problem:
 
