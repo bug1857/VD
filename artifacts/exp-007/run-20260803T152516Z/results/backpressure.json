@@ -1,0 +1,10 @@
+{
+  "foreground_calls": 1,
+  "monitor_calls": 0,
+  "publication_status": "DROPPED_BACKPRESSURE",
+  "reason_code": "PENDING_EVENT_CAPACITY_EXCEEDED",
+  "shadow_query_calls": 0,
+  "synchronous_persistence_calls": 0,
+  "trace_count_after": 1,
+  "trace_count_before": 1
+}

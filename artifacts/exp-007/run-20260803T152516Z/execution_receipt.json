@@ -1,0 +1,8 @@
+{
+  "artifact_count": 110,
+  "git_commit": "ad635c7043656cd41b57d6e6745e2c330d336eba",
+  "manifest_sha256": "41d7a5dc4b593b7de1d2eb3a243e0f4345a494f594b97a5777a9644399ef42bb",
+  "raw_result_sha256": "85ca886b47c55786b0414d8664bd410c7e2b1e6fdf25fcb4d667a2c5aef5e75f",
+  "schema_version": "exp007-execution-receipt-v1",
+  "validation_status": "COMPLETE"
+}

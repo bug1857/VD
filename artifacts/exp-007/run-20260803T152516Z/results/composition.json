@@ -1,0 +1,11 @@
+{
+  "evaluated_by_metric": {
+    "COSINE": 1,
+    "L2": 1
+  },
+  "no_prohibited_source_dependencies": true,
+  "pending_after_monitor": 0,
+  "processed_event_count": 24,
+  "prohibited_imports": [],
+  "trap_client_calls": []
+}

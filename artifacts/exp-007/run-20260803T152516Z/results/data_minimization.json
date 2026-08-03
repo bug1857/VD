@@ -1,0 +1,6 @@
+{
+  "ignored_unsafe_symlink_paths": 1,
+  "non_trace_sentinel_occurrences": 0,
+  "sentinels_only_in_trace_payload": true,
+  "trace_payload_sentinel_occurrences": 7850
+}

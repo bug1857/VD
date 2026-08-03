@@ -1,0 +1,9 @@
+{
+  "conflict_reason_codes": [
+    "ENVELOPE_CONTEXT_MISMATCH",
+    "PUBLICATION_CONFLICT"
+  ],
+  "deliverable_event_count": 1,
+  "downstream_monitor_calls": 0,
+  "identical_publication_status": "IDEMPOTENT"
+}

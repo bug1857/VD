@@ -1,0 +1,10 @@
+{
+  "acknowledgement_idempotent": true,
+  "evaluated_detector_state": "NO_DRIFT",
+  "evaluated_monitor_effect_count": 1,
+  "evaluated_policy_action": "NO_CHANGE",
+  "pending_event_ids_after_ack": [],
+  "published_event_count": 12,
+  "published_event_ids_unique": true,
+  "resumed_result_count": 12
+}

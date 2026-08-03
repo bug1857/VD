@@ -1,0 +1,10 @@
+{
+  "cases": {
+    "corrupt_envelope": true,
+    "malformed_event": true,
+    "missing_envelope": true,
+    "symlink_escape": true,
+    "unsafe_permissions": true
+  },
+  "downstream_monitor_calls": 0
+}

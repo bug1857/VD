@@ -1,0 +1,6 @@
+{
+  "before_envelope_no_trace_or_event": true,
+  "orphan_count_after_event_publication_fault": 1,
+  "orphan_not_deliverable": true,
+  "restart_recovers_exact_envelope": true
+}

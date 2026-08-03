@@ -1,0 +1,76 @@
+{
+  "atomic": {
+    "before_envelope_no_trace_or_event": true,
+    "orphan_count_after_event_publication_fault": 1,
+    "orphan_not_deliverable": true,
+    "restart_recovers_exact_envelope": true
+  },
+  "backpressure": {
+    "foreground_calls": 1,
+    "monitor_calls": 0,
+    "publication_status": "DROPPED_BACKPRESSURE",
+    "reason_code": "PENDING_EVENT_CAPACITY_EXCEEDED",
+    "shadow_query_calls": 0,
+    "synchronous_persistence_calls": 0,
+    "trace_count_after": 1,
+    "trace_count_before": 1
+  },
+  "composition": {
+    "evaluated_by_metric": {
+      "COSINE": 1,
+      "L2": 1
+    },
+    "no_prohibited_source_dependencies": true,
+    "pending_after_monitor": 0,
+    "processed_event_count": 24,
+    "prohibited_imports": [],
+    "trap_client_calls": []
+  },
+  "data_minimization": {
+    "ignored_unsafe_symlink_paths": 1,
+    "non_trace_sentinel_occurrences": 0,
+    "sentinels_only_in_trace_payload": true,
+    "trace_payload_sentinel_occurrences": 7850
+  },
+  "duplicates": {
+    "conflict_reason_codes": [
+      "ENVELOPE_CONTEXT_MISMATCH",
+      "PUBLICATION_CONFLICT"
+    ],
+    "deliverable_event_count": 1,
+    "downstream_monitor_calls": 0,
+    "identical_publication_status": "IDEMPOTENT"
+  },
+  "restart": {
+    "acknowledgement_idempotent": true,
+    "evaluated_detector_state": "NO_DRIFT",
+    "evaluated_monitor_effect_count": 1,
+    "evaluated_policy_action": "NO_CHANGE",
+    "pending_event_ids_after_ack": [],
+    "published_event_count": 12,
+    "published_event_ids_unique": true,
+    "resumed_result_count": 12
+  },
+  "safety": {
+    "cases": {
+      "corrupt_envelope": true,
+      "malformed_event": true,
+      "missing_envelope": true,
+      "symlink_escape": true,
+      "unsafe_permissions": true
+    },
+    "downstream_monitor_calls": 0
+  },
+  "scenarios": {
+    "atomic_publication_order": true,
+    "backpressure_and_foreground_isolation": true,
+    "data_minimization": true,
+    "dry_run_monitor_composition": true,
+    "duplicate_and_conflict_safety": true,
+    "restart_and_redelivery": true,
+    "schema_permission_checksum_path_safety": true
+  },
+  "schema_version": "exp007-raw-result-v1",
+  "self_sha256": "85ca886b47c55786b0414d8664bd410c7e2b1e6fdf25fcb4d667a2c5aef5e75f",
+  "status": "COMPLETE"
+}
