@@ -1,0 +1,1 @@
+{"baseline_sha256":"ad03acd55103be261bdac349500d96d80542f8dea1f0a436acfd365395a3e0c5","candidate_ef":400,"capture_id":"exp005-cosine-target025-001","last_known_good_ef":200,"metric":"COSINE","roles":["reference","current-1","current-2"],"schema_version":"exp005-live-shadow-capture-v1","threshold_stratum":"target-025","trace_size":50,"window_query_count":200}
