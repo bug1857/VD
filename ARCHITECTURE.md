@@ -1143,6 +1143,47 @@ pre-action validation, or an explicit removal take the same failback path.
 The Stage 3 rollback coordinator will add restoration-audit execution; Stage 2
 only establishes the prerequisite that it can clear the only routing authority.
 
+**Route-state marker implementation convention (proposed).** The marker is a
+separate single-record recovery boundary, not a duplicate grant ledger or a
+serialized candidate plan. The alternatives are:
+
+| Option | Recovery correctness / operational complexity | Decision |
+|---|---|---|
+| A — persist and reconstruct the candidate route plan | Could resume exposure after a crash, but contradicts the mandatory restart-to-LKG safety rule | Rejected |
+| B — strict atomic JSON marker containing only LKG binding and opaque activation identifiers | Makes every restart fail closed without retaining candidate membership, vectors, or parameters | Chosen |
+| C — reuse the grant-use SQLite ledger as the mutable route marker | Preserves transactions, but conflates one-time authorization evidence with a replaceable recovery snapshot | Rejected |
+
+`FileCanaryRouteStateStore` uses a `canary-route-state-v1` JSON document in a
+pre-existing private directory. Its only states are `LKG_ONLY` and
+`ACTIVATING`. Every document contains the canonical metric/stratum, explicit
+LKG `ef`, configuration/data/FLAT/HNSW identities, externally supplied UTC
+timestamp, and a stable reason code. `ACTIVATING` additionally requires the
+canonical grant ID and route-plan SHA-256; `LKG_ONLY` requires both fields to
+be null. It stores neither candidate `ef`, occurrence membership, vectors,
+thresholds, signatures, nor any data capable of reconstructing a route.
+Writes are same-directory temporary-file write+fsync, `os.replace`, and parent
+directory fsync; the resulting file is owner-only. The store refuses symlinks,
+non-private paths, unknown/missing fields, duplicate JSON keys, noncanonical
+values, unsupported schema, and identity mismatches.
+
+On every startup, the route authority begins empty before it reads any marker.
+`ACTIVATING`, expired, malformed, corrupted, missing-required-binding, or
+identity-mismatched marker state produces an in-memory `LKG_ONLY` recovery
+result with no candidate plan. If possible, the store atomically replaces the
+marker with an `LKG_ONLY` record carrying `RECOVERY_FAILBACK` (or a specific
+invalid-marker reason). A later coordinator must append the corresponding
+audit event before any new activation; if this write fails, the system remains
+LKG-only and refuses new activation. Explicit removal follows the same
+LKG-only transition. This component itself never installs a plan, dispatches a
+query, verifies an approval, or emits an audit; it returns immutable recovery
+evidence for the coordinator to audit.
+
+Focused tests must prove atomic activation-marker write, restart failback,
+identity mismatch, malformed/schema-corrupt state, write-failure containment,
+strict no-candidate reconstruction, and no route/policy/Milvus import. This
+marker is an offline Stage-2 prerequisite only; it does not authorize live
+candidate routing.
+
 **Stage-2 test and evidence gate.** TDD tests must first prove each refusal
 leaves the authority in LKG-only state and makes zero candidate dispatch calls:
 missing, invalid-signature, expired, revoked, decision/audit/transition/identity
