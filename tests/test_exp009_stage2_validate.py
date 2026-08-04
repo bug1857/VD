@@ -13,6 +13,7 @@ from experiments.exp009_stage2_validate import (
     STAGE2_SUITE_FILENAMES,
     Exp009Stage2ValidationError,
     run_validation,
+    verify_validation_bundle,
 )
 
 
@@ -49,6 +50,7 @@ class Exp009Stage2ValidationTests(unittest.TestCase):
             first = STAGE2_SUITE_FILENAMES[0]
             raw_stdout = (output_dir / "commands" / f"{first}.stdout.txt").read_text(encoding="utf-8")
             raw_stderr = (output_dir / "commands" / f"{first}.stderr.txt").read_text(encoding="utf-8")
+            verified = verify_validation_bundle(output_dir)
 
         self.assertEqual(result["status"], "COMPLETE")
         self.assertEqual(len(calls), len(STAGE2_SUITE_FILENAMES) + 3)
@@ -61,6 +63,7 @@ class Exp009Stage2ValidationTests(unittest.TestCase):
         self.assertTrue(manifest["artifact_sha256"])
         self.assertEqual(receipt["validation_status"], "COMPLETE")
         self.assertEqual(receipt["manifest_sha256"], manifest["self_sha256"])
+        self.assertEqual(verified["status"], "COMPLETE")
 
     def test_failed_suite_writes_incomplete_evidence_before_failing_closed(self) -> None:
         def runner(command: tuple[str, ...], *, repository: Path) -> subprocess.CompletedProcess[str]:
@@ -78,11 +81,30 @@ class Exp009Stage2ValidationTests(unittest.TestCase):
             raw_result = json.loads((output_dir / "raw_result.json").read_text(encoding="utf-8"))
             manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
             failed = raw_result["commands"][STAGE2_SUITE_FILENAMES[1]]
+            with self.assertRaisesRegex(Exp009Stage2ValidationError, "VALIDATION_INCOMPLETE"):
+                verify_validation_bundle(output_dir)
 
         self.assertEqual(raw_result["status"], "INCOMPLETE")
         self.assertEqual(manifest["validation_status"], "INCOMPLETE")
         self.assertEqual(failed["returncode"], 17)
         self.assertFalse(failed["passed"])
+
+    def test_public_verifier_rejects_tampered_artifact_content(self) -> None:
+        def runner(command: tuple[str, ...], *, repository: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "run"
+            run_validation(
+                output_dir=output_dir,
+                git_state_provider=lambda _repository: {"commit": "d" * 40, "dirty": False},
+                suite_runner=runner,
+            )
+            (output_dir / "commands" / "pip_check.stdout.txt").write_text(
+                "tampered\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(Exp009Stage2ValidationError, "ARTIFACT_HASH_MISMATCH"):
+                verify_validation_bundle(output_dir)
 
     def test_verifier_cannot_import_or_invoke_live_database_or_routing_paths(self) -> None:
         source = (

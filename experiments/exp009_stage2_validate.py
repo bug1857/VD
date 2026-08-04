@@ -28,6 +28,7 @@ __all__ = [
     "STAGE2_SUITE_FILENAMES",
     "Exp009Stage2ValidationError",
     "run_validation",
+    "verify_validation_bundle",
 ]
 
 
@@ -173,6 +174,88 @@ def _source_hashes(repository: Path) -> tuple[dict[str, str], dict[str, str]]:
         for filename in STAGE2_SUITE_FILENAMES
     }
     return source, suites
+
+
+def verify_validation_bundle(
+    output_dir: Path, *, require_complete: bool = True
+) -> dict[str, object]:
+    """Independently verify one closed EXP-009 Stage-2 evidence bundle.
+
+    This verifier accepts no replacement files, refuses symlinks, recomputes
+    every recorded artifact and self hash, and confirms the receipt binds the
+    same raw result, manifest, revision, and status.  ``require_complete`` is
+    false only for forensic inspection of a deliberately incomplete run.
+    """
+
+    root = Path(output_dir).resolve()
+    manifest_path = root / "manifest.json"
+    raw_result_path = root / "raw_result.json"
+    receipt_path = root / "execution_receipt.json"
+    if not root.is_dir() or not all(path.is_file() for path in (manifest_path, raw_result_path, receipt_path)):
+        raise Exp009Stage2ValidationError("BUNDLE_STRUCTURE_INVALID")
+    if any(path.is_symlink() for path in root.rglob("*")):
+        raise Exp009Stage2ValidationError("SYMLINK_ARTIFACT_REFUSED")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Exp009Stage2ValidationError("BUNDLE_JSON_INVALID") from error
+    if not all(isinstance(value, dict) for value in (manifest, raw_result, receipt)):
+        raise Exp009Stage2ValidationError("BUNDLE_DOCUMENT_INVALID")
+    try:
+        manifest_hash = manifest["self_sha256"]
+        raw_result_hash = raw_result["self_sha256"]
+        artifact_sha256 = manifest["artifact_sha256"]
+        commands = raw_result["commands"]
+    except KeyError as error:
+        raise Exp009Stage2ValidationError("BUNDLE_FIELD_MISSING") from error
+    if not (
+        isinstance(manifest_hash, str)
+        and isinstance(raw_result_hash, str)
+        and isinstance(artifact_sha256, dict)
+        and isinstance(commands, dict)
+    ):
+        raise Exp009Stage2ValidationError("BUNDLE_FIELD_INVALID")
+    manifest_projection = dict(manifest)
+    manifest_projection.pop("self_sha256", None)
+    raw_result_projection = dict(raw_result)
+    raw_result_projection.pop("self_sha256", None)
+    if _content_sha256(manifest_projection) != manifest_hash or _content_sha256(raw_result_projection) != raw_result_hash:
+        raise Exp009Stage2ValidationError("SELF_HASH_MISMATCH")
+    actual_inventory = _artifact_inventory(root)
+    if actual_inventory != artifact_sha256:
+        raise Exp009Stage2ValidationError("ARTIFACT_HASH_MISMATCH")
+    expected_commands = {
+        "git_diff_check",
+        *STAGE2_SUITE_FILENAMES,
+        _FULL_SUITE_NAME,
+        _PIP_CHECK_NAME,
+    }
+    if set(commands) != expected_commands:
+        raise Exp009Stage2ValidationError("COMMAND_INVENTORY_INVALID")
+    if not all(
+        isinstance(record, dict) and record.get("passed") is True
+        for record in commands.values()
+    ) and raw_result.get("status") == "COMPLETE":
+        raise Exp009Stage2ValidationError("COMPLETE_COMMAND_FAILURE")
+    if not (
+        receipt.get("manifest_sha256") == manifest_hash
+        and receipt.get("raw_result_sha256") == raw_result_hash
+        and receipt.get("git_commit") == raw_result.get("git_commit") == manifest.get("git", {}).get("commit")
+        and receipt.get("validation_status") == raw_result.get("status") == manifest.get("validation_status")
+        and receipt.get("command_count") == len(commands)
+    ):
+        raise Exp009Stage2ValidationError("RECEIPT_BINDING_INVALID")
+    if require_complete and raw_result.get("status") != "COMPLETE":
+        raise Exp009Stage2ValidationError("VALIDATION_INCOMPLETE")
+    return {
+        "status": raw_result["status"],
+        "git_commit": raw_result["git_commit"],
+        "manifest_sha256": manifest_hash,
+        "raw_result_sha256": raw_result_hash,
+        "command_count": len(commands),
+    }
 
 
 def run_validation(
