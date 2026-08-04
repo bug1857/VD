@@ -1352,6 +1352,20 @@ the frozen schedule-stability and raw approval/route/response evidence defined
 by EXP-009; this preflight convention alone does not execute or validate those
 live controls.
 
+The live composition root will obtain vectors only through a separate
+`Dataset002CanaryQuerySource`.  At construction it must re-run the existing
+DATASET-002 checksum/schema/oracle verifier, check every routing occurrence and
+every schedule-control vector against the already admitted manifest's float32
+SHA-256 binding, and retain immutable in-memory mappings only.  Its routing
+lookup receives both canonical occurrence ID and expected DATASET-002 query ID
+and fails closed on any mismatch; its control lookup accepts only the frozen
+IDs `600…649`; and its separate recall-audit lookup accepts only the verified
+disjoint `600…1799` DATASET-002 recall-audit IDs.  It does not choose an `ef`,
+claim an occurrence, issue a search, expose a bulk/raw-array export, or persist
+query payloads.  This keeps artifact verification out of the foreground
+request loop while ensuring a later serial runner cannot silently substitute a
+vector after Stage-1 verification.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
