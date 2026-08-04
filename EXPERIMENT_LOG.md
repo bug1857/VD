@@ -1477,3 +1477,42 @@ an externally signed exact grant, and is not authorized by this evidence.
 ENV-001 preflight, qualified last-known-good state, and a human-signed,
 one-time grant for the exact pre-registered L2 / `target-075` `ef=400 → 800`
 transition. No automatic or full-traffic action is authorized.
+
+#### Stage 4 offline-composition verification result — 2026-08-04
+
+**Stage status: VERIFIED (offline composition seam only).** The Stage-1 through
+Stage-3 records above remain unchanged. This result verifies the fake-only
+composition of the admitted 1,200-slot schedule, DATASET-002 source binding,
+durable ledger, restart continuation, terminal containment, and pure
+schedule-stability evaluator. It does **not** execute a Milvus query, accept a
+grant, publish or claim a candidate route, or constitute the controlled live
+canary required by Stage 4.
+
+- Implementation dependencies: immutable serial runner `70632bb`; sealed
+  offline-composition validator `2d56463`.
+- Immutable evidence bundle:
+  `artifacts/exp-009/run-20260804T112128Z/`, generated from clean commit
+  `2d5646323ab527ec50773584fb0a4948d849c0df`. Independent verification returns
+  `COMPLETE`; manifest SHA-256
+  `0e18398e799242358d86096d5aa4102a8ab357bd0c96e016d3062ac36d92b045`, raw-result
+  SHA-256 `9c7776e2e3b50c16760f014eff2c022b0b8668de70039199736c66b38dd6fee7`, and
+  receipt SHA-256 `b35b1ab5857a6b39594551f87980f209ced02d0393962c0245e5c91b22e61dee`.
+- The sealed bundle records nine passing commands: clean-tree `git diff
+  --check`, six focused suites, the full repository suite (`511` tests in
+  `138.783s`), and `pip check` (`No broken requirements found.`). It records
+  `live_database_or_routing_activity: false`; its verifier rejects incomplete,
+  tampered command-output, tampered receipt, substituted, and symlinked
+  evidence.
+- The composition tests prove exact 1,200-slot ordering, 600 control and 600
+  routing slots, exactly 60 candidate / 540 LKG planned `ef` assignments,
+  strict resume at the next ledger index, and one-record terminal containment
+  for admission, source, executor, health, and schedule-integrity failures.
+  The runner and validator are AST-tested to exclude Milvus, approval/grant,
+  activation, and route-authority imports.
+
+**Next gate:** implement and verify a separately designed, serial live
+composition root with injected serving/execution ports and no configuration
+mutation. Only after that code exists, a fresh ENV-001 preflight passes, an
+eligible policy/LKG state exists, and a human supplies an exact one-time
+Ed25519 grant may the pre-registered controlled live Stage-4 canary be run.
+No automatic, full-traffic, or ungranted candidate action is authorized.

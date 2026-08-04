@@ -1,0 +1,11 @@
+test_complete_bundle_preserves_raw_output_and_verifies (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_complete_bundle_preserves_raw_output_and_verifies) ... ok
+test_dirty_revision_refuses_before_creating_evidence (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_dirty_revision_refuses_before_creating_evidence) ... ok
+test_failed_suite_is_sealed_incomplete_and_cannot_verify_complete (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_failed_suite_is_sealed_incomplete_and_cannot_verify_complete) ... ok
+test_validator_has_no_live_client_grant_or_route_authority_import (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_validator_has_no_live_client_grant_or_route_authority_import) ... ok
+test_verifier_rejects_tampered_execution_receipt (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_verifier_rejects_tampered_execution_receipt) ... ok
+test_verifier_rejects_tampered_raw_command_output (test_exp009_stage4_validate.Exp009Stage4ValidationTests.test_verifier_rejects_tampered_raw_command_output) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.124s
+
+OK

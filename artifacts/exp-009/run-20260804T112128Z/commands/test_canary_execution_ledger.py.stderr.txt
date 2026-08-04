@@ -1,0 +1,11 @@
+test_all_1200_passing_records_are_the_only_complete_state (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_all_1200_passing_records_are_the_only_complete_state) ... ok
+test_corrupt_storage_fails_closed_and_module_has_no_execution_imports (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_corrupt_storage_fails_closed_and_module_has_no_execution_imports) ... ok
+test_every_integrity_failure_is_terminal_once_persisted (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_every_integrity_failure_is_terminal_once_persisted) ... ok
+test_failed_outcome_is_recorded_then_blocks_all_later_slots (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_failed_outcome_is_recorded_then_blocks_all_later_slots) ... ok
+test_persists_ordered_tamper_evident_history_across_restart (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_persists_ordered_tamper_evident_history_across_restart) ... ok
+test_rejects_overlapping_interval_and_schedule_substitution (test_canary_execution_ledger.CanaryExecutionLedgerTests.test_rejects_overlapping_interval_and_schedule_substitution) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 18.559s
+
+OK

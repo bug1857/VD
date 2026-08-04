@@ -1,0 +1,9 @@
+test_builds_exact_1200_slot_serial_schedule (test_canary_schedule.CanaryScheduleTests.test_builds_exact_1200_slot_serial_schedule) ... ok
+test_direct_schedule_digest_tampering_fails_closed (test_canary_schedule.CanaryScheduleTests.test_direct_schedule_digest_tampering_fails_closed) ... ok
+test_rejects_manifest_plan_binding_mismatch (test_canary_schedule.CanaryScheduleTests.test_rejects_manifest_plan_binding_mismatch) ... ok
+test_schedule_module_stays_pure_and_has_no_raw_vector_field (test_canary_schedule.CanaryScheduleTests.test_schedule_module_stays_pure_and_has_no_raw_vector_field) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 2.024s
+
+OK
