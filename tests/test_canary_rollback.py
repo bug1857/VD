@@ -473,7 +473,9 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
                 root / "automatic-actions.json",
                 clock=lambda: _context().occurred_at_utc,
             )
-            authority = CanaryRouteAuthority()
+            authority = CanaryRouteAuthority(
+                clock=lambda: datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+            )
             marker = state.begin_activation(
                 binding=_binding(),
                 grant_id=_context().grant_id,
