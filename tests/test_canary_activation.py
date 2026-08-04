@@ -413,6 +413,16 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
             _grant(self.plan).expires_at_utc,
         )
         self.assertEqual(authority.claim_calls, 0)
+        self.assertIsNotNone(result.active_context)
+        self.assertEqual(result.active_context.grant_id, _grant(self.plan).grant_id)
+        self.assertEqual(
+            result.active_context.signed_payload_sha256,
+            audit.records[0].signed_payload_sha256,
+        )
+        self.assertEqual(result.active_context.policy_audit_id, _grant(self.plan).policy_audit_id)
+        self.assertEqual(result.active_context.plan_sha256, self.plan.plan_sha256)
+        self.assertEqual(result.active_context.binding, _binding(self.plan))
+        self.assertEqual(result.active_context.activated_at_utc, _TIMESTAMPS.marker_at_utc)
 
     def test_disabled_or_unavailable_controller_blocks_before_verifier_or_route_work(self) -> None:
         for controller, reason in (
@@ -532,6 +542,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(state.marker_calls, [])
         self.assertEqual(authority.activate_calls, [])
         self.assertEqual(authority.claim_calls, 0)
+        self.assertIsNone(result.active_context)
 
     def test_grant_plan_binding_mismatch_calls_no_downstream_dependency(self) -> None:
         coordinator, order, store, audit, state, authority, _ = self._coordinator()

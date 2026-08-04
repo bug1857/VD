@@ -48,6 +48,7 @@ from .canary_routing import CanaryRoutePlan
 
 
 __all__ = [
+    "ActiveCanaryContext",
     "ActivationAttempt",
     "ActivationTimestamps",
     "CanaryActivationCoordinator",
@@ -127,6 +128,41 @@ class ActivationTimestamps:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveCanaryContext:
+    """Verified non-secret binding required for a later rollback request.
+
+    The coordinator creates this value only after the route authority accepts
+    the exact human-approved plan. It contains no grant payload, credential,
+    query vector, or signing material.
+    """
+
+    grant_id: str
+    signed_payload_sha256: str
+    policy_audit_id: str
+    plan_sha256: str
+    binding: RouteStateBinding
+    activated_at_utc: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str) and value
+            for value in (self.grant_id, self.policy_audit_id)
+        ):
+            raise ValueError("active canary identifiers must be non-empty")
+        if (
+            not isinstance(self.signed_payload_sha256, str)
+            or not isinstance(self.plan_sha256, str)
+            or _SHA256_RE.fullmatch(self.signed_payload_sha256) is None
+            or _SHA256_RE.fullmatch(self.plan_sha256) is None
+        ):
+            raise ValueError("active canary digests must be SHA-256 values")
+        if not isinstance(self.binding, RouteStateBinding):
+            raise TypeError("binding must be a RouteStateBinding")
+        if not _timestamp_valid(self.activated_at_utc):
+            raise ValueError("activated_at_utc must be RFC3339 UTC")
+
+
+@dataclass(frozen=True, slots=True)
 class ActivationAttempt:
     """Non-sensitive immutable evidence from one coordinator attempt."""
 
@@ -135,6 +171,20 @@ class ActivationAttempt:
     grant_id: str | None
     plan_sha256: str | None
     authorization_event_id: str | None
+    active_context: ActiveCanaryContext | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.activated, bool):
+            raise TypeError("activated must be bool")
+        if not isinstance(self.reason_code, str) or not self.reason_code:
+            raise ValueError("reason_code must be non-empty")
+        if self.activated is not (self.active_context is not None):
+            raise ValueError("only a published activation may expose active context")
+        if self.active_context is not None and (
+            self.grant_id != self.active_context.grant_id
+            or self.plan_sha256 != self.active_context.plan_sha256
+        ):
+            raise ValueError("active context must bind the published attempt")
 
 
 class CanaryActivationCoordinator:
@@ -312,6 +362,14 @@ class CanaryActivationCoordinator:
             grant_id=verified_grant.grant_id,
             plan_sha256=plan.plan_sha256,
             authorization_event_id=authorization_event.event_id,
+            active_context=ActiveCanaryContext(
+                grant_id=verified_grant.grant_id,
+                signed_payload_sha256=signed_payload_sha256,
+                policy_audit_id=verified_grant.policy_audit_id,
+                plan_sha256=plan.plan_sha256,
+                binding=binding,
+                activated_at_utc=timestamps.marker_at_utc,
+            ),
         )
 
     def _compensate_to_lkg(
@@ -362,6 +420,7 @@ def _attempt(
     grant_id: str | None = None,
     plan_sha256: str | None = None,
     authorization_event_id: str | None = None,
+    active_context: ActiveCanaryContext | None = None,
 ) -> ActivationAttempt:
     return ActivationAttempt(
         activated=activated,
@@ -369,6 +428,7 @@ def _attempt(
         grant_id=grant_id,
         plan_sha256=plan_sha256,
         authorization_event_id=authorization_event_id,
+        active_context=active_context,
     )
 
 
@@ -382,16 +442,24 @@ def _timestamps_valid(timestamps: object) -> bool:
         timestamps.marker_at_utc,
         timestamps.failure_at_utc,
     ):
-        if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
+        if not _timestamp_valid(value):
             return False
-        try:
-            parsed = datetime.fromisoformat(value[:-1] + "+00:00")
-        except ValueError:
-            return False
-        if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
-            return False
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
         parsed_timestamps.append(parsed)
     return parsed_timestamps == sorted(parsed_timestamps)
+
+
+def _timestamp_valid(value: object) -> bool:
+    if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return False
+    return (
+        parsed.tzinfo is not None
+        and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+    )
 
 
 def _grant_plan_binding_matches(

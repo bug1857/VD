@@ -291,7 +291,12 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
         self.assertEqual(len(controller.calls), 1)
 
     def test_route_state_corruption_and_identity_change_triggers_use_same_lkg_path(self) -> None:
-        for trigger in (RollbackTrigger.ROUTE_STATE_CORRUPTION, RollbackTrigger.IDENTITY_CHANGE):
+        for trigger in (
+            RollbackTrigger.ROUTE_STATE_CORRUPTION,
+            RollbackTrigger.IDENTITY_CHANGE,
+            RollbackTrigger.SLOT_SAFETY_FAILURE,
+            RollbackTrigger.RUNTIME_PREFLIGHT_FAILURE,
+        ):
             with self.subTest(trigger=trigger):
                 coordinator, authority, _, ledger, audit, controller, restoration, _ = self._coordinator()
                 result = coordinator.rollback(RollbackRequest(trigger, _context(), None))
