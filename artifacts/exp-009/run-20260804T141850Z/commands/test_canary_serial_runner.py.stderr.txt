@@ -1,0 +1,12 @@
+test_composes_all_1200_slots_and_evaluates_only_complete_evidence (test_canary_serial_runner.CanarySerialRunnerTests.test_composes_all_1200_slots_and_evaluates_only_complete_evidence) ... ok
+test_ledger_schedule_substitution_dispatches_nothing (test_canary_serial_runner.CanarySerialRunnerTests.test_ledger_schedule_substitution_dispatches_nothing) ... ok
+test_refused_or_mismatched_admission_dispatches_nothing (test_canary_serial_runner.CanarySerialRunnerTests.test_refused_or_mismatched_admission_dispatches_nothing) ... ok
+test_restart_resumes_exact_next_slot_without_redelivery (test_canary_serial_runner.CanarySerialRunnerTests.test_restart_resumes_exact_next_slot_without_redelivery) ... ok
+test_runner_is_offline_only_and_has_no_grant_or_route_authority_import (test_canary_serial_runner.CanarySerialRunnerTests.test_runner_is_offline_only_and_has_no_grant_or_route_authority_import) ... ok
+test_source_or_executor_failure_persists_one_terminal_slot (test_canary_serial_runner.CanarySerialRunnerTests.test_source_or_executor_failure_persists_one_terminal_slot) ... ok
+test_unsafe_outcome_is_persisted_and_stops_without_retry (test_canary_serial_runner.CanarySerialRunnerTests.test_unsafe_outcome_is_persisted_and_stops_without_retry) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 17.306s
+
+OK

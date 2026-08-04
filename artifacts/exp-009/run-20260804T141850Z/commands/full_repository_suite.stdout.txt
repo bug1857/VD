@@ -1,0 +1,2 @@
+{"completion_path": "evidence/completion.json", "evaluated_stream_count": 2, "manifest_path": "evidence/run_manifest.json", "output_dir": "evidence", "trace_count": 24}
+{"completion_path": "evidence/completion.json", "manifest_path": "evidence/run_manifest.json", "output_dir": "evidence", "probe_count": 6}

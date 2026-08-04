@@ -1,0 +1,12 @@
+test_any_metric_stratum_or_transition_mismatch_is_rejected (test_canary_admission.CanaryAdmissionTests.test_any_metric_stratum_or_transition_mismatch_is_rejected) ... ok
+test_dirty_revision_and_invalid_artifact_plan_fail_closed (test_canary_admission.CanaryAdmissionTests.test_dirty_revision_and_invalid_artifact_plan_fail_closed) ... ok
+test_exact_complete_evidence_admits_without_any_side_effect_port (test_canary_admission.CanaryAdmissionTests.test_exact_complete_evidence_admits_without_any_side_effect_port) ... ok
+test_lkg_runtime_and_identity_mismatches_fail_closed (test_canary_admission.CanaryAdmissionTests.test_lkg_runtime_and_identity_mismatches_fail_closed) ... ok
+test_malformed_nested_evidence_fails_closed_without_raising (test_canary_admission.CanaryAdmissionTests.test_malformed_nested_evidence_fails_closed_without_raising) ... ok
+test_policy_action_mode_provenance_and_gate_fail_closed (test_canary_admission.CanaryAdmissionTests.test_policy_action_mode_provenance_and_gate_fail_closed) ... ok
+test_source_has_no_live_execution_or_authority_import (test_canary_admission.CanaryAdmissionTests.test_source_has_no_live_execution_or_authority_import) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 2.140s
+
+OK

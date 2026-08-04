@@ -1,0 +1,10 @@
+test_complete_stable_schedule_yields_conditional_finite_manifest_result (test_canary_schedule_evaluation.CanaryScheduleEvaluationTests.test_complete_stable_schedule_yields_conditional_finite_manifest_result) ... ok
+test_control_ceiling_breach_makes_finite_manifest_result_not_applicable (test_canary_schedule_evaluation.CanaryScheduleEvaluationTests.test_control_ceiling_breach_makes_finite_manifest_result_not_applicable) ... ok
+test_evaluator_has_no_milvus_or_activation_imports (test_canary_schedule_evaluation.CanaryScheduleEvaluationTests.test_evaluator_has_no_milvus_or_activation_imports) ... ok
+test_incomplete_or_binding_mismatched_ledger_is_not_applicable (test_canary_schedule_evaluation.CanaryScheduleEvaluationTests.test_incomplete_or_binding_mismatched_ledger_is_not_applicable) ... ok
+test_verified_ledger_wrapper_refuses_incomplete_run (test_canary_schedule_evaluation.CanaryScheduleEvaluationTests.test_verified_ledger_wrapper_refuses_incomplete_run) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.068s
+
+OK
