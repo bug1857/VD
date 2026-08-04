@@ -1173,9 +1173,12 @@ unavailable—it atomically removes the complete plan and every claim, then
 returns `ROUTE_APPROVAL_EXPIRED` (or `ROUTE_CLOCK_UNAVAILABLE`) without an ef
 or query ID. The foreground path performs no timer scheduling, filesystem I/O,
 audit write, signature operation, retry, network call, or Milvus action. The
-marker deliberately still contains no expiry or candidate route: Stage 3 owns
-the durable LKG-marker transition and append-only restoration audit following
-an observed expiry failback.
+marker deliberately still contains no expiry or candidate route. An off-path
+Stage-2 expiry reconciler observes only the authority's inactive expiry reason,
+then atomically writes the LKG-only marker, appends the non-sensitive lifecycle
+record, and terminates the grant exactly once. It is retry-safe: a durable
+terminal grant record suppresses repeat audit writes. Stage 3 separately owns
+the restoration audit for hard/recall/latency rollback triggers.
 
 **Recovery and failback.** The route plan itself is memory-only and is never
 reconstructed after a process restart. A strict atomic route-state marker holds
