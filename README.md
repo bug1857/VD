@@ -42,9 +42,9 @@ Practical commands:
 **Core:** online adaptive tuning for range/threshold vector queries under workload drift, on one backend (Qdrant or Milvus), with a safe rollback/actuation layer.
 **Explicitly not core right now:** k-NN/ANN tuning, hybrid search, multi-tenant tuning, multi-backend policy transfer — Future Work (see `RESEARCH_PLAN.md`). Don't build these before Core is done — see Scope Control in `AGENTS.md`.
 
-## Team
 
-Rudra Pratap Singh (lead), Swastik Anurag Vyas, Divayom Sengar — Tata Technologies InnoVent hackathon, Round 2, Aerospace / Edge AI for Sustainable Aviation & Energy Optimization track.
+#AUTHOR
+Rudra Pratap Singh 
 
 ## A note on scope, for whoever's reading this later
 
