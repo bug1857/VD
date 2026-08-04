@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Reproducible Milvus range-query benchmark harness for EXP-001/EXP-002"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography==49.0.0",
   "numpy==2.5.1",
   "pymilvus==3.0.1",
 ]
