@@ -296,6 +296,7 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
             RollbackTrigger.IDENTITY_CHANGE,
             RollbackTrigger.SLOT_SAFETY_FAILURE,
             RollbackTrigger.RUNTIME_PREFLIGHT_FAILURE,
+            RollbackTrigger.COMPLETED_CANARY,
         ):
             with self.subTest(trigger=trigger):
                 coordinator, authority, _, ledger, audit, controller, restoration, _ = self._coordinator()

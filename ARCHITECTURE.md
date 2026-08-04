@@ -1560,10 +1560,12 @@ further dispatch. The root must append one terminal ledger observation where
 the existing ledger permits it, clear candidate authority before any durable
 or audit work, and invoke `CanaryRollbackCoordinator` with an explicit new
 `SLOT_SAFETY_FAILURE` or `RUNTIME_PREFLIGHT_FAILURE` trigger as appropriate.
-The rollback trigger vocabulary must be extended rather than relabeling these
-conditions as policy, corruption, or identity events. A complete 1,200-slot
-run is not a success exit while candidate routing remains installed: it must
-perform the separately grant-pre-authorized deliberate rollback, including the
+The mandatory successful completion uses the distinct `COMPLETED_CANARY`
+trigger. The rollback trigger vocabulary must be extended rather than
+relabeling these conditions as policy, corruption, or identity events. A
+complete 1,200-slot run is not a success exit while candidate routing remains
+installed. It must perform the separately grant-pre-authorized deliberate
+rollback, including the
 existing 50-query restoration audit, and return success only if containment
 and restoration are both verified. No alternate candidate, retry, batching,
 concurrency above one, configuration mutation, or automatic re-enable is
