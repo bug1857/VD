@@ -1,6 +1,6 @@
 # README — Adaptive Vector DB Tuning Project Docs
 
-Start here. `AGENTS.md` is the only file Codex loads automatically — the other five are reference files you or Codex read explicitly when a task touches them. Don't duplicate content between files; if something feels like it belongs in two places, put it in the more specific one and cross-reference.
+Start here. `AGENTS.md` is the only file Codex loads automatically — the other six are reference files you or Codex read explicitly when a task touches them. Don't duplicate content between files; if something feels like it belongs in two places, put it in the more specific one and cross-reference.
 
 ## Files
 
@@ -12,10 +12,11 @@ Start here. `AGENTS.md` is the only file Codex loads automatically — the other
 | **ROADMAP.md** | Current phase, module status, tech debt, next task | No — reference explicitly | Every session |
 | **EXPERIMENT_LOG.md** | Benchmark rules + EXP-ID entries | No — reference explicitly | Every experiment run |
 | **HANDOFF_TEMPLATE.md** | Task template for a second implementer agent, or a solo self-check | No — reference explicitly | Rarely — used as-is |
+| **SRS.md** | Versioned software requirements specification, traceability, safety, and acceptance requirements | No — reference explicitly | On material scope, safety, interface, or acceptance change |
 
 ## Where these files go (Codex-specific)
 
-Put all seven files in your **repo root** (same directory as `.git`). Codex CLI and the Codex Mac/desktop app both discover `AGENTS.md` automatically by walking from your git root down to your current working directory, concatenating every `AGENTS.md` found along the way (closest to your working directory wins on conflicts). The companion files aren't part of that auto-load chain — tell Codex to read them ("read ROADMAP.md and ARCHITECTURE.md before we start") at the start of a session, or reference them by name mid-task.
+Put all eight files in your **repo root** (same directory as `.git`). Codex CLI and the Codex Mac/desktop app both discover `AGENTS.md` automatically by walking from your git root down to your current working directory, concatenating every `AGENTS.md` found along the way (closest to your working directory wins on conflicts). The companion files aren't part of that auto-load chain — tell Codex to read them ("read ROADMAP.md, ARCHITECTURE.md, and SRS.md before we start") at the start of a session, or reference them by name mid-task.
 
 If you want these defaults applied across *all* your repos, not just this one, an identical or trimmed-down `AGENTS.md` can also go in `~/.codex/AGENTS.md` (global). For the ChatGPT web/app version of Codex, the equivalent is Settings → Personalization → Custom Instructions, which maps to your personal `AGENTS.md`.
 
