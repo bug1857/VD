@@ -33,6 +33,7 @@ from vdbench.canary_workload import (
     WorkloadIdentityBinding,
     build_eligible_workload_manifest,
 )
+from vdbench.actuation_persistence import FileAutomaticActionController
 from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
 from vdbench.config import EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
@@ -263,6 +264,19 @@ class FakeAuthority:
         raise AssertionError(f"no foreground route claim is permitted: {occurrence_id}")
 
 
+class FakeAutomaticActionController:
+    def __init__(self, *, disabled: bool = False, fail: bool = False) -> None:
+        self.disabled = disabled
+        self.fail = fail
+        self.calls = 0
+
+    def is_disabled(self) -> bool:
+        self.calls += 1
+        if self.fail:
+            raise OSError("controller unavailable")
+        return self.disabled
+
+
 class CanaryActivationCoordinatorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -342,13 +356,14 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._temporary.cleanup()
 
-    def _coordinator(self, *, verifier=None, grant_store=None, audit=None, state=None, authority=None):
+    def _coordinator(self, *, verifier=None, grant_store=None, audit=None, state=None, authority=None, controller=None):
         order: list[str] = []
         verifier = verifier or FakeVerifier()
         grant_store = grant_store or FakeGrantStore(order)
         audit = audit or FakeAuditSink(order)
         state = state or FakeRouteStateStore(order)
         authority = authority or FakeAuthority(order)
+        controller = controller or FakeAutomaticActionController()
         verifier.order = order
         grant_store.order = order
         audit.order = order
@@ -361,12 +376,14 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
                 lifecycle_audit_sink=audit,
                 route_state_store=state,
                 route_authority=authority,
+                automatic_action_controller=controller,
             ),
             order,
             grant_store,
             audit,
             state,
             authority,
+            controller,
         )
 
     def _activate(self, coordinator, *, grant=None, plan=None):
@@ -381,7 +398,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         )
 
     def test_success_reserves_audits_marks_then_publishes_without_a_route_claim(self) -> None:
-        coordinator, order, store, audit, state, authority = self._coordinator()
+        coordinator, order, store, audit, state, authority, _ = self._coordinator()
 
         result = self._activate(coordinator)
 
@@ -396,7 +413,59 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
             _grant(self.plan).expires_at_utc,
         )
         self.assertEqual(authority.claim_calls, 0)
+
+    def test_disabled_or_unavailable_controller_blocks_before_verifier_or_route_work(self) -> None:
+        for controller, reason in (
+            (FakeAutomaticActionController(disabled=True), "AUTOMATIC_ACTIONS_DISABLED"),
+            (FakeAutomaticActionController(fail=True), "AUTOMATIC_ACTION_CONTROLLER_UNAVAILABLE"),
+        ):
+            with self.subTest(reason=reason):
+                verifier = FakeVerifier()
+                coordinator, order, store, audit, state, authority, selected_controller = self._coordinator(
+                    verifier=verifier,
+                    controller=controller,
+                )
+
+                result = self._activate(coordinator)
+
+                self.assertFalse(result.activated)
+                self.assertEqual(result.reason_code, reason)
+                self.assertEqual(selected_controller.calls, 1)
+                self.assertEqual(order, [])
+                self.assertEqual(verifier.calls, 0)
+                self.assertEqual(store.reserve_calls, [])
+                self.assertEqual(audit.records, [])
+                self.assertEqual(state.marker_calls, [])
+                self.assertEqual(authority.activate_calls, [])
         self.assertEqual(store.terminal_calls, [])
+
+    def test_restart_durable_disabled_controller_blocks_activation_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller_path = Path(directory) / "automatic-actions.json"
+            FileAutomaticActionController(
+                controller_path,
+                clock=lambda: "2026-08-04T10:02:00Z",
+            ).disable_automatic_actions(
+                audit_id="stage3-rollback-audit-001",
+                reason="ROLLBACK_QUERY_FAILURE",
+            )
+            verifier = FakeVerifier()
+            coordinator, order, store, audit, state, authority, controller = self._coordinator(
+                verifier=verifier,
+                controller=FileAutomaticActionController(controller_path),
+            )
+
+            result = self._activate(coordinator)
+
+            self.assertFalse(result.activated)
+            self.assertEqual(result.reason_code, "AUTOMATIC_ACTIONS_DISABLED")
+            self.assertEqual(order, [])
+            self.assertEqual(verifier.calls, 0)
+            self.assertEqual(store.reserve_calls, [])
+            self.assertEqual(audit.records, [])
+            self.assertEqual(state.marker_calls, [])
+            self.assertEqual(authority.activate_calls, [])
+            self.assertTrue(controller.is_disabled())
 
     def test_real_signed_components_persist_a_published_plan_without_a_route_claim(self) -> None:
         directory = Path(self._temporary.name) / "real-composition"
@@ -412,6 +481,9 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
             lifecycle_audit_sink=JsonlCanaryLifecycleAuditSink(directory / "lifecycle.jsonl"),
             route_state_store=FileCanaryRouteStateStore(directory / "route-state.json"),
             route_authority=authority,
+            automatic_action_controller=FileAutomaticActionController(
+                directory / "automatic-actions.json"
+            ),
         )
         trust_store = StaticCanaryApprovalTrustStore(
             public_keys={"operator-001": private_key.public_key()}
@@ -448,7 +520,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
 
     def test_verifier_refusal_calls_no_downstream_dependency(self) -> None:
         verifier = FakeVerifier(approved=False, reason_code="GRANT_EXPIRED")
-        coordinator, order, store, audit, state, authority = self._coordinator(verifier=verifier)
+        coordinator, order, store, audit, state, authority, _ = self._coordinator(verifier=verifier)
 
         result = self._activate(coordinator)
 
@@ -462,7 +534,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(authority.claim_calls, 0)
 
     def test_grant_plan_binding_mismatch_calls_no_downstream_dependency(self) -> None:
-        coordinator, order, store, audit, state, authority = self._coordinator()
+        coordinator, order, store, audit, state, authority, _ = self._coordinator()
 
         result = self._activate(coordinator, grant=replace(_grant(self.plan), candidate_ef=1600))
 
@@ -475,7 +547,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(authority.activate_calls, [])
 
     def test_reservation_refusal_does_not_create_audit_marker_or_authority(self) -> None:
-        coordinator, order, store, audit, state, authority = self._coordinator(
+        coordinator, order, store, audit, state, authority, _ = self._coordinator(
             grant_store=FakeGrantStore([], accepted=False)
         )
 
@@ -491,7 +563,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(authority.claim_calls, 0)
 
     def test_audit_failure_consumes_grant_without_marker_or_authority(self) -> None:
-        coordinator, order, store, audit, state, authority = self._coordinator(
+        coordinator, order, store, audit, state, authority, _ = self._coordinator(
             audit=FakeAuditSink([], fail=True)
         )
 
@@ -506,7 +578,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(authority.claim_calls, 0)
 
     def test_marker_failure_clears_authority_restores_lkg_and_consumes_grant(self) -> None:
-        coordinator, order, store, _, state, authority = self._coordinator(
+        coordinator, order, store, _, state, authority, _ = self._coordinator(
             state=FakeRouteStateStore([], fail_marker=True)
         )
 
@@ -521,7 +593,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(store.terminal_calls[0]["reason_code"], "REFUSED_ROUTE_STATE_WRITE_FAILED")
 
     def test_authority_failure_clears_lkg_marker_and_consumes_grant(self) -> None:
-        coordinator, order, store, _, state, authority = self._coordinator(
+        coordinator, order, store, _, state, authority, _ = self._coordinator(
             authority=FakeAuthority([], fail_activation=True)
         )
 

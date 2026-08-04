@@ -110,6 +110,12 @@ class _RouteAuthorityLike(Protocol):
     def clear(self, *, reason_code: str) -> RouteAuthoritySnapshot: ...
 
 
+class _AutomaticActionControllerLike(Protocol):
+    """Read-only activation interlock owned by the Stage-3 cooldown store."""
+
+    def is_disabled(self) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationTimestamps:
     """Externally supplied audit/ledger instants for deterministic evidence."""
@@ -142,12 +148,14 @@ class CanaryActivationCoordinator:
         lifecycle_audit_sink: _LifecycleAuditSinkLike,
         route_state_store: _RouteStateStoreLike,
         route_authority: _RouteAuthorityLike,
+        automatic_action_controller: _AutomaticActionControllerLike,
     ) -> None:
         self._verifier = verifier
         self._grant_store = grant_store
         self._lifecycle_audit_sink = lifecycle_audit_sink
         self._route_state_store = route_state_store
         self._route_authority = route_authority
+        self._automatic_action_controller = automatic_action_controller
 
     def activate(
         self,
@@ -167,6 +175,12 @@ class CanaryActivationCoordinator:
 
         if not _timestamps_valid(timestamps) or not isinstance(plan, CanaryRoutePlan):
             return _attempt(False, "ACTIVATION_INPUT_INVALID")
+        try:
+            disabled = self._automatic_action_controller.is_disabled()
+        except Exception:
+            return _attempt(False, "AUTOMATIC_ACTION_CONTROLLER_UNAVAILABLE")
+        if disabled is not False:
+            return _attempt(False, "AUTOMATIC_ACTIONS_DISABLED")
         try:
             verification = self._verifier(
                 grant,
