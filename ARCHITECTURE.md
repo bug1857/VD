@@ -1449,6 +1449,56 @@ mismatch, non-finite value, wrong route partition, invalid baseline, or ceiling
 breach.  It does not estimate recall: the 1,200-query recall audit remains a
 separate required Stage-4 evidence stream.
 
+**Stage-4 offline serial-composition implementation convention (proposed).**
+The remaining offline gap is a narrow composition test of the already separate
+admission receipt, immutable 1,200-slot schedule, verified DATASET-002 vector
+source, slot-executor seam, durable execution ledger, and pure evaluator. It
+must prove that these contracts agree on exact bindings and fail closed before
+any later human-gated composition root can be considered. It is expressly not
+a live runner, grant verifier, route authority, activation coordinator, or
+Milvus client.
+
+| Option | Correctness and safety | Decision |
+|---|---|---|
+| A — compose the first runner directly with `MilvusRangeServingExecutor` and activation/grant code | Would make the remaining offline proof candidate-capable and conflate fake-only composition with the separately human-authorized Stage-4 boundary | Rejected |
+| B — make the ledger or evaluator dispatch the schedule | Violates their narrow persistence/statistics responsibilities and makes query capability difficult to audit | Rejected |
+| C — add `canary_serial_runner.py` as an offline-only, dependency-injected composition boundary | Proves source-to-slot binding, strict serial ledger persistence/restart, terminal containment, and evaluator hand-off using fakes while importing no Milvus, activation, approval, or route-authority module | Chosen |
+
+`Stage4SerialRunner` receives only an already computed `Stage4AdmissionResult`,
+a validated `Stage4ExecutionSchedule`, a verified-DATASET-002 source adapter, a
+slot-executor protocol, a `Stage4ExecutionLedger`, and injected clocks. A
+passing admission receipt is necessary but is not a grant; this runner does not
+accept, parse, verify, reserve, cache, or derive any grant. It binds the
+receipt's `plan_sha256` to the schedule before obtaining a vector, and resumes
+only from the ledger's exact next safe slot. Its source adapter reconstructs a
+`ScheduleControl` solely from a control step's frozen ID/digest and calls the
+existing DATASET-002 source; routing lookups pass the schedule's canonical
+occurrence ID, DATASET-002 query ID, and vector digest unchanged. A source
+failure, executor exception, invalid outcome, ledger refusal, or unsafe result
+is represented as one durable failed slot where possible and stops the run; it
+never retries, skips, reorders, selects a route, or chooses another `ef`.
+
+The executor receives one immutable step and one verified in-memory vector and
+returns only non-sensitive success/timeout/threshold/health/identity/result
+facts. The runner, not the executor, owns strict injected monotonic start/end
+timestamps and derives the ledger latency from that interval. Vectors, raw
+hits, scores, grants, and credentials are forbidden from ledger records and
+run-result objects. A `max_slots` test bound may stop an otherwise safe run in
+`IN_PROGRESS`; it is not a retry mechanism. Only ledger completion hands
+evidence to the existing pure evaluator, whose finite-manifest latency result
+remains conditional and whose recall bound remains unevaluated.
+
+Focused tests must prove: exact synthetic 1,200-slot completion (600 controls,
+540 LKG routes, 60 candidate-labelled slots); receipt/schedule mismatch causes
+zero source or executor calls; source and executor failure each persist one
+terminal record and prevent a later call; unsafe returned health/identity or
+threshold facts do the same; a restart continues at precisely the next ledger
+index without re-dispatch; a completed stable fake run reaches the existing
+conditional evaluation; and AST inspection finds no Milvus, serving,
+activation, approval, grant, or route-authority import. This implementation
+does not dispatch a live search and cannot provide Stage-4 live evidence or
+authorization.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.

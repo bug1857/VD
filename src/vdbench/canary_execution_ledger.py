@@ -295,6 +295,12 @@ class Stage4ExecutionLedger:
         except sqlite3.DatabaseError as exc:
             raise _ledger_error("LEDGER_STORE_CORRUPTED", exc) from exc
 
+    @property
+    def schedule_sha256(self) -> str:
+        """Expose only the immutable schedule binding needed by a composition root."""
+
+        return self._schedule.schedule_sha256
+
     def records(self) -> tuple[Stage4ExecutionRecord, ...]:
         """Return the validated immutable ledger history in execution order."""
 
