@@ -28,6 +28,7 @@ import re
 import unicodedata
 
 from .canary_route_state import RouteStateBinding
+from .canary_runtime_types import Stage4RuntimeReadiness
 from .canary_routing import CanaryRoutePlan, build_canary_route_plan
 from .canary_workload import CandidateSelectionRecord, EligibleWorkloadManifest
 from .config import Metric
@@ -71,22 +72,6 @@ class Stage4RepositoryEvidence:
     commit_sha: str
     clean: bool
     observed_at_utc: str
-
-
-@dataclass(frozen=True, slots=True)
-class Stage4RuntimeReadiness:
-    """Read-only serving readiness mapped from the live preflight adapter.
-
-    The composition root must create this only after it runs the real health,
-    load-state, and exact-identity checks for the serving plan.  Keeping this
-    small value object here prevents the admission boundary from importing or
-    executing a Milvus client itself.
-    """
-
-    binding: RouteStateBinding
-    serving_preflight_complete: bool
-    observed_at_utc: str
-    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

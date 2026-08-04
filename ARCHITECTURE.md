@@ -1603,6 +1603,46 @@ zero real candidate-route enablement/claims. This is VERIFIED fake-only
 composition evidence; ADR-008 remains **Proposed**, and it neither authorizes
 nor substitutes for the required human-granted controlled live canary.
 
+**Stage-4 runtime-probe adapter implementation convention (proposed).** The
+live root intentionally accepts a small `preflight(binding) ->
+Stage4RuntimeReadiness` / `slot_safety(binding) -> Stage4SlotSafety` port, while
+the existing read-only `MilvusRangeServingExecutor.preflight()` produces a
+framework-neutral `ServingPreflightResult`. The missing adapter must bridge
+those contracts without giving either the root or the adapter approval, routing,
+search, or configuration-mutation capability.
+
+| Option | Correctness and coupling | Decision |
+|---|---|---|
+| A — add Stage-4 semantics directly to `MilvusRangeServingExecutor` | Couples a reusable reference-serving adapter to approval-stage types and makes ordinary host serving depend on canary lifecycle concerns. | Rejected |
+| B — have `Stage4LiveRunner` call a Milvus client/preflight directly | Breaks the injected-port boundary, expands the candidate-capable root's authority, and makes fake-only verification weaker. | Rejected |
+| C — add a narrow `Stage4ServingRuntimeProbe` that consumes only a structural read-only preflight port | Keeps the root dependency-injected, keeps serving reusable, and gives one auditable fail-closed mapping from exact stream identity/readiness to Stage-4 values. | Chosen |
+
+The adapter is bound at construction to exactly one `MonitorStreamKey` and one
+`RouteStateBinding`; metric, threshold stratum, configuration/data identity,
+and FLAT/HNSW binding IDs must agree exactly. Every call rejects a requested
+binding mismatch. It invokes the injected preflight once, never calls a serving
+`execute` method, and requires `complete=true` with exactly one checked stream
+before reporting a passing `Stage4RuntimeReadiness`. For an incomplete result,
+the one bound stream must report zero checked streams alongside a known health,
+load, identity, or binding failure. Any other count is scope-ambiguous and
+fails closed. Its UTC evidence clock must be valid; an unavailable clock is
+incomplete and cannot admit activation.
+
+For `slot_safety`, the same read-only preflight is called immediately before or
+after a slot by the root, outside its search timing boundary. Stack-health and
+load-state failures map to `health_ok=false`; identity/binding failures map to
+`identity_ok=false`; unknown, malformed, unavailable, scope-ambiguous, or
+otherwise incomplete results set both false. Every returned reason is converted
+only from the documented stable preflight vocabulary to a canonical
+non-sensitive Stage-4 code; an unknown reason is never propagated or treated as
+safe. The adapter imports neither approval, route authority, policy, rollback,
+serving execution, PyMilvus, nor configuration-mutation code. Focused fake-port
+tests must prove exact binding/scope success; health, load, identity, binding,
+unknown-reason, malformed-result, exception, clock, and requested-binding
+failures; one preflight call per adapter operation; and an AST import boundary.
+No live preflight is authorized until this offline implementation has passed its
+own tests and sealed evidence.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.

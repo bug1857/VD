@@ -35,7 +35,6 @@ from .canary_activation import (
 from .canary_admission import (
     Stage4AdmissionRequest,
     Stage4AdmissionResult,
-    Stage4RuntimeReadiness,
     evaluate_stage4_admission,
 )
 from .canary_execution_ledger import (
@@ -53,6 +52,7 @@ from .canary_rollback import (
     RollbackTrigger,
 )
 from .canary_route_authority import RouteClaim
+from .canary_runtime_types import Stage4RuntimeReadiness, Stage4SlotSafety
 from .canary_schedule import (
     Stage4ExecutionSchedule,
     Stage4ScheduleStep,
@@ -97,26 +97,6 @@ class _RuntimeProbePort(Protocol):
     def preflight(self, *, binding: object) -> Stage4RuntimeReadiness: ...
 
     def slot_safety(self, *, binding: object) -> "Stage4SlotSafety": ...
-
-
-@dataclass(frozen=True, slots=True)
-class Stage4SlotSafety:
-    """Read-only health/identity facts immediately adjacent to one search."""
-
-    health_ok: bool
-    identity_ok: bool
-    reason_code: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.health_ok, bool) or not isinstance(self.identity_ok, bool):
-            raise TypeError("slot safety values must be bool")
-        safe = self.health_ok and self.identity_ok
-        if safe != (self.reason_code is None):
-            raise ValueError("safe slot state must have no reason; unsafe state requires one")
-        if self.reason_code is not None and (
-            not isinstance(self.reason_code, str) or _CODE.fullmatch(self.reason_code) is None
-        ):
-            raise ValueError("slot safety reason is invalid")
 
 
 @dataclass(frozen=True, slots=True)
