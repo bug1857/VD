@@ -1244,6 +1244,65 @@ and an offline verifier bundle are required before marking Stage 2 verified.
 No result from those tests authorizes Stage 3, Stage 4, or a live candidate
 query without their separately required evidence.
 
+**Stage-3 rollback-containment implementation convention (proposed).** Stage 3
+is a separate, offline-only orchestration boundary.  It closes the gap between
+an observed bad canary outcome and the existing one-time route authority; it
+does not create a Milvus client, issue a search, or authorize a candidate
+route.  The alternatives are:
+
+| Option | Safety and correctness | Operational cost | Decision |
+|---|---|---|---|
+| A — call `SafeActuationBoundary`'s generic `ROLLBACK` path directly | Reuses a tested adapter seam, but it neither clears the sole 60-of-600 route authority nor binds the grant ledger/route marker | Low | Rejected: cannot prove Stage-3 route containment |
+| B — `CanaryRollbackCoordinator` composes the authority, LKG marker, grant ledger, lifecycle audit, automatic-action controller, and an injected restoration-audit port | Removes the only candidate route before any slow/durable operation; gives one typed, idempotent evidence path for every trigger | Moderate, bounded | Chosen |
+| C — let the serving adapter perform rollback when it notices a failure | Couples foreground latency and partial serving state to recovery, duplicates routing authority, and cannot make durable ordering reviewable | Low initially, high risk | Rejected |
+
+`CanaryRollbackCoordinator` accepts an immutable, identity-bound rollback
+context (`grant_id`, signed-grant digest, policy audit ID, route-plan digest,
+`RouteStateBinding`, timestamp) and either an actual policy `ROLLBACK`
+decision for hard/recall/latency evidence or a strict external trigger for
+route-state corruption, approval expiry, or identity change.  All inputs must
+match the active authority snapshot and the persisted activation marker; an
+unavailable or inconsistent snapshot is itself a fail-closed trigger, never a
+reason to leave candidate routing active.  The coordinator serializes attempts
+per authority and gives repeated observations of one terminal grant a stable
+no-op result rather than a second audit/write sequence.
+
+For every trigger, the ordering is mandatory: (1) clear the in-memory
+authority to LKG-only before any audit, network, or disk-dependent restoration
+work; (2) persist the LKG-only route marker and disable automatic actions;
+(3) append a non-sensitive `ROLLBACK_TRIGGERED` lifecycle record and terminally
+consume the active grant, so that grant cannot authorize an alternate route;
+then (4) invoke an injected `RestorationAuditPort` and append either
+`ROLLBACK_RESTORATION_VERIFIED` or `ROLLBACK_RESTORATION_UNVERIFIED`.
+The port’s immutable result must disclose health, configuration/index/data
+identity, exactly-50-query FLAT/oracle restoration-audit completeness, and a
+reason code.  It is an offline fake in Stage 3; a later separately approved
+adapter may perform the actual health/read-only audit.  Stage 3 never invokes
+`SafeActuationBoundary`, `MilvusActuationClient`, or PyMilvus.
+
+If any durable write, controller disable, identity check, or restoration audit
+fails, the authority remains cleared, the marker is retried/best-effort only
+as LKG-only, automatic actions remain disabled where persistence is available,
+and the outcome is explicitly unverified.  The coordinator never promotes a
+different candidate, reconstructs a plan after restart, or re-enables itself.
+Expiry uses the existing Stage-2 expiry reconciler for its exactly-once
+marker/audit/ledger transition, followed by the same restoration-audit and
+controller-disable path; it must not emit a duplicate expiry lifecycle record.
+An explicit human re-enable remains outside this coordinator and requires the
+existing confirmation token plus a new exact human approval grant.
+
+The Stage-3 test/evidence gate requires TDD coverage for every ADR-002
+hard/recall/latency trigger, route-state corruption, identity change, expiry,
+restoration-audit failure, audit/marker/ledger/controller write failures,
+duplicate/replayed rollback, and process restart.  Each test must prove
+authority clear happens before the injected restoration port, LKG is the only
+postcondition, the grant cannot support another candidate, lifecycle evidence
+is append-only/non-sensitive, and no client/query call occurs.  A real local
+composition test must restart the file/SQLite/JSONL stores and verify the same
+postconditions.  A new immutable offline EXP-009 Stage-3 verifier bundle is
+required before this convention, ADR-008, or any live candidate route can be
+considered accepted.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
