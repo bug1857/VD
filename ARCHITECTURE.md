@@ -1434,6 +1434,21 @@ credential, client object, filesystem path, or query dispatch code.  It cannot
 resume or authorize candidate routing after process restart; Stage-3 recovery
 still clears to LKG-only and a new human-approved activation is required.
 
+**Stage-4 schedule-evaluation implementation convention (proposed).** The
+schedule-stability result is a pure post-run calculation, not a property of the
+query executor or durable ledger.  The evaluator receives only a rebuilt
+schedule and records already verified by `Stage4ExecutionLedger`; it rechecks
+slot/`ef` correspondence, derives each 50-control sweep's median and
+nearest-rank p95, derives `m0` as the median of the three pre-sweep medians and
+`p0` as the nearest-rank p95 of the three pre-sweep p95s, and applies the
+pre-registered `10 ms`, `1.50 × p0`, and `1.25 × m0` ceilings to all twelve
+sweeps.  It separately returns the maximum of the exact 60 candidate-route
+latencies and the already-frozen finite-manifest coverage statement.  It must
+label this result *NOT APPLICABLE* on any incomplete/failed ledger, binding
+mismatch, non-finite value, wrong route partition, invalid baseline, or ceiling
+breach.  It does not estimate recall: the 1,200-query recall audit remains a
+separate required Stage-4 evidence stream.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
