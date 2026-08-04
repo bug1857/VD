@@ -1,0 +1,10 @@
+test_audit_failure_records_specific_terminal_refusal_after_lkg_marker (test_canary_expiry_reconciliation.CanaryExpiryReconcilerTests.test_audit_failure_records_specific_terminal_refusal_after_lkg_marker) ... ok
+test_expiry_persists_lkg_audits_and_terminates_grant_exactly_once (test_canary_expiry_reconciliation.CanaryExpiryReconcilerTests.test_expiry_persists_lkg_audits_and_terminates_grant_exactly_once) ... ok
+test_marker_failure_stops_before_audit_or_terminal_write (test_canary_expiry_reconciliation.CanaryExpiryReconcilerTests.test_marker_failure_stops_before_audit_or_terminal_write) ... ok
+test_real_components_persist_one_expiry_failback_across_restart (test_canary_expiry_reconciliation.CanaryExpiryReconcilerTests.test_real_components_persist_one_expiry_failback_across_restart) ... ok
+test_unrelated_inactive_reason_does_not_change_durable_state (test_canary_expiry_reconciliation.CanaryExpiryReconcilerTests.test_unrelated_inactive_reason_does_not_change_durable_state) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.006s
+
+OK

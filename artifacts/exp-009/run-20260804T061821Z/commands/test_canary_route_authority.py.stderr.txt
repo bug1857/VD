@@ -1,0 +1,14 @@
+test_activation_binds_marker_then_claims_each_occurrence_once (test_canary_route_authority.CanaryRouteAuthorityTests.test_activation_binds_marker_then_claims_each_occurrence_once) ... ok
+test_clear_drops_claims_and_the_entire_plan (test_canary_route_authority.CanaryRouteAuthorityTests.test_clear_drops_claims_and_the_entire_plan) ... ok
+test_concurrent_duplicate_claim_has_exactly_one_winner (test_canary_route_authority.CanaryRouteAuthorityTests.test_concurrent_duplicate_claim_has_exactly_one_winner) ... ok
+test_expired_grant_is_refused_at_publication (test_canary_route_authority.CanaryRouteAuthorityTests.test_expired_grant_is_refused_at_publication) ... ok
+test_expired_lease_clears_plan_before_any_candidate_route_can_be_claimed (test_canary_route_authority.CanaryRouteAuthorityTests.test_expired_lease_clears_plan_before_any_candidate_route_can_be_claimed) ... ok
+test_inactive_authority_refuses_without_a_route (test_canary_route_authority.CanaryRouteAuthorityTests.test_inactive_authority_refuses_without_a_route) ... ok
+test_invalid_clock_fails_closed_before_any_route_claim (test_canary_route_authority.CanaryRouteAuthorityTests.test_invalid_clock_fails_closed_before_any_route_claim) ... ok
+test_marker_plan_identity_mismatch_refuses_activation (test_canary_route_authority.CanaryRouteAuthorityTests.test_marker_plan_identity_mismatch_refuses_activation) ... ok
+test_unknown_occurrence_is_refused_without_consuming_a_claim (test_canary_route_authority.CanaryRouteAuthorityTests.test_unknown_occurrence_is_refused_without_consuming_a_claim) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.002s
+
+OK

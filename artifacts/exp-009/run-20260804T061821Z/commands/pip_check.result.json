@@ -1,0 +1,1 @@
+{"command":["/Users/rudrapratapsingh/Desktop/VD/.venv-exp001/bin/python","-m","pip","check"],"passed":true,"returncode":0,"stderr_file":"commands/pip_check.stderr.txt","stderr_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","stdout_file":"commands/pip_check.stdout.txt","stdout_sha256":"9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09"}

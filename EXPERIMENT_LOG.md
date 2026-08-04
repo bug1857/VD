@@ -1437,3 +1437,43 @@ controlled live canary are not authorized by this evidence.
 rollback-containment contract (hard/recall/latency triggers, restoration-audit
 failure, controller-disable state, and no-alternate-candidate failback) before
 any controlled live canary is considered.
+
+#### Stage 3 verification result — 2026-08-04
+
+**Stage status: VERIFIED (Stage 3 only).** The original pre-registration and
+the Stage-1/Stage-2 entries above remain unchanged. This result verifies the
+offline rollback-containment and restart-durable activation-interlock contract
+only. EXP-009 remains in progress: Stage 4 is separately human-gated, requires
+an externally signed exact grant, and is not authorized by this evidence.
+
+- Implementation dependencies: rollback coordinator and activation interlock
+  `745deb8`; immutable Stage-3 evidence runner/public verifier `c78d0e2`.
+- Immutable evidence bundle:
+  `artifacts/exp-009/run-20260804T061821Z/`, generated from clean commit
+  `c78d0e2a0ad32bb74162aecb230f318e3f8d5d93`. Its independent public verifier
+  returns `COMPLETE` with 11 commands; manifest self-SHA-256
+  `9cfb0dbba35dcc927b5b471303a3dd45bc7a34aa0b317bc5b29b06f89ea551b5` and
+  raw-result self-SHA-256
+  `2000d1f3472c8ceae6b5ed88ac3ad04a40c94b47d207be7f0be5dd38ac2a03ed`.
+- The sealed bundle records clean-tree `git diff --check`, eight focused
+  offline suites, a complete repository suite (`470` tests in `95.853s`), and
+  `pip check` (`No broken requirements found.`). Every captured command passed;
+  the verifier rejects incomplete, tampered, rehashed command-digest, missing,
+  substituted, and symlinked evidence.
+- Deliberate rollback coverage includes hard, recall, and latency policy
+  triggers; route-state corruption; identity change; approval expiry;
+  malformed context/policy reason; marker, audit, ledger, controller, and
+  authority-clear failures; restoration-audit failure; duplicate terminal
+  grants; and process restart. The real local expiry composition proves the
+  existing expiry reconciler persists the LKG marker and terminal grant before
+  the restoration audit. A restart-durable automatic-action controller blocks
+  a later activation before approval verification or route work.
+- The verifier itself imports no route/rollback runtime or Milvus layer and
+  executes no database operation, search, claim, candidate enablement, or live
+  rollback. These offline results validate containment behavior; they do not
+  demonstrate a live candidate query or external serving deployment.
+
+**Next gate:** Stage 4 remains blocked pending a clean commit, verified
+ENV-001 preflight, qualified last-known-good state, and a human-signed,
+one-time grant for the exact pre-registered L2 / `target-075` `ef=400 → 800`
+transition. No automatic or full-traffic action is authorized.
