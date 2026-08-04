@@ -100,7 +100,11 @@ class _RouteStateStoreLike(Protocol):
 
 class _RouteAuthorityLike(Protocol):
     def activate(
-        self, *, plan: CanaryRoutePlan, activation_marker: RouteStateRecord
+        self,
+        *,
+        plan: CanaryRoutePlan,
+        activation_marker: RouteStateRecord,
+        expires_at_utc: str,
     ) -> RouteAuthoritySnapshot: ...
 
     def clear(self, *, reason_code: str) -> RouteAuthoritySnapshot: ...
@@ -264,7 +268,11 @@ class CanaryActivationCoordinator:
             )
 
         try:
-            self._route_authority.activate(plan=plan, activation_marker=marker)
+            self._route_authority.activate(
+                plan=plan,
+                activation_marker=marker,
+                expires_at_utc=verified_grant.expires_at_utc,
+            )
         except Exception:
             self._compensate_to_lkg(
                 binding=binding,

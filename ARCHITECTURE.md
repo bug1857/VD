@@ -1154,6 +1154,29 @@ immutable snapshot, never mutate its membership collection in place. A future
 multi-threaded or multi-host serving deployment requires a separate ADR and
 linearizable routing implementation; it is not implied by Stage 2 evidence.
 
+**Approval-expiry lease enforcement (proposed).** A one-time approval must not
+remain candidate-capable merely because its in-memory plan was published before
+its signed expiry. The options are:
+
+| Option | Safety / foreground cost | Decision |
+|---|---|---|
+| A — coordinator timer only | A delayed or failed background task can leave the authority candidate-capable after expiry | Rejected |
+| B — injected UTC clock checked atomically by the in-memory authority | Every foreground lookup can fail closed before it emits a candidate route; bounded constant-time comparison with no I/O | Chosen |
+| C — persist/reload the route plan with expiry | Couples recovery to candidate-plan reconstruction and violates restart-to-LKG | Rejected |
+
+The coordinator passes the already signature-verified `expires_at_utc` only to
+the in-memory authority when publishing a plan. The authority parses it as a
+strict RFC3339 UTC instant, rejects a plan already expired at publication, and
+uses an injected UTC clock under the same lock before every snapshot and
+occurrence claim. At or after expiry—or if the clock is malformed or
+unavailable—it atomically removes the complete plan and every claim, then
+returns `ROUTE_APPROVAL_EXPIRED` (or `ROUTE_CLOCK_UNAVAILABLE`) without an ef
+or query ID. The foreground path performs no timer scheduling, filesystem I/O,
+audit write, signature operation, retry, network call, or Milvus action. The
+marker deliberately still contains no expiry or candidate route: Stage 3 owns
+the durable LKG-marker transition and append-only restoration audit following
+an observed expiry failback.
+
 **Recovery and failback.** The route plan itself is memory-only and is never
 reconstructed after a process restart. A strict atomic route-state marker holds
 only non-sensitive LKG identity, LKG `ef`, grant ID, and plan digest. On every

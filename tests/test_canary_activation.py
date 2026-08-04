@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import base64
 from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import tempfile
@@ -390,6 +391,10 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(audit.records[0].event_type, "ACTIVATION_AUTHORIZED")
         self.assertEqual(audit.records[0].reason_code, "ACTIVATION_PENDING")
         self.assertEqual(state.marker_calls[0]["plan_sha256"], self.plan.plan_sha256)
+        self.assertEqual(
+            authority.activate_calls[0]["expires_at_utc"],
+            _grant(self.plan).expires_at_utc,
+        )
         self.assertEqual(authority.claim_calls, 0)
         self.assertEqual(store.terminal_calls, [])
 
@@ -399,7 +404,9 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         private_key = Ed25519PrivateKey.generate()
         decision = _real_decision(self.plan)
         grant = _signed_real_grant(self.plan, decision, private_key)
-        authority = CanaryRouteAuthority()
+        authority = CanaryRouteAuthority(
+            clock=lambda: datetime(2026, 8, 4, 10, 5, tzinfo=timezone.utc)
+        )
         coordinator = CanaryActivationCoordinator(
             grant_store=CanaryGrantUseStore(directory / "grant-ledger.sqlite"),
             lifecycle_audit_sink=JsonlCanaryLifecycleAuditSink(directory / "lifecycle.jsonl"),

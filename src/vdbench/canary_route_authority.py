@@ -1,17 +1,20 @@
 """In-memory, one-shot foreground route authority for EXP-009 Stage 2.
 
 The authority is deliberately narrow: it atomically publishes one immutable
-plan after a matching ``ACTIVATING`` marker, claims each plan occurrence at
-most once, and clears every claim with the plan. It performs no persistence,
-approval verification, policy evaluation, audit write, network, or Milvus I/O.
+plan after a matching ``ACTIVATING`` marker, binds it to the already-verified
+approval expiry, claims each plan occurrence at most once, and clears every
+claim with the plan. It performs no persistence, approval verification, policy
+evaluation, audit write, network, or Milvus I/O.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
+import re
 import threading
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .canary_routing import CanaryRouteKind, RouteResolution
 from .canary_route_state import RouteState, RouteStateRecord
@@ -70,12 +73,21 @@ class RouteClaim:
 
 
 class CanaryRouteAuthority:
-    """Lock-protected reference authority with no fallback candidate path."""
+    """Lock-protected, expiry-bound authority with no fallback candidate path."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
+        """Create an empty authority using an injected UTC clock for expiry checks.
+
+        The clock is used only for an in-memory timestamp comparison on the
+        foreground path.  An invalid or unavailable clock clears the active
+        plan and refuses the lookup rather than risking post-expiry exposure.
+        """
+
         self._lock = threading.Lock()
+        self._clock = _utc_now if clock is None else clock
         self._plan: _PlanLike | None = None
         self._grant_id: str | None = None
+        self._expires_at_utc: datetime | None = None
         self._claimed_occurrence_ids: set[str] = set()
         self._reason_code = "ROUTE_INACTIVE"
 
@@ -84,15 +96,27 @@ class CanaryRouteAuthority:
         *,
         plan: _PlanLike,
         activation_marker: RouteStateRecord,
+        expires_at_utc: str,
     ) -> RouteAuthoritySnapshot:
-        """Publish one plan only when the already-written marker binds it exactly."""
+        """Publish one unexpired plan only when the marker binds it exactly."""
 
         self._validate_activation(plan, activation_marker)
+        expires_at = _parse_utc(expires_at_utc)
         with self._lock:
+            clock_failure = self._enforce_expiry_unlocked()
+            if clock_failure is not None:
+                raise ValueError(clock_failure)
+            now = self._read_clock_unlocked()
+            if now is None:
+                self._clear_unlocked("ROUTE_CLOCK_UNAVAILABLE")
+                raise ValueError("ROUTE_CLOCK_UNAVAILABLE")
+            if now >= expires_at:
+                raise ValueError("ROUTE_APPROVAL_EXPIRED")
             if self._plan is not None:
                 raise ValueError("ROUTE_ALREADY_ACTIVE")
             self._plan = plan
             self._grant_id = activation_marker.grant_id
+            self._expires_at_utc = expires_at
             self._claimed_occurrence_ids = set()
             self._reason_code = "ROUTE_ACTIVE"
             return self._snapshot_unlocked()
@@ -101,6 +125,9 @@ class CanaryRouteAuthority:
         """Atomically reject inactivity/duplicates before any caller can dispatch."""
 
         with self._lock:
+            expiry_failure = self._enforce_expiry_unlocked()
+            if expiry_failure is not None:
+                return RouteClaim(False, None, None, None, None, expiry_failure)
             plan = self._plan
             if plan is None:
                 return RouteClaim(False, None, None, None, None, "ROUTE_INACTIVE")
@@ -136,17 +163,50 @@ class CanaryRouteAuthority:
         if not isinstance(reason_code, str) or not reason_code:
             raise ValueError("reason_code must be non-empty")
         with self._lock:
-            self._plan = None
-            self._grant_id = None
-            self._claimed_occurrence_ids = set()
-            self._reason_code = reason_code
+            self._clear_unlocked(reason_code)
             return self._snapshot_unlocked()
 
     def snapshot(self) -> RouteAuthoritySnapshot:
         """Return a constant-size non-sensitive snapshot under the same lock."""
 
         with self._lock:
+            self._enforce_expiry_unlocked()
             return self._snapshot_unlocked()
+
+    def _enforce_expiry_unlocked(self) -> str | None:
+        """Fail closed before a foreground caller can observe an active route."""
+
+        if self._plan is None:
+            return None
+        now = self._read_clock_unlocked()
+        if now is None:
+            self._clear_unlocked("ROUTE_CLOCK_UNAVAILABLE")
+            return "ROUTE_CLOCK_UNAVAILABLE"
+        if self._expires_at_utc is None or now >= self._expires_at_utc:
+            self._clear_unlocked("ROUTE_APPROVAL_EXPIRED")
+            return "ROUTE_APPROVAL_EXPIRED"
+        return None
+
+    def _read_clock_unlocked(self) -> datetime | None:
+        try:
+            value = self._clock()
+        except Exception:
+            return None
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            return None
+        try:
+            if value.utcoffset() != timezone.utc.utcoffset(value):
+                return None
+        except (TypeError, ValueError):
+            return None
+        return value
+
+    def _clear_unlocked(self, reason_code: str) -> None:
+        self._plan = None
+        self._grant_id = None
+        self._expires_at_utc = None
+        self._claimed_occurrence_ids = set()
+        self._reason_code = reason_code
 
     def _snapshot_unlocked(self) -> RouteAuthoritySnapshot:
         if self._plan is None:
@@ -183,3 +243,24 @@ class CanaryRouteAuthority:
             matches = False
         if not matches:
             raise ValueError("ACTIVATION_MARKER_MISMATCH")
+
+
+_RFC3339_UTC_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z"
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_utc(value: object) -> datetime:
+    if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
+        raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID")
+    return parsed
