@@ -1303,6 +1303,55 @@ postconditions.  A new immutable offline EXP-009 Stage-3 verifier bundle is
 required before this convention, ADR-008, or any live candidate route can be
 considered accepted.
 
+**Stage-4 admission-preflight implementation convention (proposed).** Stage 4
+adds a narrow, non-actuating admission boundary before the existing activation
+coordinator can be composed with any serving path.  Its purpose is to make the
+clean-revision, immutable-workload, exact-transition, qualified-LKG,
+health/identity, schedule-contract, and policy-action prerequisites explicit
+and independently testable; it does not weaken the separate signed-grant gate.
+
+| Option | Correctness and safety | Operational cost | Decision |
+|---|---|---|---|
+| A — add live checks to `CanaryActivationCoordinator` | Couples the deliberately offline Stage-2 security primitive to Milvus/runtime state and makes its refusal tests depend on a serving environment | Low initially, high long-term coupling | Rejected |
+| B — let `MilvusRangeServingExecutor` decide activation readiness | It can verify one serving plan but cannot bind the immutable workload, policy, LKG qualification, repository evidence, or later approval lifecycle | Moderate, incomplete | Rejected |
+| C — add a pure `canary_admission.py` boundary that consumes independently collected evidence and emits an immutable receipt only | Keeps the activation primitive and foreground executor narrow while making every required Stage-4 precondition fail closed before route publication | Moderate, explicit composition | Chosen |
+
+`evaluate_stage4_admission(...)` will receive a rebuilt immutable
+600-occurrence workload/60-ID selection/route plan, a `START_CANARY` policy
+decision in `CANARY_ENABLED` mode, a qualified LKG result, a clean commit
+attestation, and an exact runtime readiness record containing the active
+metric/stratum/identities plus a successful serving preflight.  It must return
+only an immutable admission receipt: it cannot read a private key, verify or
+reserve a grant, install or claim a route, create a Milvus client, issue a
+search, mutate configuration, write an audit record, or invoke rollback.  A
+receipt is valid only for the first frozen transition (L2 / `target-075`, LKG
+`ef=400`, candidate `ef=800`) and only when the supplied plan, policy,
+qualification, and runtime bindings are identical.  Any malformed, stale,
+unclean, incomplete, mismatched, or unavailable input yields explicit
+non-sensitive reason codes and no side effect.
+
+The later live composition root must independently verify the one-time
+Ed25519 grant through `CanaryActivationCoordinator`, then require a passing
+admission receipt immediately before publication.  It must re-run the runtime
+health/load/index-identity preflight after approval and before the first
+foreground occurrence; any changed evidence invalidates the receipt and leaves
+the authority LKG-only.  The receipt is therefore neither an approval nor an
+authorization token, and it cannot be cached across a process restart,
+identity change, or repository revision.  No private key, grant payload,
+query vector, or CSPRNG entropy appears in it.
+
+Focused tests must use only immutable fakes and prove: a complete exact
+transition admits without any route/Milvus/activation call; dirty revision,
+malformed or rebuilt-mismatched workload/selection, non-`START_CANARY` or
+`DRY_RUN` policy, unqualified or identity-mismatched LKG, failed policy safety
+gate, incomplete runtime preflight, and every metric/stratum/`ef`/identity
+mismatch all refuse with a stable code.  The source must be AST-checked for no
+PyMilvus, Milvus execution, route-authority claim, activation, rollback, or
+audit persistence imports.  The eventual live runner must additionally collect
+the frozen schedule-stability and raw approval/route/response evidence defined
+by EXP-009; this preflight convention alone does not execute or validate those
+live controls.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
