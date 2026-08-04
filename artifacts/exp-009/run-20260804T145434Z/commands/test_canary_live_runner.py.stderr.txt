@@ -1,0 +1,16 @@
+test_ast_rejects_direct_database_or_approval_imports (test_canary_live_runner.CanaryLiveRunnerTests.test_ast_rejects_direct_database_or_approval_imports) ... ok
+test_claim_refusal_and_slot_failure_each_contain_once_without_later_search (test_canary_live_runner.CanaryLiveRunnerTests.test_claim_refusal_and_slot_failure_each_contain_once_without_later_search) ... ok
+test_clock_failure_and_activation_binding_mismatch_both_fail_closed (test_canary_live_runner.CanaryLiveRunnerTests.test_clock_failure_and_activation_binding_mismatch_both_fail_closed) ... ok
+test_complete_schedule_is_exactly_serial_and_always_finally_rolls_back (test_canary_live_runner.CanaryLiveRunnerTests.test_complete_schedule_is_exactly_serial_and_always_finally_rolls_back) ... ok
+test_initial_preflight_refusal_dispatches_and_activates_nothing (test_canary_live_runner.CanaryLiveRunnerTests.test_initial_preflight_refusal_dispatches_and_activates_nothing) ... ok
+test_invalid_ledger_or_rollback_port_result_fails_closed (test_canary_live_runner.CanaryLiveRunnerTests.test_invalid_ledger_or_rollback_port_result_fails_closed) ... ok
+test_ledger_append_failure_contains_without_another_search (test_canary_live_runner.CanaryLiveRunnerTests.test_ledger_append_failure_contains_without_another_search) ... ok
+test_nonempty_ledger_never_resumes_an_activated_plan (test_canary_live_runner.CanaryLiveRunnerTests.test_nonempty_ledger_never_resumes_an_activated_plan) ... ok
+test_post_activation_preflight_refusal_contains_without_search (test_canary_live_runner.CanaryLiveRunnerTests.test_post_activation_preflight_refusal_contains_without_search) ... ok
+test_request_rejects_noncanonical_run_id_and_invalid_failure_timestamp (test_canary_live_runner.CanaryLiveRunnerTests.test_request_rejects_noncanonical_run_id_and_invalid_failure_timestamp) ... ok
+test_source_serving_timeout_threshold_and_probe_failures_stop_without_retry (test_canary_live_runner.CanaryLiveRunnerTests.test_source_serving_timeout_threshold_and_probe_failures_stop_without_retry) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 16.156s
+
+OK

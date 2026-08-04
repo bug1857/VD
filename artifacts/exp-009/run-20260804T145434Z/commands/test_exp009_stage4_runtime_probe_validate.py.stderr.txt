@@ -1,0 +1,8 @@
+test_complete_profile_seals_a_distinct_runtime_probe_inventory (test_exp009_stage4_runtime_probe_validate.Exp009Stage4RuntimeProbeValidationTests.test_complete_profile_seals_a_distinct_runtime_probe_inventory) ... ok
+test_profile_refuses_failed_or_tampered_evidence (test_exp009_stage4_runtime_probe_validate.Exp009Stage4RuntimeProbeValidationTests.test_profile_refuses_failed_or_tampered_evidence) ... ok
+test_wrapper_imports_no_database_or_live_authority_runtime (test_exp009_stage4_runtime_probe_validate.Exp009Stage4RuntimeProbeValidationTests.test_wrapper_imports_no_database_or_live_authority_runtime) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.078s
+
+OK

@@ -1,0 +1,14 @@
+test_admission_module_preserves_runtime_readiness_public_reexport (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_admission_module_preserves_runtime_readiness_public_reexport) ... ok
+test_ast_rejects_live_approval_route_policy_and_database_imports (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_ast_rejects_live_approval_route_policy_and_database_imports) ... ok
+test_complete_exact_single_stream_maps_to_readiness_and_slot_safety (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_complete_exact_single_stream_maps_to_readiness_and_slot_safety) ... ok
+test_constructor_rejects_stream_binding_mismatch (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_constructor_rejects_stream_binding_mismatch) ... ok
+test_health_load_and_identity_reasons_map_to_distinct_unsafe_facts (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_health_load_and_identity_reasons_map_to_distinct_unsafe_facts) ... ok
+test_invalid_clock_makes_readiness_incomplete_without_reading_port (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_invalid_clock_makes_readiness_incomplete_without_reading_port) ... ok
+test_requested_binding_mismatch_fails_without_reading_port (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_requested_binding_mismatch_fails_without_reading_port) ... ok
+test_scope_unknown_malformed_and_exceptional_preflight_fail_closed (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_scope_unknown_malformed_and_exceptional_preflight_fail_closed) ... ok
+test_slot_safety_value_rejects_implicit_or_malformed_failure (test_canary_runtime_probe.CanaryRuntimeProbeTests.test_slot_safety_value_rejects_implicit_or_malformed_failure) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.055s
+
+OK
