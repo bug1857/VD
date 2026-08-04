@@ -29,6 +29,28 @@ Practical commands:
 2. Tell Codex explicitly which companion files are relevant to today's task (e.g. "read ROADMAP.md, we're starting the drift-detector module").
 3. Codex rebuilds state from those files per the State Sync rule in `AGENTS.md`, rather than assuming it remembers a prior session.
 
+## Reproducible Python environment
+
+`requirements.lock` is the canonical, hash-locked dependency resolution for
+the current macOS arm64 / Python 3.14 reference environment. It includes the
+offline approval-verification dependency (`cryptography==49.0.0`) as well as
+the benchmark dependencies; it does not replace the frozen, historical
+EXP-001 environment lock under `artifacts/exp-001/`.
+
+Create a fresh virtual environment and install only hash-verified artifacts:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m unittest discover tests --failfast
+```
+
+Regenerate the lock only after reviewing dependency changes:
+
+```bash
+uv pip compile pyproject.toml --python .venv/bin/python --python-platform aarch64-apple-darwin --generate-hashes --output-file requirements.lock
+```
+
 ## If you also use a second agent (e.g. Antigravity) for implementation
 
 1. Codex fills out `HANDOFF_TEMPLATE.md` for the specific task.
