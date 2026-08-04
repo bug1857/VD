@@ -1499,6 +1499,90 @@ activation, approval, grant, or route-authority import. This implementation
 does not dispatch a live search and cannot provide Stage-4 live evidence or
 authorization.
 
+**Stage-4 live serial-composition implementation convention (proposed).** The
+offline runner deliberately cannot be upgraded in place: it has no
+approval/authority/rollback dependency, and allowing a generic executor to
+become live would let a valid admission receipt substitute for a human grant.
+The eventual candidate-capable root is therefore a separate
+`canary_live_runner.py` composition boundary. It is the only future component
+permitted to combine a human-approved activation with schedule dispatch; it
+must be fake-tested first and must not be used in a live run until all EXP-009
+Stage-4 preconditions are freshly verified.
+
+| Option | Correctness, measurement, and containment | Decision |
+|---|---|---|
+| A — attach a live executor to `Stage4SerialRunner` | The offline runner cannot verify/reserve a grant, claim one-shot occurrences, perform post-activation preflight, or invoke rollback. Treating its admission receipt as authority would violate the Stage-2/3 boundary. | Rejected |
+| B — make `MilvusRangeServingExecutor` own approval, schedule, or rollback | Conflates a one-search read-only adapter with human approval, durable evidence, and route containment; it also makes future host serving paths candidate-capable by construction. | Rejected |
+| C — add a narrow `Stage4LiveRunner` with injected activation, claim, probe, search, ledger, and rollback ports | Keeps the existing contracts independently auditable while binding all candidate-capable dispatch to an exact activated context, strict serial schedule, and mandatory LKG restoration. | Chosen |
+
+The root must receive an immutable `Stage4LiveRunRequest` containing the
+rebuilt Stage-1 manifest/selection/plan, policy/LKG/repository evidence,
+external signed grant and trust context, `RouteStateBinding`, and a fresh
+run identifier. It must obtain a first read-only runtime readiness result,
+evaluate `evaluate_stage4_admission`, then invoke
+`CanaryActivationCoordinator.activate`. Immediately after activation it must
+run the complete health/load/index-identity preflight again, rebuild and
+re-evaluate admission from that fresh runtime evidence, and dispatch **zero**
+slots if either preflight or either admission result is incomplete. Any such
+post-activation refusal first clears the authority and invokes the existing
+rollback path; it never leaves an active candidate plan for a later process.
+
+The activation output needs one additive, non-secret
+`ActiveCanaryContext`: grant ID, verified signed-payload SHA-256, policy audit
+ID, plan SHA-256, exact route-state binding, and activation timestamp. The
+coordinator alone creates it after approval verification, reservation, durable
+audit, state marker, and authority publication. This closes the current
+interface gap: a live root otherwise cannot construct the exact
+`RollbackContext` required to contain a later slot/probe failure without
+duplicating grant verification or trusting unverified caller input.
+
+For each immutable schedule step, `Stage4LiveRunner` must resolve the verified
+vector only through `Dataset002ScheduleVectorSource`. A routing step must then
+call the injected authority's `resolve_and_claim` exactly once and require an
+exact occurrence ID, DATASET-002 query ID, planned `ef`, and route kind match
+before the one HNSW search port is invoked. A control step is LKG-only and may
+not claim a routing occurrence. The search port returns a compact
+`ServedQueryOutcome`; it may be implemented by the existing injected
+`MilvusRangeServingExecutor`, but the root itself imports neither PyMilvus nor
+a configuration-mutation API. The root takes the monotonic timing boundary
+around the one search only. Health/load/index-identity probes occur immediately
+before and after each slot **outside** that latency interval and populate the
+ledger's existing before/after facts. This stricter probe cadence is explicit
+control-plane load within the experiment; the frozen schedule-stability
+controls remain the falsification evidence for any resulting interference and
+the reported latency bound remains conditional on the stated no-interference
+assumption.
+
+Any claim refusal, source/search exception, timeout, threshold-semantic error,
+non-finite or malformed outcome, pre/post health failure, identity mismatch,
+ledger refusal, clock failure, or post-activation preflight failure must stop
+further dispatch. The root must append one terminal ledger observation where
+the existing ledger permits it, clear candidate authority before any durable
+or audit work, and invoke `CanaryRollbackCoordinator` with an explicit new
+`SLOT_SAFETY_FAILURE` or `RUNTIME_PREFLIGHT_FAILURE` trigger as appropriate.
+The rollback trigger vocabulary must be extended rather than relabeling these
+conditions as policy, corruption, or identity events. A complete 1,200-slot
+run is not a success exit while candidate routing remains installed: it must
+perform the separately grant-pre-authorized deliberate rollback, including the
+existing 50-query restoration audit, and return success only if containment
+and restoration are both verified. No alternate candidate, retry, batching,
+concurrency above one, configuration mutation, or automatic re-enable is
+permitted.
+
+Before an implementation is eligible for live evidence, focused fake-port tests
+must cover: first-preflight refusal with zero activation/search; post-activation
+preflight refusal with zero search and one containment attempt; exact
+claim-to-step binding; duplicate/unknown/wrong-`ef` claim refusal; source,
+search, timeout, threshold, health, identity, clock, and ledger failures each
+causing one terminal containment with no later slot; exact serial 1,200-slot
+completion with 60/540 route assignments; mandatory successful final rollback;
+and restoration-audit failure disabling automatic actions. Tests must prove
+that no query happens outside the injected search port and that the root cannot
+construct an approval grant, bypass authority claim, or call a Milvus mutation
+API. A new sealed offline EXP-009 evidence bundle is required after those tests
+before a human grant is requested. The later live evidence remains subject to
+the original EXP-009 Stage-4 contract and is not authorized by this convention.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
