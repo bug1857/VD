@@ -4,13 +4,13 @@ import ast
 from pathlib import Path
 import unittest
 
-from vdbench.config import IndexTrack, Metric
+from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.host_observation import (
     BoundedHostObservationRecorder,
     RangeQueryRequest,
     ReferenceRangeGateway,
 )
-from vdbench.milvus import CollectionIdentity
+from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import CollectionIdentityBinding, StackHealth
 from vdbench.shadow_event_types import MonitorStreamKey
 
@@ -58,6 +58,7 @@ class _Client:
         self.loaded = True
         self.identity_matches = True
         self.search_exception: BaseException | None = None
+        self.search_result: object = [[{"id": 7, "distance": 0.25}, {"id": 8, "distance": 0.5}]]
         self.search_calls: list[dict[str, object]] = []
         self.load_calls: list[str] = []
         self.describe_calls: list[str] = []
@@ -78,7 +79,7 @@ class _Client:
         self.search_calls.append(kwargs)
         if self.search_exception is not None:
             raise self.search_exception
-        return [[{"id": 7, "distance": 0.25}, {"id": 8, "distance": 0.5}]]
+        return self.search_result
 
 
 class _Health:
@@ -249,6 +250,43 @@ class MilvusRangeServingExecutorTests(unittest.TestCase):
         self.assertTrue(timeout.timed_out)
         self.assertEqual(timeout.error_code, "MILVUS_SEARCH_TIMEOUT")
         self.assertEqual(len(client.search_calls), 1)
+
+    def test_threshold_semantics_violation_fails_closed_after_one_search(self) -> None:
+        client = _Client()
+        client.search_result = [[{"id": 7, "distance": 2.0}]]
+
+        outcome = _admitted_executor(client, _Health()).execute(_request())
+
+        self.assertFalse(outcome.success)
+        self.assertFalse(outcome.timed_out)
+        self.assertEqual(outcome.result_count, 0)
+        self.assertEqual(outcome.error_code, "MILVUS_THRESHOLD_SEMANTICS_INVALID")
+        self.assertEqual(len(client.search_calls), 1)
+
+    def test_threshold_interval_check_preserves_cosine_open_lower_bound(self) -> None:
+        configuration = SearchConfiguration(
+            metric=Metric.COSINE,
+            threshold_label="target-025",
+            radius=0.25,
+            index_track=IndexTrack.HNSW,
+            ef=400,
+        )
+
+        self.assertTrue(
+            MilvusRangeServingExecutor._threshold_semantics_valid(
+                (SearchHit(1, 1.0),), configuration
+            )
+        )
+        self.assertFalse(
+            MilvusRangeServingExecutor._threshold_semantics_valid(
+                (SearchHit(1, 0.25),), configuration
+            )
+        )
+        self.assertFalse(
+            MilvusRangeServingExecutor._threshold_semantics_valid(
+                (SearchHit(1, 1.000001),), configuration
+            )
+        )
 
     def test_reference_gateway_serves_once_then_records_the_compact_outcome(self) -> None:
         client = _Client()

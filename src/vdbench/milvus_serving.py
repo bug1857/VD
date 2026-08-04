@@ -15,9 +15,9 @@ Complexity:
     ``preflight`` is O(number of configured streams); ``execute`` performs one
     HNSW search plus O(vector dimension) request validation.
 Failure modes:
-    Health, load, identity, plan, request, and search failures are represented
-    with non-sensitive reason codes.  No failure invokes a mutation, retry, or
-    background-monitoring operation.
+    Health, load, identity, plan, request, search, and returned-score semantic
+    failures are represented with non-sensitive reason codes.  No failure
+    invokes a mutation, retry, or background-monitoring operation.
 """
 
 from __future__ import annotations
@@ -246,6 +246,8 @@ class MilvusRangeServingExecutor:
             return self._failure(start, "MILVUS_SEARCH_TIMEOUT", timed_out=True)
         except Exception:
             return self._failure(start, "MILVUS_SEARCH_FAILED")
+        if not self._threshold_semantics_valid(hits, configuration):
+            return self._failure(start, "MILVUS_THRESHOLD_SEMANTICS_INVALID")
         return ServedQueryOutcome(
             success=True,
             timed_out=False,
@@ -321,6 +323,36 @@ class MilvusRangeServingExecutor:
         ):
             return 0.0
         return float(end - start) / 1_000_000.0
+
+    @staticmethod
+    def _threshold_semantics_valid(
+        hits: object, configuration: SearchConfiguration
+    ) -> bool:
+        """Check the frozen EXP-001 interval before reporting a success.
+
+        The Milvus server receives the radius/range filter, but an observed
+        response remains untrusted evidence until every materialized score
+        satisfies the contract.  This check is intentionally after exactly one
+        search and uses no control-plane or mutation operation.
+        """
+
+        if not isinstance(hits, tuple):
+            return False
+        for hit in hits:
+            score = getattr(hit, "score", None)
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(float(score))
+            ):
+                return False
+            value = float(score)
+            if configuration.metric is Metric.L2:
+                if not 0.0 <= value < configuration.radius:
+                    return False
+            elif not configuration.radius < value <= configuration.range_filter:
+                return False
+        return True
 
 
 class _RequestRejected(ValueError):
