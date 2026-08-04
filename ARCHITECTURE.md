@@ -1711,6 +1711,54 @@ then completed 550 repository tests in 193.153 seconds. This verifies only
 the defined point-in-time preflight; ADR-008 remains **Proposed**, and no
 candidate routing, approval use, rollback, or automatic tuning is authorized.
 
+**Stage-4 recall/latency evidence-binding repair convention (proposed).** A
+review of unintegrated recall-audit draft code found that a recall result and a
+latency result could otherwise be combined without proving they came from the
+same run and exact configuration. That is unacceptable for EXP-009: a passing
+report assembled from different metric, stratum, `ef`, identity, workload, or
+run contexts must be impossible, not merely discouraged.
+
+| Option | Integrity and scope | Decision |
+|---|---|---|
+| A — retain independently supplied recall and latency JSON | Cannot prove that two passing inputs describe the same experiment; a hand-authored latency document can be misleading. | Rejected |
+| B — add loose matching checks in the human report | Improves one caller but leaves other callers and stored evidence without a canonical provenance boundary. | Rejected |
+| C — require one canonical, hash-bound `Stage4EvidenceBinding` across durable recall and latency evidence before combination | Makes the experiment/run/configuration/workload identity explicit, independently verifiable, and reusable by every consumer. | Chosen |
+
+`Stage4EvidenceBinding` must be a strict, schema-versioned, canonical document
+whose digest is immutable before either evidence stream is evaluated. It binds:
+the EXP-009 run ID and clean source revision; metric and threshold stratum;
+current/candidate/LKG `ef`; `WorkloadIdentityBinding` configuration/data/FLAT/
+HNSW identities; DATASET-002 manifest and frozen recall-audit-ID-set digests;
+eligible-workload, candidate-selection, and execution-schedule digests; and
+the exact recall and latency evidence schema versions. A full Stage-4 decision
+accepts only a recall evaluation and a latency-evidence wrapper carrying the
+same binding digest. Absent, malformed, unequal, or unverified bindings yield
+`INCOMPLETE`, never `PASSING` or a generic SLO failure.
+
+The recall ledger is raw durable evidence, not an authorization token. It must
+persist its binding digest at run creation; make each accepted observation
+append-only through a verified hash chain and schema guards; reject conflicting
+replays; and expose a final chain digest. Its evidence publication must include
+an external immutable manifest hash, because local SQLite permissions and
+triggers are tamper-evident safeguards, not a signature against a hostile
+writer. The latency side must be rebuilt from the verified schedule/ledger,
+then wrapped with the same binding digest and the verified latency-ledger
+digest; a free-form `latency-evaluation.json` is prohibited.
+
+The report CLI must verify the canonical binding, both evidence artifacts and
+their expected SHA-256 values before it can emit a full qualification document.
+It may still emit a clearly labeled recall-only report. Missing/corrupt latency
+evidence is `INCOMPLETE`; complete evidence that breaches a pre-registered
+ceiling is `FAILING`. This convention neither changes the two-window
+`QualificationResult` contract required for LKG nor claims that a 1,200-query
+candidate recall audit establishes current LKG qualification.
+
+Required adversarial tests: mismatched metric/stratum/`ef`/identity/workload/
+run binding; hand-authored or hash-mismatched latency input; tampered recall
+row, chain, schema, or external manifest; missing latency evidence; and a
+complete, correctly bound evidence pair that fails its SLO. All must prove no
+candidate routing, approval, policy actuation, or Milvus mutation.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.

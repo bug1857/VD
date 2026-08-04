@@ -1619,3 +1619,21 @@ EXP-009 remains in progress and ADR-008 remains Proposed.
 current qualified-LKG state, eligible policy/admission state, and an externally
 supplied one-time Ed25519 grant for the frozen transition. This preflight
 cannot manufacture, substitute for, or consume any of those gates.
+
+#### Stage 4 evidence-binding repair prerequisite — 2026-08-05
+
+**Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN.** Before any
+unintegrated 1,200-query recall-audit draft may be accepted, EXP-009 must
+verify one canonical binding across recall and finite-manifest latency evidence.
+The binding must cover the exact run, clean revision, metric/stratum,
+current/candidate/LKG `ef`, configuration/data/FLAT/HNSW identity, DATASET-002
+manifest and audit-set digests, eligible-workload/selection/schedule digests,
+and evidence-schema versions. Both evidence artifacts and the enclosing
+publication manifest require independently checked SHA-256 values.
+
+Pass only if adversarial mismatch/tamper/missing-evidence tests fail closed as
+`INCOMPLETE`, a complete bound evidence pair reports `FAILING` on an actual
+SLO breach, and only one exact, fully bound pair can produce a `PASSING`
+read-only qualification report. This is evidence integrity work only: it does
+not establish a `QualificationResult`, authorize a grant, install a route, or
+permit any candidate query.
