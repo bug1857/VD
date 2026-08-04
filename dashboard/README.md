@@ -2,11 +2,15 @@
 
 Operator dashboard for **Adaptive Milvus Tuning • Drift Detection • Canary Operations**.
 
-This repository is **Phase A: a pure client-side React + TypeScript + Vite application**.
+This repository is **Phase A: a client-side React + TypeScript + Vite application**.
 It contains no server code, no SSR, no database, no authentication, and no access to
-Milvus or to the VD Python control service. Every number, identity, chart point,
-audit record and safety gate rendered by this app comes from a typed demo snapshot
-in `src/lib/demo-data.ts` and is visibly labelled **Demo data** in the UI.
+Milvus. By default, every number, identity, chart point, audit record and safety gate
+rendered by this app comes from a typed demo snapshot in `src/lib/demo-data.ts` and is
+visibly labelled **Demo data** in the UI.
+
+An optional read-only integration mode can read VD telemetry envelopes from a local
+`/api/v1` service. It never enables approval, routing, rollback, export, or any other
+command path.
 
 Treat this project root as the future `dashboard/` directory of the VD repository.
 
@@ -23,6 +27,40 @@ bun run preview  # serve the production build locally
 
 The Vite development and preview servers bind only to `127.0.0.1`; this Phase-A
 dashboard is not exposed to the local network.
+
+## Read-only VD API mode
+
+Run the dashboard against a local read-only VD API service:
+
+```bash
+VITE_VD_API_MODE=readonly VITE_VD_API_BASE=http://127.0.0.1:8081 bun run dev
+```
+
+If `VITE_VD_API_BASE` is omitted, reads use same-origin `/api/v1/*` paths.
+
+Only these paths are read:
+
+```text
+GET /api/v1/status
+GET /api/v1/drift?range=1h|6h|24h|7d
+GET /api/v1/telemetry
+GET /api/v1/canary
+GET /api/v1/events
+GET /api/v1/safety-gates
+GET /api/v1/audit
+GET /api/v1/commands
+GET /api/v1/stream
+```
+
+All command functions remain locally blocked in both modes:
+
+```text
+POST /api/v1/commands/verify-grant
+POST /api/v1/commands/start-canary
+POST /api/v1/commands/pause-routing
+POST /api/v1/commands/request-rollback
+POST /api/v1/commands/export-audit
+```
 
 Stack: Vite 8, React 19, TypeScript (strict, `exactOptionalPropertyTypes`),
 Tailwind CSS v4, Recharts, Lucide.
@@ -83,25 +121,26 @@ All strings live in `API_ENDPOINTS` (`src/lib/api.ts`). No component builds a UR
 
 | Method | Endpoint                            | Phase A behaviour                                 |
 | ------ | ----------------------------------- | ------------------------------------------------- |
-| GET    | `/api/v1/status`                    | Resolves a demo snapshot asynchronously; no fetch |
-| GET    | `/api/v1/drift`                     | Demo snapshot (accepts a range selector)          |
-| GET    | `/api/v1/telemetry`                 | Demo snapshot                                     |
-| GET    | `/api/v1/canary`                    | Demo snapshot                                     |
-| GET    | `/api/v1/events`                    | Demo snapshot                                     |
-| GET    | `/api/v1/safety-gates`              | Demo snapshot                                     |
-| GET    | `/api/v1/audit`                     | Demo snapshot                                     |
-| GET    | `/api/v1/commands`                  | Demo snapshot (always empty history)              |
-| GET    | `/api/v1/stream`                    | Disconnected no-op SSE adapter                    |
-| POST   | `/api/v1/commands/verify-grant`     | No fetch; throws `BACKEND_NOT_CONNECTED`          |
-| POST   | `/api/v1/commands/start-canary`     | No fetch; throws `BACKEND_NOT_CONNECTED`          |
-| POST   | `/api/v1/commands/pause-routing`    | No fetch; throws `BACKEND_NOT_CONNECTED`          |
-| POST   | `/api/v1/commands/request-rollback` | No fetch; throws `BACKEND_NOT_CONNECTED`          |
-| POST   | `/api/v1/commands/export-audit`     | No fetch; throws `BACKEND_NOT_CONNECTED`          |
+| GET    | `/api/v1/status`                    | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/drift`                     | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/telemetry`                 | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/canary`                    | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/events`                    | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/safety-gates`              | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/audit`                     | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/commands`                  | Demo snapshot, or read-only fetch when enabled    |
+| GET    | `/api/v1/stream`                    | Disconnected no-op, or read-only SSE when enabled |
+| POST   | `/api/v1/commands/verify-grant`     | No fetch; throws locally                          |
+| POST   | `/api/v1/commands/start-canary`     | No fetch; throws locally                          |
+| POST   | `/api/v1/commands/pause-routing`    | No fetch; throws locally                          |
+| POST   | `/api/v1/commands/request-rollback` | No fetch; throws locally                          |
+| POST   | `/api/v1/commands/export-audit`     | No fetch; throws locally                          |
 
-## Phase B: integration with the VD Python service
+## Later write-capable integration with the VD Python service
 
-Phase B replaces only the bodies inside `src/lib/api.ts`. Endpoint constants,
-method names, envelope shapes and every component stay untouched.
+The current integration is read-only. A later write-capable phase may replace only the
+command bodies inside `src/lib/api.ts`. Endpoint constants, method names, envelope
+shapes and every component should stay untouched.
 
 1. **REST reads.** Each GET becomes `fetch(API_ENDPOINTS.x)` returning the same
    `ApiEnvelope<T>`. The service is expected to emit the envelope verbatim:

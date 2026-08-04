@@ -486,7 +486,7 @@ export type StreamEvent =
 
 export interface StreamAdapter {
   readonly state: ConnectivityState;
-  readonly lastEventId?: string;
+  readonly lastEventId: string | undefined;
   subscribe(listener: (event: StreamEvent) => void): () => void;
   close(): void;
 }
