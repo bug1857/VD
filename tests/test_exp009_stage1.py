@@ -130,6 +130,7 @@ class Exp009Stage1Tests(unittest.TestCase):
                 "eligible_workload.json",
                 "candidate_selection.json",
                 "calibration.json",
+                "environment.json",
                 "run_manifest.json",
                 "completion.json",
             }
@@ -139,6 +140,14 @@ class Exp009Stage1Tests(unittest.TestCase):
             self.assertTrue(all(completion["verification"].values()))
             self.assertEqual(completion["candidate_count"], 60)
             self.assertEqual(completion["eligible_occurrence_count"], 600)
+            environment = json.loads((target / "environment.json").read_text(encoding="utf-8"))
+            self.assertEqual(environment["schema_version"], "exp009-stage1-environment-v1")
+            self.assertEqual(environment["performance_scope"], "offline_nonperformance")
+            self.assertTrue(environment["python"]["implementation"])
+            self.assertTrue(environment["python"]["version"])
+            self.assertTrue(environment["numpy_version"])
+            self.assertTrue(environment["platform"]["system"])
+            self.assertTrue(environment["platform"]["machine"])
             self.assertEqual(
                 completion["run_manifest_sha256"], sha256_file(result.manifest_path)
             )

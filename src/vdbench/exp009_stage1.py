@@ -17,10 +17,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Any
+
+import numpy as np
 
 from .artifacts import canonical_json_bytes, sha256_file
 from .canary_calibration import run_exp009_calibration
@@ -38,6 +42,7 @@ from .exp005_acquisition import load_identity_baseline
 
 EXP009_STAGE1_SCHEMA_VERSION = "exp009-stage1-evidence-v1"
 EXP009_STAGE1_COMPLETION_SCHEMA_VERSION = "exp009-stage1-completion-v1"
+EXP009_STAGE1_ENVIRONMENT_SCHEMA_VERSION = "exp009-stage1-environment-v1"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _TRANSITION = ("L2", "target-075", 400, 800)
 _REQUIRED_SOURCE_PATHS = (
@@ -53,6 +58,7 @@ _BUNDLE_FILES = frozenset(
         "eligible_workload.json",
         "candidate_selection.json",
         "calibration.json",
+        "environment.json",
         "run_manifest.json",
         "completion.json",
     }
@@ -294,6 +300,27 @@ def _run_manifest(
     }
 
 
+def _environment_document() -> dict[str, object]:
+    """Capture reproducibility metadata without making a performance claim."""
+
+    return {
+        "schema_version": EXP009_STAGE1_ENVIRONMENT_SCHEMA_VERSION,
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+            "executable": sys.executable,
+        },
+        "numpy_version": np.__version__,
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "processor": platform.processor() or "UNAVAILABLE",
+        },
+        "performance_scope": "offline_nonperformance",
+    }
+
+
 def _exact_mapping(
     value: object, *, fields: frozenset[str], error_code: str
 ) -> Mapping[str, object]:
@@ -305,6 +332,41 @@ def _exact_mapping(
 def _require(value: bool, *, error_code: str) -> None:
     if not value:
         raise Exp009Stage1Error(error_code)
+
+
+def _validate_environment_document(document: Mapping[str, object]) -> None:
+    """Reject incomplete or noncanonical Stage-1 environment provenance."""
+
+    root = _exact_mapping(
+        document,
+        fields=frozenset(
+            {"schema_version", "python", "numpy_version", "platform", "performance_scope"}
+        ),
+        error_code="ENVIRONMENT_ARTIFACT_INVALID",
+    )
+    _require(
+        root["schema_version"] == EXP009_STAGE1_ENVIRONMENT_SCHEMA_VERSION,
+        error_code="ENVIRONMENT_ARTIFACT_INVALID",
+    )
+    _require(
+        root["performance_scope"] == "offline_nonperformance",
+        error_code="ENVIRONMENT_ARTIFACT_INVALID",
+    )
+    python = _exact_mapping(
+        root["python"],
+        fields=frozenset({"implementation", "version", "executable"}),
+        error_code="ENVIRONMENT_ARTIFACT_INVALID",
+    )
+    operating_system = _exact_mapping(
+        root["platform"],
+        fields=frozenset({"system", "release", "machine", "processor"}),
+        error_code="ENVIRONMENT_ARTIFACT_INVALID",
+    )
+    for value in (*python.values(), root["numpy_version"], *operating_system.values()):
+        _require(
+            isinstance(value, str) and bool(value.strip()),
+            error_code="ENVIRONMENT_ARTIFACT_INVALID",
+        )
 
 
 def verify_stage1_bundle(
@@ -356,6 +418,10 @@ def verify_stage1_bundle(
         calibration == run_exp009_calibration().to_document(),
         error_code="CALIBRATION_RECOMPUTATION_MISMATCH",
     )
+    environment = _load_canonical_json(
+        target / "environment.json", error_code="ENVIRONMENT_ARTIFACT_INVALID"
+    )
+    _validate_environment_document(environment)
     manifest = _load_canonical_json(manifest_path, error_code="RUN_MANIFEST_INVALID")
     root = _exact_mapping(
         manifest,
@@ -457,7 +523,14 @@ def verify_stage1_bundle(
     )
     artifacts = _exact_mapping(
         root["artifacts"],
-        fields=frozenset({"eligible_workload.json", "candidate_selection.json", "calibration.json"}),
+        fields=frozenset(
+            {
+                "eligible_workload.json",
+                "candidate_selection.json",
+                "calibration.json",
+                "environment.json",
+            }
+        ),
         error_code="RUN_MANIFEST_INVALID",
     )
     for artifact_name, artifact in artifacts.items():
@@ -571,6 +644,7 @@ def run_stage1(
         eligible_path = temporary / "eligible_workload.json"
         selection_path = temporary / "candidate_selection.json"
         calibration_path = temporary / "calibration.json"
+        environment_path = temporary / "environment.json"
         manifest_path = temporary / "run_manifest.json"
         completion_path = temporary / "completion.json"
 
@@ -592,10 +666,11 @@ def run_stage1(
         persist_candidate_selection_record(selection_path, selection, eligible_path)
         calibration = run_exp009_calibration()
         _write_durable_json(calibration_path, calibration.to_document())
+        _write_durable_json(environment_path, _environment_document())
 
         artifacts = {
             path.name: _artifact_entry(path)
-            for path in (eligible_path, selection_path, calibration_path)
+            for path in (eligible_path, selection_path, calibration_path, environment_path)
         }
         manifest = _run_manifest(
             created_at_utc=strict_clock(),
@@ -694,6 +769,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "EXP009_STAGE1_COMPLETION_SCHEMA_VERSION",
+    "EXP009_STAGE1_ENVIRONMENT_SCHEMA_VERSION",
     "EXP009_STAGE1_SCHEMA_VERSION",
     "Exp009Stage1Error",
     "Exp009Stage1Result",
