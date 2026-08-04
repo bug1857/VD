@@ -1663,6 +1663,33 @@ permits a separately captured read-only ENV-001 preflight; ADR-008 remains
 **Proposed** and no candidate routing, grant use, or configuration change is
 authorized.
 
+**Read-only ENV-001 preflight evidence convention (proposed).** The permitted
+next operation is exactly one frozen L2 / `target-075` stream built from the
+reviewed EXP-005 baseline
+`artifacts/exp-005/baselines/l2-target-075-ef800-lkg400.json`. Its exact
+`MonitorStreamKey` and `RouteStateBinding` must be derived from that baseline,
+with `last_known_good_ef=400`; no first-seen identity is trusted. The preflight
+composition may lazily construct a PyMilvus client solely behind a narrow
+facade exposing `get_load_state` and `describe_index`. The facade must record
+every call and reject any other client method, so a runtime proof can show zero
+search, insert, collection-create/delete, index-create/drop, grant, route, and
+configuration-mutation calls.
+
+The runner must capture validated baseline hash and DATASET-001 manifest hash,
+health/load/identity evidence, pre/post exact FLAT and HNSW identities, the
+adapter's timestamped `Stage4RuntimeReadiness`, its `Stage4SlotSafety`, and the
+facade call transcript in a no-replacement immutable local evidence directory.
+It must run adapter admission and slot-safety operations separately, so each
+invokes one structural serving preflight; the expected successful transcript is
+four `get_load_state` and eight `describe_index` calls, with zero calls of every
+disallowed kind. Any incomplete/unsafe adapter result, changed pre/post
+identity, baseline mismatch, invalid data artifact, invalid timestamp, wrong
+call transcript, or failed local evidence write is a fail-closed preflight
+failure. A passing preflight proves only the captured point-in-time health,
+load, and identity facts. It does not qualify a policy/LKG state, establish
+no-interference, verify or use a grant, claim a route, or authorize candidate
+traffic.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
