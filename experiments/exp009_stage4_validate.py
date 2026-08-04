@@ -24,6 +24,7 @@ from vdbench.artifacts import git_state, sha256_file
 
 __all__ = [
     "LIVE_ROOT_VALIDATION_SPEC",
+    "RUNTIME_PROBE_VALIDATION_SPEC",
     "STAGE4_SUITE_FILENAMES",
     "Stage4ValidationSpec",
     "Exp009Stage4ValidationError",
@@ -153,6 +154,41 @@ LIVE_ROOT_VALIDATION_SPEC = Stage4ValidationSpec(
     execution_mode="offline_live_root_composition",
     offline_safety_assertion=(
         ("constructs_milvus_client", False),
+        ("issues_live_search", False),
+        ("accepts_or_verifies_real_grant", False),
+        ("claims_or_enables_real_candidate_route", False),
+        ("mutates_milvus_configuration", False),
+    ),
+)
+
+
+RUNTIME_PROBE_VALIDATION_SPEC = Stage4ValidationSpec(
+    focused_suite_filenames=(
+        "test_canary_runtime_probe.py",
+        "test_canary_admission.py",
+        "test_canary_live_runner.py",
+        "test_exp009_stage4_validate.py",
+        "test_exp009_stage4_runtime_probe_validate.py",
+    ),
+    source_filenames=(
+        "src/vdbench/canary_admission.py",
+        "src/vdbench/canary_live_runner.py",
+        "src/vdbench/canary_route_state.py",
+        "src/vdbench/canary_runtime_probe.py",
+        "src/vdbench/canary_runtime_types.py",
+        "src/vdbench/config.py",
+        "src/vdbench/milvus_serving.py",
+        "src/vdbench/shadow_event_types.py",
+        "experiments/exp009_stage4_validate.py",
+        "experiments/exp009_stage4_runtime_probe_validate.py",
+    ),
+    manifest_schema_version="exp009-stage4-runtime-probe-manifest-v1",
+    raw_schema_version="exp009-stage4-runtime-probe-raw-result-v1",
+    receipt_schema_version="exp009-stage4-runtime-probe-execution-receipt-v1",
+    execution_mode="offline_runtime_probe_composition",
+    offline_safety_assertion=(
+        ("constructs_milvus_client", False),
+        ("issues_live_serving_preflight", False),
         ("issues_live_search", False),
         ("accepts_or_verifies_real_grant", False),
         ("claims_or_enables_real_candidate_route", False),
