@@ -1690,6 +1690,27 @@ load, and identity facts. It does not qualify a policy/LKG state, establish
 no-interference, verify or use a grant, claim a route, or authorize candidate
 traffic.
 
+**Live evidence update — 2026-08-04.** The permitted read-only preflight was
+captured from clean commit `d03bbc352520a780ab6e76382d41f2fa09eb5692` and
+published in evidence commit `3353992` at
+`artifacts/exp-009/run-20260804T153006Z/`. Independent verification returned
+`COMPLETE` for the frozen L2 / `target-075` binding: baseline SHA-256
+`6e26b0793ca44732ec464fe08e09287d28c87356f0f0e8dd71691e3e8658dc52` and
+DATASET-001 manifest SHA-256
+`b6cb56a3eee60f6728be1d08a465e2a2500eec4089b4466da76fe2e886b51da9` were
+bound, pre/post FLAT and HNSW identities matched exactly (including HNSW
+`M=16`, `efConstruction=200`), and the recorded facade transcript contains
+exactly four `get_load_state` and eight `describe_index` calls. The raw-result,
+manifest, and receipt self-hashes are respectively
+`977d6b3d9fe978d4e3a757b9156351b3d019169ebeca67580c7d177a5e38065c`,
+`6487b1798be6b904a84078dc7e9fec2bd8949be207346babbec60d03b37b7449`, and
+`613a30e2320025cd166d2214edf31ee1de773668d09bbb7e494f4cdb8a250c61`.
+The evidence assertion records zero search, insert, collection/index mutation,
+grant/route use, or configuration mutation. The pinned virtual environment
+then completed 550 repository tests in 193.153 seconds. This verifies only
+the defined point-in-time preflight; ADR-008 remains **Proposed**, and no
+candidate routing, approval use, rollback, or automatic tuning is authorized.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.

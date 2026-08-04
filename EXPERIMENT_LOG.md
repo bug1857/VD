@@ -1585,3 +1585,37 @@ issue a search, use a grant, claim a candidate route, or mutate Milvus.
 health/load/exact-identity preflight through this adapter for the frozen L2 /
 `target-075` binding. It must remain LKG-only and must not supply, verify, or
 use a grant. Candidate dispatch remains blocked.
+
+#### Stage 4 read-only ENV-001 preflight evidence — 2026-08-04
+
+**Stage status: VERIFIED (read-only preflight only).** This append-only result
+verifies the frozen L2 / `target-075` ENV-001 health/load/exact-identity
+preflight through the runtime-probe adapter. It is neither a qualified LKG
+result nor a candidate-routing, approval, rollback, or no-interference result;
+EXP-009 remains in progress and ADR-008 remains Proposed.
+
+- Source revision: clean commit `d03bbc352520a780ab6e76382d41f2fa09eb5692`;
+  invocation wrapper `d03bbc3`; immutable evidence publication `3353992`.
+- Immutable bundle: `artifacts/exp-009/run-20260804T153006Z/`. Independent
+  verification returned `COMPLETE`; raw-result self-SHA-256
+  `977d6b3d9fe978d4e3a757b9156351b3d019169ebeca67580c7d177a5e38065c`,
+  manifest self-SHA-256
+  `6487b1798be6b904a84078dc7e9fec2bd8949be207346babbec60d03b37b7449`, and
+  receipt self-SHA-256
+  `613a30e2320025cd166d2214edf31ee1de773668d09bbb7e494f4cdb8a250c61`.
+- The frozen reviewed baseline SHA-256
+  `6e26b0793ca44732ec464fe08e09287d28c87356f0f0e8dd71691e3e8658dc52` and
+  DATASET-001 manifest SHA-256
+  `b6cb56a3eee60f6728be1d08a465e2a2500eec4089b4466da76fe2e886b51da9` are
+  bound in the artifact. FLAT and HNSW pre/post identities match exactly;
+  HNSW records `M=16` and `efConstruction=200`.
+- The raw client transcript contains exactly four `get_load_state` and eight
+  `describe_index` calls. It records zero search, insert, collection/index
+  mutation, grant/route use, and configuration mutation. The pinned
+  environment completed 550 repository tests in 193.153 seconds after
+  independent evidence verification.
+
+**Next gate:** a controlled candidate route remains blocked pending an exact
+current qualified-LKG state, eligible policy/admission state, and an externally
+supplied one-time Ed25519 grant for the frozen transition. This preflight
+cannot manufacture, substitute for, or consume any of those gates.
