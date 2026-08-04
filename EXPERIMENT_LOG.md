@@ -1385,3 +1385,16 @@ Not run.
 Conclusion:
 
 EXP-009 is the mandatory statistical, approval, routing, and rollback gate for any candidate query-time-`ef` transition. Until it is verified, every policy path remains DRY_RUN-only and the existing offline actuation code remains non-authorizing.
+
+#### Stage 1 verification result — 2026-08-04
+
+**Stage status: VERIFIED (Stage 1 only).** The original contract-time `Result: Not run` remains above as the append-only pre-registration record. This result verifies only the offline workload and confidence preflight; EXP-009 as a whole remains in progress, and no routing, approval, Milvus operation, or actuation is authorized.
+
+- Evidence commit: `e1d83fa4bd3815274efa208f85f16fe465761f06` (`feat: record EXP-009 Stage-1 environment provenance`), with `384` full-suite tests passing in `110.324s` before the evidence run.
+- Immutable v2 bundle and raw structured output: `artifacts/exp-009/run-20260804T031212Z/`; run manifest SHA-256 `8627ddee1d26ccb3cddb2faa46bf8ec2debaada01de29eb102ce05e8e79eedcd`; completion SHA-256 `1503a637aa6a56ff1d9f6ae68695bb5bb03b96c1041edb4394e00825b07f1ac1`.
+- Input/evidence bindings: eligible-workload SHA-256 `59c010c1988b16a08e5c21ce4de9c3213cc831b5be1acc718844e692f3e26f2b`; CSPRNG selection-record SHA-256 `c4e083dbcaaf475371874e2b912629e9490147dc6714bf5a9fa8cadf0c810ac3`; calibration SHA-256 `dcd10710a8ce937a4702030c13a1b9c255f6cbc40717e5d823d9180e415744e9`; environment SHA-256 `516dd333e2c429e11a39dd3711786fe9b1db0d26ff3bb7f5fd32972172d288ea`.
+- Environment provenance: CPython `3.14.5`, NumPy `2.4.3`, Darwin kernel `25.5.0`, `arm64`. The bundle explicitly labels this as `offline_nonperformance`; it makes no hardware-performance or production-latency claim.
+- Public post-publication verification rebuilt the 600-occurrence manifest from DATASET-001/DATASET-002, verified the exact 60-ID `python.secrets.SystemRandom.sample` selection binding, recomputed the frozen calibration, checked the closed artifact inventory and every SHA-256, validated the environment document, and returned `public_verifier: OK`.
+- H1 is VERIFIED for the manifest/selection cardinality contract: 600 unique routing-vector bindings and 60 candidates (`0.10`). H2 is VERIFIED only for the declared analytic finite-manifest coverage calculation (`0.9610030335925056`) and pre-registered synthetic calibration behavior; it is not an IID or production-latency claim. The Stage-4 schedule-stability/no-interference diagnostic is now frozen in the v2 manifest, but remains unexecuted and therefore is not evidence of no interference.
+
+**Next gate:** Stage 2 must implement and deliberately test the signed approval, exact partition, refusal, and restart/expiry failback contracts before any candidate route exists.
