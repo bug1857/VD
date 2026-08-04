@@ -1366,6 +1366,40 @@ query payloads.  This keeps artifact verification out of the foreground
 request loop while ensuring a later serial runner cannot silently substitute a
 vector after Stage-1 verification.
 
+**Stage-4 serial-schedule implementation convention (proposed).** Before a
+live composition root exists, Stage 4 requires one pure, immutable execution
+schedule derived from the already-admitted manifest and route plan.  It must
+contain exactly 1,200 ordered slots: three complete 50-query LKG-only control
+sweeps, the 600 routing occurrences in manifest order, one complete control
+sweep after each contiguous 100 routing slots, and three complete post-routing
+control sweeps.  Thus it represents 600 controls and 600 routes, with the
+route partition copied only from the frozen 60/540 `CanaryRoutePlan`; it never
+selects an occurrence or reimplements route membership.
+
+| Option | Correctness and safety | Decision |
+|---|---|---|
+| A — embed cadence in a future Milvus runner | Couples immutable workload proof to client I/O, making schedule mistakes harder to unit-test and audit | Rejected |
+| B — let the route authority emit the control/routing sequence | Expands the atomic foreground authority beyond one-shot membership claims and risks conflating scheduling with authorization | Rejected |
+| C — add pure `canary_schedule.py`, consumed later by a serial composition root | Makes the exact 1,200-slot cadence, control order, route partition, and canonical digest independently reproducible before any query is possible | Chosen |
+
+`build_stage4_execution_schedule(manifest, plan)` must validate the manifest
+and plan independently, require their metric/stratum/transition/identity and
+every routed occurrence binding to match exactly, and return a schema-versioned
+immutable object with a canonical SHA-256 digest.  A control slot contains only
+the frozen control ID/digest and the LKG `ef`; a routing slot contains only the
+already-bound route occurrence and its plan-selected `ef`/kind.  Raw vectors,
+approval material, runtime state, timestamps, outcomes, and mutable clients
+are forbidden.  A later runner must rebuild this schedule from its admitted
+inputs and fail closed on any digest or structure mismatch before dispatch.
+
+Focused tests must prove exact 1,200-slot ordering, all twelve control sweeps
+in frozen ID order, routes `0…599` in manifest order, exactly 60 candidate and
+540 LKG route slots, malformed manifest/plan mismatch refusal, schedule digest
+tamper refusal, and absence of Milvus, activation, route-authority, query-source,
+or filesystem imports.  This convention creates no route authority and does
+not authorize a candidate query; the later runner still requires the Stage-4
+admission receipt, fresh pre-dispatch preflight, and an externally signed grant.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
