@@ -1516,3 +1516,39 @@ mutation. Only after that code exists, a fresh ENV-001 preflight passes, an
 eligible policy/LKG state exists, and a human supplies an exact one-time
 Ed25519 grant may the pre-registered controlled live Stage-4 canary be run.
 No automatic, full-traffic, or ungranted candidate action is authorized.
+
+#### Stage 4 live-root fake-only verification result — 2026-08-04
+
+**Stage status: VERIFIED (fake-only root conformance only).** The preceding
+Stage-1 through Stage-4 offline-composition records remain unchanged. This
+result verifies the separately designed `Stage4LiveRunner` composition root
+with injected fake activation, route-authority, runtime-probe, serving, ledger,
+and rollback ports. It is not a controlled live canary and it does not accept a
+real grant, enable or claim a real candidate route, create a Milvus client,
+issue a live search, or mutate Milvus configuration.
+
+- Implementation root: `94fe22c`; profile-aware verifier: `920aab9`; immutable
+  evidence publication: `1614521`.
+- Immutable bundle: `artifacts/exp-009/run-20260804T141850Z/`, generated from
+  clean commit `920aab9371b49501bdfbea644a0c5575a15a96e6`. Independent
+  verification returns `COMPLETE`; manifest SHA-256
+  `1c04f8cfcbbbd331732e08e46560331608da6f2d7aa9c42f0ece920eeaf02dd8`, raw-result
+  SHA-256 `61887ef633286434820d7b72cf792c0409b7944fb081fc67eea084432287ffd8`, and
+  receipt SHA-256 `bdc136c2d5d0a4682f36d41c2285eba47139ec052dee7030e292af070f17ad45`.
+- The sealed bundle records 14 successful commands: clean-tree `git diff
+  --check`, 11 focused suites, the full repository suite (`525` tests in
+  `165.256s`), and `pip check` (`No broken requirements found.`). The verifier
+  rejects incomplete, tampered, substituted, and symlinked evidence and keeps
+  the historical offline-composition profile independently verifiable.
+- The fake-port tests prove two fresh admission checks, exact one-shot
+  claim-to-step binding before any injected search, serial 1,200-slot dispatch
+  with exactly 60 candidate-`ef=800` and 1,140 LKG-`ef=400` requests, terminal
+  containment on registered failures, no resumption of a non-fresh ledger, and
+  mandatory `COMPLETED_CANARY` rollback. They do not prove live no-interference,
+  real health/load/identity behavior, or an external human approval.
+
+**Next gate:** build and fake-test the read-only Stage-4 runtime-probe adapter
+that maps the existing serving preflight to `Stage4RuntimeReadiness` and
+per-slot `Stage4SlotSafety`. Only after that adapter and a fresh read-only
+ENV-001 preflight are verified may an externally supplied exact grant be
+considered; candidate dispatch remains blocked.

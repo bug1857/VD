@@ -1585,6 +1585,24 @@ API. A new sealed offline EXP-009 evidence bundle is required after those tests
 before a human grant is requested. The later live evidence remains subject to
 the original EXP-009 Stage-4 contract and is not authorized by this convention.
 
+**Implementation/evidence update — 2026-08-04.** `Stage4LiveRunner` was added
+at `94fe22c` as the chosen injected composition root, without a Milvus,
+configuration-mutation, or approval-verification import. Its strict fake-port
+tests cover initial and post-activation refusal, exact 1,200-slot serial
+completion (60 candidate / 1,140 LKG searches), claim/source/search/timeout/
+threshold/health/identity/clock/ledger failures, malformed port values,
+non-fresh-ledger refusal, active-context mismatch, and mandatory final rollback.
+The separate profile-aware verifier at `920aab9` preserves verification of the
+older offline-composition bundle and seals a distinct live-root fake-only
+bundle. That bundle is published by `1614521` at
+`artifacts/exp-009/run-20260804T141850Z/`: 14 commands passed from clean commit
+`920aab9371b49501bdfbea644a0c5575a15a96e6`, including 525 repository tests in
+165.256 seconds and dependency integrity. Its verifier records zero Milvus
+clients/searches/configuration mutations, zero real grant verification, and
+zero real candidate-route enablement/claims. This is VERIFIED fake-only
+composition evidence; ADR-008 remains **Proposed**, and it neither authorizes
+nor substitutes for the required human-granted controlled live canary.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
