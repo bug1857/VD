@@ -1068,6 +1068,47 @@ grant rather than allowing a potentially ambiguous retry. The policy audit ID
 is a binding input; lifecycle record IDs are distinct, deterministic derived
 identifiers so an audit sink's duplicate-ID protection remains meaningful.
 
+**Grant-use ledger implementation convention (proposed).** This local reference
+canary needs a crash-safe, single-host reservation primitive before a later
+coordinator can install any route. The alternatives are:
+
+| Option | Correctness / operations | Decision |
+|---|---|---|
+| A — atomic JSON record plus advisory file lock | Can serialize a single file, but makes unique grant-ID and payload-digest constraints, append-only terminal history, and corruption detection easy to implement incorrectly | Rejected for this security-critical lifecycle |
+| B — standard-library SQLite ledger with explicit transactions | Enforces uniqueness and atomic reserve/terminal transitions across process restart without a new service or third-party dependency | Chosen for the single-host reference boundary |
+| C — external transaction service | Can support a future multi-host deployment, but introduces credentials, availability dependencies, and deployment scope that the controlled reference canary explicitly excludes | Deferred to a separate ADR for multi-host serving |
+
+`CanaryGrantUseStore` therefore uses a strict, schema-versioned local SQLite
+database in a pre-existing private directory. It enables foreign keys, uses an
+explicit `BEGIN IMMEDIATE` transaction for every state transition, SQLite
+rollback-journal mode, and `synchronous=FULL`. A reservation stores only the
+canonical `grant_id`, signed-payload SHA-256, and externally supplied RFC3339
+UTC timestamp. Both `grant_id` and signed-payload digest are unique: reuse of
+either is a fail-closed terminal refusal, including reuse under a different
+grant ID. No raw grant JSON, signature, vector, threshold, secret, or private
+key enters this ledger.
+
+The ledger has two immutable facts: a successful `RESERVED` reservation and at
+most one terminal event for it. The terminal event uses a deterministic
+lifecycle-record ID derived from the grant ID and terminal reason, is written
+in the same transaction as the reservation-state transition, and cannot be
+deleted, reset, or overwritten by the process. The first implementation may
+record only a supplied terminal reason; it neither installs nor removes a
+route. A later coordinator must reserve first, write the independent approval
+audit and activation marker, then publish the plan. On any audit/marker error,
+it must record `REFUSED_AUDIT_WRITE_FAILED` when possible, leave LKG-only
+routing, and never retry that grant. If the ledger is missing an expected
+schema, malformed/corrupt, unreadable, lock-contended beyond its bounded
+operation, or cannot durably commit, the caller receives an explicit store
+failure and must not install a candidate route. There is no runtime migration,
+automatic repair, or reset path.
+
+Focused tests must prove same-ID replay, same-payload/different-ID conflict,
+concurrent reservation linearization, terminal-event immutability, restart
+readback, corruption/schema failure, and audit-failure consumption. This is
+still an offline prerequisite; it does not authorize a candidate search,
+route installation, or live Milvus action.
+
 **Immutable route authority.** The future `CanaryRoutePlan` is constructed
 only from a verified eligible-workload manifest and candidate-selection record.
 It binds all 600 canonical occurrence IDs to their immutable DATASET-002 query
