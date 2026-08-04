@@ -73,14 +73,6 @@ _EXPECTED_SCHEMA_OBJECTS = frozenset(
         "execution_records_no_update",
     }
 )
-_RUN_FIELDS = frozenset(
-    {
-        "schema_version",
-        "run_id",
-        "schedule_sha256",
-        "genesis_record_sha256",
-    }
-)
 _RECORD_FIELDS = frozenset(
     {
         "schema_version",

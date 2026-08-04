@@ -400,10 +400,10 @@ Research references:
 
 ### ADR-003: Correct MMD permutation exchangeability, zero-variance exclusion, and confidence redundancy
 
-Status: Proposed — implementation review required before code changes
+Status: Accepted — corrected implementation and validation rerun verified
 Date: 2026-08-02
 Risk level: CRITICAL
-Evidence status: INFERRED design contract. Supersedes the MMD preprocessing convention, zero-variance handling, and decision_confidence gate defined in ADR-002. Does not change the KS signal, recall signal, Holm correction, effect-size gates, three-state output, consecutive-window rule, or actuation ladder.
+Evidence status: VERIFIED for the corrected implementation and its registered stationary/injection reruns at `8278711`; it does not by itself establish live-production drift detection. Supersedes the MMD preprocessing convention, zero-variance handling, and decision_confidence gate defined in ADR-002. Does not change the KS signal, recall signal, Holm correction, effect-size gates, three-state output, consecutive-window rule, or actuation ladder.
 
 Problem:
 
@@ -446,10 +446,10 @@ Research references:
 
 ### ADR-004: Carry immutable evidence provenance from shadow traces through policy and actuation
 
-Status: Accepted — implementation in progress
+Status: Accepted — implementation and EXP-005 provenance evidence verified
 Date: 2026-08-03
 Risk level: CRITICAL
-Evidence status: INFERRED design contract. This ADR closes an EXP-005 integration gap; it does not authorize live actuation.
+Evidence status: VERIFIED for the immutable provenance implementation and EXP-005 trace-to-policy evidence path; it does not authorize live actuation.
 
 Problem:
 
