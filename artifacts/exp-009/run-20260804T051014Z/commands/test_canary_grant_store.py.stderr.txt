@@ -1,0 +1,15 @@
+test_audit_failure_reason_consumes_grant_across_restart (test_canary_grant_store.CanaryGrantUseStoreTests.test_audit_failure_reason_consumes_grant_across_restart) ... ok
+test_concurrent_same_grant_reservation_is_linearized (test_canary_grant_store.CanaryGrantUseStoreTests.test_concurrent_same_grant_reservation_is_linearized) ... ok
+test_corrupt_or_schema_mismatched_store_fails_closed (test_canary_grant_store.CanaryGrantUseStoreTests.test_corrupt_or_schema_mismatched_store_fails_closed) ... ok
+test_lock_contention_is_bounded_and_fails_closed (test_canary_grant_store.CanaryGrantUseStoreTests.test_lock_contention_is_bounded_and_fails_closed) ... ok
+test_non_private_parent_directory_is_rejected_before_opening_store (test_canary_grant_store.CanaryGrantUseStoreTests.test_non_private_parent_directory_is_rejected_before_opening_store) ... ok
+test_reservation_survives_restart_and_loads_exactly (test_canary_grant_store.CanaryGrantUseStoreTests.test_reservation_survives_restart_and_loads_exactly) ... ok
+test_same_grant_replay_and_same_payload_conflict_fail_closed (test_canary_grant_store.CanaryGrantUseStoreTests.test_same_grant_replay_and_same_payload_conflict_fail_closed) ... ok
+test_tampered_stored_values_fail_closed_as_store_corruption (test_canary_grant_store.CanaryGrantUseStoreTests.test_tampered_stored_values_fail_closed_as_store_corruption) ... ok
+test_terminal_event_is_atomic_deterministic_and_immutable (test_canary_grant_store.CanaryGrantUseStoreTests.test_terminal_event_is_atomic_deterministic_and_immutable) ... ok
+test_terminal_requires_matching_reserved_payload_and_existing_grant (test_canary_grant_store.CanaryGrantUseStoreTests.test_terminal_requires_matching_reserved_payload_and_existing_grant) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.023s
+
+OK

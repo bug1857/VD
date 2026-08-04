@@ -1,0 +1,15 @@
+test_manifest_freezes_the_stage4_schedule_stability_control_contract (test_canary_workload.CanaryWorkloadTests.test_manifest_freezes_the_stage4_schedule_stability_control_contract)
+Stage 1 must bind the future no-interference diagnostic before selection. ... ok
+test_manifest_rejects_nonadjacent_ef_wrong_data_identity_and_existing_output (test_canary_workload.CanaryWorkloadTests.test_manifest_rejects_nonadjacent_ef_wrong_data_identity_and_existing_output) ... ok
+test_manifest_rejects_tampered_or_overlapping_schedule_controls (test_canary_workload.CanaryWorkloadTests.test_manifest_rejects_tampered_or_overlapping_schedule_controls) ... ok
+test_selection_fails_closed_on_manifest_substitution_or_tampered_record (test_canary_workload.CanaryWorkloadTests.test_selection_fails_closed_on_manifest_substitution_or_tampered_record) ... ok
+test_selection_is_csprng_draw_after_persisted_manifest_and_binds_exact_file_digest (test_canary_workload.CanaryWorkloadTests.test_selection_is_csprng_draw_after_persisted_manifest_and_binds_exact_file_digest) ... ok
+test_selection_refuses_unpersisted_manifest_and_non_increasing_timestamp (test_canary_workload.CanaryWorkloadTests.test_selection_refuses_unpersisted_manifest_and_non_increasing_timestamp) ... ok
+test_selection_rejects_unknown_fields_and_noncanonical_serialization (test_canary_workload.CanaryWorkloadTests.test_selection_rejects_unknown_fields_and_noncanonical_serialization) ... ok
+test_valid_manifest_is_canonical_600_unique_and_independently_verifiable (test_canary_workload.CanaryWorkloadTests.test_valid_manifest_is_canonical_600_unique_and_independently_verifiable) ... ok
+test_verifier_rejects_noncanonical_or_dataset_tampered_evidence (test_canary_workload.CanaryWorkloadTests.test_verifier_rejects_noncanonical_or_dataset_tampered_evidence) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 20.535s
+
+OK

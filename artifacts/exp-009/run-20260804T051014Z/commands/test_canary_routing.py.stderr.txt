@@ -1,0 +1,13 @@
+test_599_and_601_population_boundaries_fail_closed (test_canary_routing.CanaryRoutePlanTests.test_599_and_601_population_boundaries_fail_closed) ... ok
+test_59_and_61_candidate_boundaries_fail_closed (test_canary_routing.CanaryRoutePlanTests.test_59_and_61_candidate_boundaries_fail_closed) ... ok
+test_builds_exact_disjoint_60_candidate_540_lkg_partition (test_canary_routing.CanaryRoutePlanTests.test_builds_exact_disjoint_60_candidate_540_lkg_partition) ... ok
+test_forged_immutable_plan_reconstruction_fails_closed (test_canary_routing.CanaryRoutePlanTests.test_forged_immutable_plan_reconstruction_fails_closed) ... ok
+test_plan_digest_is_stable_and_binds_manifest_and_selection_digests (test_canary_routing.CanaryRoutePlanTests.test_plan_digest_is_stable_and_binds_manifest_and_selection_digests) ... ok
+test_selection_manifest_digest_mismatch_fails_closed (test_canary_routing.CanaryRoutePlanTests.test_selection_manifest_digest_mismatch_fails_closed) ... ok
+test_selection_outside_manifest_and_noncanonical_order_fail_closed (test_canary_routing.CanaryRoutePlanTests.test_selection_outside_manifest_and_noncanonical_order_fail_closed) ... ok
+test_unknown_or_noncanonical_occurrence_is_refused_without_a_route (test_canary_routing.CanaryRoutePlanTests.test_unknown_or_noncanonical_occurrence_is_refused_without_a_route) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 2.013s
+
+OK

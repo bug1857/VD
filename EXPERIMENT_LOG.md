@@ -1398,3 +1398,42 @@ EXP-009 is the mandatory statistical, approval, routing, and rollback gate for a
 - H1 is VERIFIED for the manifest/selection cardinality contract: 600 unique routing-vector bindings and 60 candidates (`0.10`). H2 is VERIFIED only for the declared analytic finite-manifest coverage calculation (`0.9610030335925056`) and pre-registered synthetic calibration behavior; it is not an IID or production-latency claim. The Stage-4 schedule-stability/no-interference diagnostic is now frozen in the v2 manifest, but remains unexecuted and therefore is not evidence of no interference.
 
 **Next gate:** Stage 2 must implement and deliberately test the signed approval, exact partition, refusal, and restart/expiry failback contracts before any candidate route exists.
+
+#### Stage 2 verification result — 2026-08-04
+
+**Stage status: VERIFIED (Stage 2 only).** The Stage-1 result above remains
+unchanged.  This result verifies the offline approval, partition, lifecycle,
+restart, expiry, and fail-closed routing contracts only.  EXP-009 remains in
+progress: Stage 3 rollback containment and Stage 4’s separately human-gated
+controlled live canary are not authorized by this evidence.
+
+- Implementation dependencies: signed-grant verifier `4d461ff`, immutable
+  route plan `2037396`, one-time grant ledger `197e464`, LKG-only marker
+  `25c3d18`, route authority `eed889c`, lifecycle audit `32b6cc4`, activation
+  coordinator `32c5896`, expiry failback `b922ba5`/`c34873e`, and committed
+  immutable evidence runner/public verifier `6a3afdd`/`84ba2ea`.
+- Immutable evidence bundle:
+  `artifacts/exp-009/run-20260804T051014Z/`, generated from clean commit
+  `84ba2ea239dfc23d249554812f4d16bb07723d18`.  Public verifier result:
+  `COMPLETE`; manifest SHA-256
+  `7673422ab1d9fad4760009b4ddeff3ec4948c54e2fe73a8d9f343b5f9235e3de`;
+  raw-result SHA-256
+  `fa2978d26a848553813e101e30da166c856dd7642d99bfe3ddf92e771027b68c`.
+- The sealed bundle captures 13 successful commands: clean-tree
+  `git diff --check`, all 10 focused Stage-2 suites, the full repository
+  suite (`448` tests, `102.555s`), and `pip check` (`No broken requirements
+  found`).  It hashes every source input, focused-suite source, command result,
+  raw stdout, and raw stderr, and its public verifier rejects missing,
+  incomplete, tampered, substituted, or symlinked evidence.
+- The focused suites deliberately cover the registered valid/missing/invalid,
+  expired, revoked, identity/workload/selection/audit mismatches; 59/60/61 and
+  599/600/601 boundaries; exact 60/540 partition; replay, duplicate, unknown,
+  restart, corruption, expiry, durable-write, and atomicity failures.  The
+  verifier itself imports no Milvus client, makes no query, and claims or
+  enables no candidate occurrence.  Every Stage-2 result is offline evidence,
+  not authorization for live traffic.
+
+**Next gate:** Stage 3 must implement and deliberately verify the full
+rollback-containment contract (hard/recall/latency triggers, restoration-audit
+failure, controller-disable state, and no-alternate-candidate failback) before
+any controlled live canary is considered.

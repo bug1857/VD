@@ -1,0 +1,7 @@
+test_append_restart_readback_and_deterministic_event_identity (test_canary_lifecycle_audit.CanaryLifecycleAuditTests.test_append_restart_readback_and_deterministic_event_identity) ... ok
+test_duplicate_event_and_corruption_fail_closed (test_canary_lifecycle_audit.CanaryLifecycleAuditTests.test_duplicate_event_and_corruption_fail_closed) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.002s
+
+OK

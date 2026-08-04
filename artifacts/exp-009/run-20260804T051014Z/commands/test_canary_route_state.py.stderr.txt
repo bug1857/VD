@@ -1,0 +1,11 @@
+test_activation_marker_is_strict_and_contains_no_candidate_route_data (test_canary_route_state.CanaryRouteStateStoreTests.test_activation_marker_is_strict_and_contains_no_candidate_route_data) ... ok
+test_identity_mismatch_and_malformed_marker_fail_back_without_candidate_state (test_canary_route_state.CanaryRouteStateStoreTests.test_identity_mismatch_and_malformed_marker_fail_back_without_candidate_state) ... ok
+test_missing_marker_and_failed_recovery_write_remain_lkg_only (test_canary_route_state.CanaryRouteStateStoreTests.test_missing_marker_and_failed_recovery_write_remain_lkg_only) ... ok
+test_module_has_no_routing_policy_or_milvus_import (test_canary_route_state.CanaryRouteStateStoreTests.test_module_has_no_routing_policy_or_milvus_import) ... ok
+test_restart_after_activation_always_persists_lkg_only_failback (test_canary_route_state.CanaryRouteStateStoreTests.test_restart_after_activation_always_persists_lkg_only_failback) ... ok
+test_symlink_marker_is_refused_and_recovery_never_follows_it (test_canary_route_state.CanaryRouteStateStoreTests.test_symlink_marker_is_refused_and_recovery_never_follows_it) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.011s
+
+OK

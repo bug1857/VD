@@ -1,0 +1,15 @@
+test_expired_and_revoked_grants_are_independently_refused (test_canary_approval.CanaryApprovalGrantTests.test_expired_and_revoked_grants_are_independently_refused) ... ok
+test_invalid_signature_is_refused_before_any_route_can_exist (test_canary_approval.CanaryApprovalGrantTests.test_invalid_signature_is_refused_before_any_route_can_exist) ... ok
+test_malformed_policy_gate_fails_closed_without_raising (test_canary_approval.CanaryApprovalGrantTests.test_malformed_policy_gate_fails_closed_without_raising) ... ok
+test_missing_grant_and_wrong_identity_fail_closed (test_canary_approval.CanaryApprovalGrantTests.test_missing_grant_and_wrong_identity_fail_closed) ... ok
+test_non_canary_policy_and_duplicate_json_fields_are_refused (test_canary_approval.CanaryApprovalGrantTests.test_non_canary_policy_and_duplicate_json_fields_are_refused) ... ok
+test_not_yet_valid_unknown_and_revoked_keys_are_independently_refused (test_canary_approval.CanaryApprovalGrantTests.test_not_yet_valid_unknown_and_revoked_keys_are_independently_refused) ... ok
+test_policy_digest_changes_when_a_nested_safety_gate_changes (test_canary_approval.CanaryApprovalGrantTests.test_policy_digest_changes_when_a_nested_safety_gate_changes) ... ok
+test_signed_grant_round_trips_through_its_strict_storage_document (test_canary_approval.CanaryApprovalGrantTests.test_signed_grant_round_trips_through_its_strict_storage_document) ... ok
+test_valid_signed_grant_is_approved_and_binds_every_required_input (test_canary_approval.CanaryApprovalGrantTests.test_valid_signed_grant_is_approved_and_binds_every_required_input) ... ok
+test_workload_and_selection_mismatches_are_refused_even_with_valid_signature (test_canary_approval.CanaryApprovalGrantTests.test_workload_and_selection_mismatches_are_refused_even_with_valid_signature) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.014s
+
+OK

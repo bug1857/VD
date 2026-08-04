@@ -1,0 +1,10 @@
+test_constants_match_the_preregistered_diagnostic_contract (test_canary_calibration.CanaryCalibrationTests.test_constants_match_the_preregistered_diagnostic_contract) ... ok
+test_finite_population_diagnostic_is_deterministic_and_matches_exact_target (test_canary_calibration.CanaryCalibrationTests.test_finite_population_diagnostic_is_deterministic_and_matches_exact_target) ... ok
+test_full_contract_groups_each_preregistered_diagnostic_without_rechoosing_estimator (test_canary_calibration.CanaryCalibrationTests.test_full_contract_groups_each_preregistered_diagnostic_without_rechoosing_estimator) ... ok
+test_invalid_replay_or_mean_inputs_fail_closed (test_canary_calibration.CanaryCalibrationTests.test_invalid_replay_or_mean_inputs_fail_closed) ... ok
+test_recall_diagnostic_uses_fixed_1200_value_hoeffding_contract (test_canary_calibration.CanaryCalibrationTests.test_recall_diagnostic_uses_fixed_1200_value_hoeffding_contract) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.015s
+
+OK
