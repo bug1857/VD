@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -22,7 +23,9 @@ from vdbench.artifacts import git_state, sha256_file
 
 
 __all__ = [
+    "LIVE_ROOT_VALIDATION_SPEC",
     "STAGE4_SUITE_FILENAMES",
+    "Stage4ValidationSpec",
     "Exp009Stage4ValidationError",
     "run_validation",
     "verify_validation_bundle",
@@ -54,6 +57,107 @@ _COMMAND_FIELDS = frozenset(
     {
         "command", "returncode", "passed", "stdout_file", "stdout_sha256", "stderr_file", "stderr_sha256"
     }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Stage4ValidationSpec:
+    """Immutable inventory/schema profile for one independently sealed run."""
+
+    focused_suite_filenames: tuple[str, ...]
+    source_filenames: tuple[str, ...]
+    manifest_schema_version: str
+    raw_schema_version: str
+    receipt_schema_version: str
+    execution_mode: str
+    offline_safety_assertion: tuple[tuple[str, bool], ...]
+
+    def __post_init__(self) -> None:
+        for values in (self.focused_suite_filenames, self.source_filenames):
+            if not values or len(values) != len(set(values)) or not all(
+                isinstance(value, str) and value for value in values
+            ):
+                raise ValueError("validation inventory must contain unique non-empty names")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                self.manifest_schema_version,
+                self.raw_schema_version,
+                self.receipt_schema_version,
+                self.execution_mode,
+            )
+        ):
+            raise ValueError("validation profile strings must be non-empty")
+        safety = dict(self.offline_safety_assertion)
+        if len(safety) != len(self.offline_safety_assertion) or not safety or not all(
+            isinstance(key, str) and key and value is False
+            for key, value in self.offline_safety_assertion
+        ):
+            raise ValueError("offline safety assertion must be unique false facts")
+
+    @property
+    def safety_assertion(self) -> dict[str, bool]:
+        """Return a fresh stable document for manifest/verification comparison."""
+
+        return dict(self.offline_safety_assertion)
+
+
+_OFFLINE_COMPOSITION_SPEC = Stage4ValidationSpec(
+    focused_suite_filenames=STAGE4_SUITE_FILENAMES,
+    source_filenames=_SOURCE_FILENAMES,
+    manifest_schema_version="exp009-stage4-manifest-v1",
+    raw_schema_version="exp009-stage4-raw-result-v1",
+    receipt_schema_version="exp009-stage4-execution-receipt-v1",
+    execution_mode="offline_composition",
+    offline_safety_assertion=(
+        ("constructs_milvus_client", False),
+        ("issues_search", False),
+        ("accepts_or_verifies_grant", False),
+        ("claims_or_enables_candidate_route", False),
+    ),
+)
+
+LIVE_ROOT_VALIDATION_SPEC = Stage4ValidationSpec(
+    focused_suite_filenames=(
+        "test_canary_admission.py",
+        "test_canary_schedule.py",
+        "test_canary_execution_ledger.py",
+        "test_canary_schedule_evaluation.py",
+        "test_canary_serial_runner.py",
+        "test_canary_live_runner.py",
+        "test_canary_route_authority.py",
+        "test_canary_activation.py",
+        "test_canary_rollback.py",
+        "test_exp009_stage4_validate.py",
+        "test_exp009_stage4_live_root_validate.py",
+    ),
+    source_filenames=(
+        "src/vdbench/canary_admission.py",
+        "src/vdbench/canary_activation.py",
+        "src/vdbench/canary_execution_ledger.py",
+        "src/vdbench/canary_live_runner.py",
+        "src/vdbench/canary_query_source.py",
+        "src/vdbench/canary_rollback.py",
+        "src/vdbench/canary_route_authority.py",
+        "src/vdbench/canary_route_state.py",
+        "src/vdbench/canary_schedule.py",
+        "src/vdbench/canary_schedule_evaluation.py",
+        "src/vdbench/canary_serial_runner.py",
+        "src/vdbench/canary_workload.py",
+        "experiments/exp009_stage4_validate.py",
+        "experiments/exp009_stage4_live_root_validate.py",
+    ),
+    manifest_schema_version="exp009-stage4-live-root-manifest-v1",
+    raw_schema_version="exp009-stage4-live-root-raw-result-v1",
+    receipt_schema_version="exp009-stage4-live-root-execution-receipt-v1",
+    execution_mode="offline_live_root_composition",
+    offline_safety_assertion=(
+        ("constructs_milvus_client", False),
+        ("issues_live_search", False),
+        ("accepts_or_verifies_real_grant", False),
+        ("claims_or_enables_real_candidate_route", False),
+        ("mutates_milvus_configuration", False),
+    ),
 )
 
 
@@ -144,10 +248,15 @@ def _record(
     return result
 
 
-def _source_hashes(repository: Path) -> tuple[dict[str, str], dict[str, str]]:
+def _source_hashes(
+    repository: Path, *, spec: Stage4ValidationSpec
+) -> tuple[dict[str, str], dict[str, str]]:
     return (
-        {name: sha256_file(repository / name) for name in _SOURCE_FILENAMES},
-        {name: sha256_file(repository / "tests" / name) for name in STAGE4_SUITE_FILENAMES},
+        {name: sha256_file(repository / name) for name in spec.source_filenames},
+        {
+            name: sha256_file(repository / "tests" / name)
+            for name in spec.focused_suite_filenames
+        },
     )
 
 
@@ -192,7 +301,12 @@ def _valid_command(value: object, *, root: Path) -> bool:
     return True
 
 
-def verify_validation_bundle(output_dir: Path, *, require_complete: bool = True) -> dict[str, object]:
+def verify_validation_bundle(
+    output_dir: Path,
+    *,
+    require_complete: bool = True,
+    spec: Stage4ValidationSpec = _OFFLINE_COMPOSITION_SPEC,
+) -> dict[str, object]:
     """Independently verify one closed Stage-4 offline evidence bundle."""
 
     declared = Path(output_dir)
@@ -218,27 +332,31 @@ def verify_validation_bundle(output_dir: Path, *, require_complete: bool = True)
     ):
         raise Exp009Stage4ValidationError("SELF_HASH_MISMATCH")
     commands, artifact_hashes = raw.get("commands"), manifest.get("artifact_sha256")
-    expected_names = {"git_diff_check", *STAGE4_SUITE_FILENAMES, _FULL_SUITE, _PIP_CHECK}
+    expected_names = {
+        "git_diff_check",
+        *spec.focused_suite_filenames,
+        _FULL_SUITE,
+        _PIP_CHECK,
+    }
     if not isinstance(commands, dict) or set(commands) != expected_names or not all(_valid_command(item, root=root) for item in commands.values()):
         raise Exp009Stage4ValidationError("COMMAND_INVENTORY_INVALID")
     if not isinstance(artifact_hashes, dict) or _inventory(root) != artifact_hashes:
         raise Exp009Stage4ValidationError("ARTIFACT_HASH_MISMATCH")
-    safety = {
-        "constructs_milvus_client": False, "issues_search": False,
-        "accepts_or_verifies_grant": False, "claims_or_enables_candidate_route": False,
-    }
+    safety = spec.safety_assertion
     input_hashes, suite_hashes = manifest.get("input_sha256"), manifest.get("suite_source_sha256")
     if not (
-        manifest.get("schema_version") == "exp009-stage4-manifest-v1"
-        and raw.get("schema_version") == "exp009-stage4-raw-result-v1"
-        and receipt.get("schema_version") == "exp009-stage4-execution-receipt-v1"
+        manifest.get("schema_version") == spec.manifest_schema_version
+        and raw.get("schema_version") == spec.raw_schema_version
+        and receipt.get("schema_version") == spec.receipt_schema_version
         and manifest.get("experiment_id") == raw.get("experiment_id") == "EXP-009"
         and manifest.get("stage") == raw.get("stage") == 4
-        and manifest.get("execution_mode") == raw.get("execution_mode") == "offline_composition"
+        and manifest.get("execution_mode") == raw.get("execution_mode") == spec.execution_mode
         and manifest.get("offline_safety_assertion") == safety
-        and manifest.get("focused_suite_filenames") == list(STAGE4_SUITE_FILENAMES)
-        and isinstance(input_hashes, dict) and set(input_hashes) == {"requirements.lock", *_SOURCE_FILENAMES}
-        and isinstance(suite_hashes, dict) and set(suite_hashes) == set(STAGE4_SUITE_FILENAMES)
+        and manifest.get("focused_suite_filenames") == list(spec.focused_suite_filenames)
+        and isinstance(input_hashes, dict)
+        and set(input_hashes) == {"requirements.lock", *spec.source_filenames}
+        and isinstance(suite_hashes, dict)
+        and set(suite_hashes) == set(spec.focused_suite_filenames)
         and all(_is_hash(value) for value in input_hashes.values())
         and all(_is_hash(value) for value in suite_hashes.values())
         and _is_hash(receipt.get("git_commit"), length=40)
@@ -260,7 +378,9 @@ def verify_validation_bundle(output_dir: Path, *, require_complete: bool = True)
 
 def run_validation(
     *, output_dir: Path, repository: Path | None = None,
-    git_state_provider: GitStateProvider = git_state, suite_runner: SuiteRunner = _run,
+    git_state_provider: GitStateProvider = git_state,
+    suite_runner: SuiteRunner = _run,
+    spec: Stage4ValidationSpec = _OFFLINE_COMPOSITION_SPEC,
 ) -> dict[str, object]:
     """Create a sealed Stage-4 composition evidence bundle from a clean revision."""
 
@@ -274,7 +394,7 @@ def run_validation(
     commit = state.get("commit")
     if not _is_hash(commit, length=40):
         raise Exp009Stage4ValidationError("GIT_COMMIT_INVALID")
-    source_hashes, suite_hashes = _source_hashes(repository_path)
+    source_hashes, suite_hashes = _source_hashes(repository_path, spec=spec)
     lock = repository_path / "requirements.lock"
     if not lock.is_file():
         raise Exp009Stage4ValidationError("REQUIREMENTS_LOCK_MISSING")
@@ -283,7 +403,7 @@ def run_validation(
     commands: dict[str, dict[str, object]] = {
         "git_diff_check": _record(output=output, name="git_diff_check", command=("git", "diff", "--check"), repository=repository_path, runner=suite_runner)
     }
-    for filename in STAGE4_SUITE_FILENAMES:
+    for filename in spec.focused_suite_filenames:
         commands[filename] = _record(
             output=output, name=filename,
             command=(sys.executable, "-m", "unittest", "discover", "tests", "-p", filename, "-v"),
@@ -300,30 +420,27 @@ def run_validation(
     failed = [name for name, result in commands.items() if result["passed"] is not True]
     status = "COMPLETE" if not failed else "INCOMPLETE"
     raw: dict[str, object] = {
-        "schema_version": "exp009-stage4-raw-result-v1", "experiment_id": "EXP-009", "stage": 4,
-        "execution_mode": "offline_composition", "status": status, "git_commit": commit,
+        "schema_version": spec.raw_schema_version, "experiment_id": "EXP-009", "stage": 4,
+        "execution_mode": spec.execution_mode, "status": status, "git_commit": commit,
         "failed_commands": failed, "commands": commands, "live_database_or_routing_activity": False,
     }
     raw["self_sha256"] = _digest(raw)
     _write_json(output / "raw_result.json", raw)
     manifest: dict[str, object] = {
-        "schema_version": "exp009-stage4-manifest-v1", "experiment_id": "EXP-009", "stage": 4,
-        "validation_status": status, "execution_mode": "offline_composition",
+        "schema_version": spec.manifest_schema_version, "experiment_id": "EXP-009", "stage": 4,
+        "validation_status": status, "execution_mode": spec.execution_mode,
         "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "git": {"commit": commit, "dirty": False}, "python": sys.version,
         "platform": platform.platform(), "architecture": platform.machine(),
         "input_sha256": {"requirements.lock": sha256_file(lock), **source_hashes},
-        "suite_source_sha256": suite_hashes, "focused_suite_filenames": list(STAGE4_SUITE_FILENAMES),
+        "suite_source_sha256": suite_hashes, "focused_suite_filenames": list(spec.focused_suite_filenames),
         "required_full_suite": _FULL_SUITE, "artifact_sha256": _inventory(output),
-        "offline_safety_assertion": {
-            "constructs_milvus_client": False, "issues_search": False,
-            "accepts_or_verifies_grant": False, "claims_or_enables_candidate_route": False,
-        },
+        "offline_safety_assertion": spec.safety_assertion,
     }
     manifest["self_sha256"] = _digest(manifest)
     _write_json(output / "manifest.json", manifest)
     receipt = {
-        "schema_version": "exp009-stage4-execution-receipt-v1", "validation_status": status,
+        "schema_version": spec.receipt_schema_version, "validation_status": status,
         "git_commit": commit, "manifest_sha256": manifest["self_sha256"],
         "raw_result_sha256": raw["self_sha256"], "command_count": len(commands), "failed_commands": failed,
     }
@@ -331,7 +448,7 @@ def run_validation(
     _write_json(output / "execution_receipt.json", receipt)
     if status != "COMPLETE":
         raise Exp009Stage4ValidationError("SUITE_FAILURE:" + ",".join(failed))
-    verify_validation_bundle(output)
+    verify_validation_bundle(output, spec=spec)
     return raw
 
 
