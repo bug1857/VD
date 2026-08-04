@@ -993,6 +993,128 @@ Modules affected:
 
 Future approval-grant verifier, canary coordinator/routing-plan boundary, host-serving adapter injection point, confidence-bound estimator, actuation workload/selector, audit persistence, focused tests, and EXP-009 artifacts. `drift.py` remains a detector; `policy.py` remains pure; no module may duplicate their decisions. Existing `SafeActuationBoundary` and `MilvusActuationClient` may be composed only through their public contracts after the workload/statistical interfaces are revised.
 
+#### EXP-009 Stage 2 implementation contract (proposed)
+
+Stage 2 is a Core, offline-only security and routing boundary. It does not
+construct a Milvus client, issue a search, mutate an index, or activate a
+candidate route. Its purpose is to make every future candidate route depend on
+one exact, independently verifiable human approval and an immutable route
+partition. ADR-008 remains **Proposed** until the Stage 2 implementation and
+the complete EXP-009 evidence have been reviewed.
+
+Security options considered:
+
+| Option | Correctness and security | Operational complexity | Scope and decision |
+|---|---|---|---|
+| A — shared-secret HMAC grant | A process able to verify can also mint grants; it cannot represent an externally held operator approval key | Low | Rejected: violates the approval separation required by this ADR |
+| B — Ed25519 detached signature over a versioned canonical payload | Public-key verification is local, deterministic, and separates the external signing key from the verifier | Moderate, one audited dependency | Chosen |
+| C — generic JWT/JWS framework | Can represent the same property, but adds claims/algorithm negotiation and token-processing scope not required by this single-process reference canary | Higher | Rejected for Stage 2; may be revisited only for a future external host deployment |
+
+The implementation will add the pinned `cryptography==49.0.0` dependency and
+use only its Ed25519 public-key verification API. It will not implement
+cryptography itself. The pinned package supports this project's Python 3.14
+runtime; its version, wheel/source hashes, and lockfile will be captured before
+any Stage-4 use. Private keys, signing commands, raw signing entropy, and key
+material are prohibited from the repository, test fixtures, and EXP artifacts.
+
+**Canonical approval binding.** `CanaryApprovalGrant` is a strict
+`canary-approval-grant-v1` record with exactly these unsigned fields:
+
+- `grant_id`, `key_id`, `issued_at_utc`, `expires_at_utc`, and
+  `experiment_id` (`EXP-009` only);
+- `policy_decision_sha256` and the unchanged policy `audit_id`;
+- `metric`, `threshold_stratum`, `current_ef`, `candidate_ef`, and
+  `last_known_good_ef`;
+- `configuration_identity`, `data_identity`, `flat_binding_id`, and
+  `hnsw_binding_id`;
+- `eligible_workload_sha256`, `candidate_selection_sha256`,
+  `routing_population_count` (`600`), `candidate_count` (`60`), and
+  `maximum_fraction` (`0.10`); and
+- `rollback_pre_authorized` (`true`).
+
+The signed message is exactly
+`b"vdbench.canary-approval/v1\\0" + canonical_utf8_json(unsigned_fields)`,
+where canonical JSON uses NFC-normalized strings, UTF-8, sorted keys, compact
+separators, a terminal newline, lower-case SHA-256 values, no duplicate keys,
+and rejection of unsupported or non-finite values. Finite floating-point values
+are represented in the signed projection only as their exact IEEE-754 binary64
+`float.hex()` strings, so a signing tool receives one unambiguous byte sequence
+rather than relying on a language-specific JSON decimal formatter. The
+persisted envelope adds
+only `signature_algorithm: "Ed25519"` and an unpadded base64url detached
+signature. `policy_decision_sha256` is computed from an exact, schema-versioned
+projection of **every** `PolicyDecision` field, including all safety-gate
+results and full evidence provenance; no caller may provide that digest. A new
+field in `PolicyDecision` therefore requires a deliberate projection/schema
+update and a failing compatibility test rather than silently being unsigned.
+
+An injected `CanaryApprovalTrustStore` maps canonical `key_id` values to
+Ed25519 public keys and independently answers whether a key or grant is
+revoked. Verification rejects absent, malformed, non-canonical, unsupported
+algorithm, invalid-signature, not-yet-valid, expired, revoked, wrong-EXP,
+wrong-decision, wrong-audit-ID, wrong transition, wrong identity, wrong
+workload, wrong selection record, wrong `60/600/0.10` contract, or missing
+rollback pre-authorization with a stable non-sensitive refusal code. A valid
+signature alone never installs a route.
+
+**One-time and audit lifecycle.** Before route installation, a strict durable
+`CanaryGrantUseStore` reserves the exact `grant_id` and signed-payload digest.
+It is append-only for terminal states and refuses any duplicate or conflicting
+use. The coordinator then persists an append-only approval/action audit record
+and an activation marker before publishing a candidate plan. If either durable
+write fails, the coordinator records `REFUSED_AUDIT_WRITE_FAILED` in the grant
+ledger where possible, never installs a plan, and permanently consumes that
+grant rather than allowing a potentially ambiguous retry. The policy audit ID
+is a binding input; lifecycle record IDs are distinct, deterministic derived
+identifiers so an audit sink's duplicate-ID protection remains meaningful.
+
+**Immutable route authority.** The future `CanaryRoutePlan` is constructed
+only from a verified eligible-workload manifest and candidate-selection record.
+It binds all 600 canonical occurrence IDs to their immutable DATASET-002 query
+IDs and route parameters, stores exactly 60 candidate occurrence IDs in a
+frozen membership set, and derives a plan digest from its canonical document.
+`resolve(occurrence_id)` is the sole foreground operation: it reads the current
+immutable plan once, performs one occurrence-ID lookup and a bounded in-memory
+one-shot claim, and returns the bound DATASET-002 query ID plus either candidate
+`ef` or LKG `ef`. Claims are cleared only with the immutable plan and reject a
+repeated occurrence before dispatch, making the exact 600-call contract
+enforceable rather than merely auditable. The operation performs no filesystem
+I/O, signature verification, health check, policy call, audit write, network
+call, retry, allocation proportional to the workload, or Milvus call. An
+unknown, duplicate, non-canonical, or out-of-manifest occurrence is refused
+before any search dispatch. No module in `policy.py`,
+`MilvusActuationClient`, or the background shadow worker may choose an alternate
+`ef`.
+
+The first reference integration is deliberately serial (`concurrency=1`, as
+already frozen for EXP-009 Stage 4). Install and removal replace the complete
+immutable snapshot, never mutate its membership collection in place. A future
+multi-threaded or multi-host serving deployment requires a separate ADR and
+linearizable routing implementation; it is not implied by Stage 2 evidence.
+
+**Recovery and failback.** The route plan itself is memory-only and is never
+reconstructed after a process restart. A strict atomic route-state marker holds
+only non-sensitive LKG identity, LKG `ef`, grant ID, and plan digest. On every
+startup, a marker indicating an interrupted candidate activation is atomically
+transitioned to `LKG_ONLY`, audited as `RECOVERY_FAILBACK`, and yields no
+candidate plan. Expiry, identity mismatch, malformed/corrupt state, failed
+pre-action validation, or an explicit removal take the same failback path.
+The Stage 3 rollback coordinator will add restoration-audit execution; Stage 2
+only establishes the prerequisite that it can clear the only routing authority.
+
+**Stage-2 test and evidence gate.** TDD tests must first prove each refusal
+leaves the authority in LKG-only state and makes zero candidate dispatch calls:
+missing, invalid-signature, expired, revoked, decision/audit/transition/identity
+mismatch, workload/selection mismatch, invalid selection provenance, replay,
+and audit-write failure. They must independently test 59/60/61 candidate and
+599/600/601 population boundaries, exact disjoint 60/540 partition, duplicate
+occurrence IDs, unknown occurrence rejection, plan install/remove atomicity,
+and restart/expiry/corruption failback. The focused and full suites, strict
+canonical serialization tests, `git diff --check`, package-lock/hash evidence,
+and an offline verifier bundle are required before marking Stage 2 verified.
+No result from those tests authorizes Stage 3, Stage 4, or a live candidate
+query without their separately required evidence.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
