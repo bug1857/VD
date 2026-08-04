@@ -36,10 +36,21 @@ from .config import ContractViolation, HNSW_EF_SWEEP, Metric, RESULT_LIMIT, THRE
 from .dataset002 import verify_dataset002_artifacts
 
 
-ELIGIBLE_WORKLOAD_SCHEMA_VERSION = "exp009-eligible-workload-manifest-v1"
+ELIGIBLE_WORKLOAD_SCHEMA_VERSION = "exp009-eligible-workload-manifest-v2"
 CANDIDATE_SELECTION_SCHEMA_VERSION = "exp009-candidate-selection-record-v1"
+SCHEDULE_STABILITY_SCHEMA_VERSION = "exp009-schedule-stability-v1"
 VECTOR_MAPPING_ONE_TO_ONE = "one_to_one_unique_dataset002_routing_vectors"
 SYSTEM_RANDOM_SOURCE = "python.secrets.SystemRandom.sample"
+SCHEDULE_CONTROL_ROLE = "recall_audit"
+SCHEDULE_CONTROL_COUNT = 50
+SCHEDULE_PRE_SWEEP_COUNT = 3
+SCHEDULE_ROUTING_BLOCK_SIZE = 100
+SCHEDULE_INTERLEAVED_SWEEP_COUNT = 6
+SCHEDULE_POST_SWEEP_COUNT = 3
+SCHEDULE_EXECUTION_MODE = "synchronous_serial_manifest_order"
+SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING = 10.0
+SCHEDULE_P95_RELATIVE_CEILING = 1.50
+SCHEDULE_MEDIAN_RELATIVE_CEILING = 1.25
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _OCCURRENCE_RE = re.compile(r"exp009-routing-([0-9]{6})\Z")
 _UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z")
@@ -210,6 +221,137 @@ class EligibleOccurrence:
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduleControl:
+    """One vector binding for the pre-registered LKG-only control sweeps.
+
+    It carries no raw vector.  The ID and digest are rebuilt from DATASET-002
+    before any Stage-4 run can use the schedule contract.
+    """
+
+    query_id: int
+    vector_sha256: str
+
+    def validate(self) -> None:
+        _integer(self.query_id, field="schedule control query_id", minimum=0)
+        _sha256(self.vector_sha256, field="schedule control vector_sha256")
+
+    def to_document(self) -> dict[str, object]:
+        self.validate()
+        return {"query_id": self.query_id, "vector_sha256": self.vector_sha256}
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleStabilityContract:
+    """Immutable falsification protocol for the Stage-4 SUTVA diagnostic.
+
+    The contract deliberately defines observable environment-stability checks;
+    it does not claim that passing them proves a no-interference assumption.
+    """
+
+    schema_version: str
+    control_role: str
+    control_ef: int
+    controls: tuple[ScheduleControl, ...]
+    pre_sweep_count: int
+    routing_block_size: int
+    interleaved_sweep_count: int
+    post_sweep_count: int
+    execution_mode: str
+    absolute_p95_latency_ms_ceiling: float
+    p95_relative_ceiling: float
+    median_relative_ceiling: float
+    require_all_success: bool
+    require_identity_and_health_per_sweep: bool
+
+    @property
+    def control_query_ids(self) -> tuple[int, ...]:
+        return tuple(control.query_id for control in self.controls)
+
+    @property
+    def control_vector_sha256(self) -> tuple[str, ...]:
+        return tuple(control.vector_sha256 for control in self.controls)
+
+    def validate(self) -> None:
+        if self.schema_version != SCHEDULE_STABILITY_SCHEMA_VERSION:
+            raise ContractViolation("schedule stability schema version is invalid")
+        if self.control_role != SCHEDULE_CONTROL_ROLE:
+            raise ContractViolation("schedule stability control role is invalid")
+        if _integer(self.control_ef, field="schedule stability control_ef", minimum=1) not in _ACTUATION_LADDER:
+            raise ContractViolation("schedule stability control_ef is not on the actuation ladder")
+        if len(self.controls) != SCHEDULE_CONTROL_COUNT:
+            raise ContractViolation("schedule stability controls must contain exactly 50 entries")
+        expected_ids = tuple(
+            range(
+                EXP009_ROUTING_POPULATION_COUNT,
+                EXP009_ROUTING_POPULATION_COUNT + SCHEDULE_CONTROL_COUNT,
+            )
+        )
+        if self.control_query_ids != expected_ids:
+            raise ContractViolation("schedule stability controls must use frozen recall-audit IDs")
+        if len(set(self.control_vector_sha256)) != SCHEDULE_CONTROL_COUNT:
+            raise ContractViolation("schedule stability controls must bind unique vectors")
+        for control in self.controls:
+            control.validate()
+        if self.pre_sweep_count != SCHEDULE_PRE_SWEEP_COUNT:
+            raise ContractViolation("schedule stability pre-sweep count is invalid")
+        if self.routing_block_size != SCHEDULE_ROUTING_BLOCK_SIZE:
+            raise ContractViolation("schedule stability routing block size is invalid")
+        if self.interleaved_sweep_count != SCHEDULE_INTERLEAVED_SWEEP_COUNT:
+            raise ContractViolation("schedule stability interleaved sweep count is invalid")
+        if self.post_sweep_count != SCHEDULE_POST_SWEEP_COUNT:
+            raise ContractViolation("schedule stability post-sweep count is invalid")
+        if self.execution_mode != SCHEDULE_EXECUTION_MODE:
+            raise ContractViolation("schedule stability execution mode is invalid")
+        if (
+            _finite_float(
+                self.absolute_p95_latency_ms_ceiling,
+                field="schedule stability absolute_p95_latency_ms_ceiling",
+            )
+            != SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING
+        ):
+            raise ContractViolation("schedule stability absolute p95 ceiling is invalid")
+        if (
+            _finite_float(
+                self.p95_relative_ceiling,
+                field="schedule stability p95_relative_ceiling",
+            )
+            != SCHEDULE_P95_RELATIVE_CEILING
+        ):
+            raise ContractViolation("schedule stability relative p95 ceiling is invalid")
+        if (
+            _finite_float(
+                self.median_relative_ceiling,
+                field="schedule stability median_relative_ceiling",
+            )
+            != SCHEDULE_MEDIAN_RELATIVE_CEILING
+        ):
+            raise ContractViolation("schedule stability relative median ceiling is invalid")
+        if self.require_all_success is not True:
+            raise ContractViolation("schedule stability must require all control responses")
+        if self.require_identity_and_health_per_sweep is not True:
+            raise ContractViolation("schedule stability must require identity and health per sweep")
+
+    def to_document(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "schema_version": self.schema_version,
+            "control_role": self.control_role,
+            "control_ef": self.control_ef,
+            "controls": [control.to_document() for control in self.controls],
+            "pre_sweep_count": self.pre_sweep_count,
+            "routing_block_size": self.routing_block_size,
+            "interleaved_sweep_count": self.interleaved_sweep_count,
+            "post_sweep_count": self.post_sweep_count,
+            "execution_mode": self.execution_mode,
+            "absolute_p95_latency_ms_ceiling": self.absolute_p95_latency_ms_ceiling,
+            "p95_relative_ceiling": self.p95_relative_ceiling,
+            "median_relative_ceiling": self.median_relative_ceiling,
+            "require_all_success": self.require_all_success,
+            "require_identity_and_health_per_sweep": self.require_identity_and_health_per_sweep,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class EligibleWorkloadManifest:
     """Canonical, immutable input population for one EXP-009 transition."""
 
@@ -226,6 +368,7 @@ class EligibleWorkloadManifest:
     limit: int
     identity: WorkloadIdentityBinding
     vector_mapping: str
+    schedule_stability: ScheduleStabilityContract
     occurrences: tuple[EligibleOccurrence, ...]
 
     def validate(self) -> None:
@@ -257,6 +400,11 @@ class EligibleWorkloadManifest:
         self.identity.validate()
         if self.vector_mapping != VECTOR_MAPPING_ONE_TO_ONE:
             raise ContractViolation("eligible workload vector mapping declaration is invalid")
+        if not isinstance(self.schedule_stability, ScheduleStabilityContract):
+            raise ContractViolation("eligible workload schedule stability contract is invalid")
+        self.schedule_stability.validate()
+        if self.schedule_stability.control_ef != self.last_known_good_ef:
+            raise ContractViolation("schedule stability control_ef must equal last-known-good ef")
         if len(self.occurrences) != EXP009_ROUTING_POPULATION_COUNT:
             raise ContractViolation("eligible workload must contain exactly 600 occurrences")
         ids: set[str] = set()
@@ -275,6 +423,8 @@ class EligibleWorkloadManifest:
                 raise ContractViolation("eligible workload occurrence search binding is invalid")
             ids.add(occurrence.occurrence_id)
             vector_hashes.add(occurrence.vector_sha256)
+        if set(self.schedule_stability.control_vector_sha256) & vector_hashes:
+            raise ContractViolation("schedule stability controls must be disjoint from routing vectors")
 
     def to_document(self) -> dict[str, object]:
         self.validate()
@@ -296,6 +446,7 @@ class EligibleWorkloadManifest:
             },
             "identity": self.identity.to_document(),
             "vector_mapping": self.vector_mapping,
+            "schedule_stability": self.schedule_stability.to_document(),
             "occurrences": [entry.to_document() for entry in self.occurrences],
         }
 
@@ -398,6 +549,88 @@ def _occurrence_from_document(value: object) -> EligibleOccurrence:
     )
 
 
+def _schedule_stability_from_document(value: object) -> ScheduleStabilityContract:
+    payload = _exact_mapping(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "control_role",
+                "control_ef",
+                "controls",
+                "pre_sweep_count",
+                "routing_block_size",
+                "interleaved_sweep_count",
+                "post_sweep_count",
+                "execution_mode",
+                "absolute_p95_latency_ms_ceiling",
+                "p95_relative_ceiling",
+                "median_relative_ceiling",
+                "require_all_success",
+                "require_identity_and_health_per_sweep",
+            }
+        ),
+        field="schedule stability contract",
+    )
+    controls = payload["controls"]
+    if not isinstance(controls, list):
+        raise ContractViolation("schedule stability controls must be an array")
+    parsed_controls: list[ScheduleControl] = []
+    for item in controls:
+        control = _exact_mapping(
+            item,
+            frozenset({"query_id", "vector_sha256"}),
+            field="schedule stability control",
+        )
+        parsed_controls.append(
+            ScheduleControl(
+                query_id=_integer(control["query_id"], field="schedule control query_id", minimum=0),
+                vector_sha256=_sha256(
+                    control["vector_sha256"], field="schedule control vector_sha256"
+                ),
+            )
+        )
+    contract = ScheduleStabilityContract(
+        schema_version=_text(payload["schema_version"], field="schedule stability schema_version"),
+        control_role=_text(payload["control_role"], field="schedule stability control_role"),
+        control_ef=_integer(payload["control_ef"], field="schedule stability control_ef", minimum=1),
+        controls=tuple(parsed_controls),
+        pre_sweep_count=_integer(
+            payload["pre_sweep_count"], field="schedule stability pre_sweep_count", minimum=1
+        ),
+        routing_block_size=_integer(
+            payload["routing_block_size"],
+            field="schedule stability routing_block_size",
+            minimum=1,
+        ),
+        interleaved_sweep_count=_integer(
+            payload["interleaved_sweep_count"],
+            field="schedule stability interleaved_sweep_count",
+            minimum=1,
+        ),
+        post_sweep_count=_integer(
+            payload["post_sweep_count"], field="schedule stability post_sweep_count", minimum=1
+        ),
+        execution_mode=_text(payload["execution_mode"], field="schedule stability execution_mode"),
+        absolute_p95_latency_ms_ceiling=_finite_float(
+            payload["absolute_p95_latency_ms_ceiling"],
+            field="schedule stability absolute_p95_latency_ms_ceiling",
+        ),
+        p95_relative_ceiling=_finite_float(
+            payload["p95_relative_ceiling"], field="schedule stability p95_relative_ceiling"
+        ),
+        median_relative_ceiling=_finite_float(
+            payload["median_relative_ceiling"], field="schedule stability median_relative_ceiling"
+        ),
+        require_all_success=payload["require_all_success"],
+        require_identity_and_health_per_sweep=payload[
+            "require_identity_and_health_per_sweep"
+        ],
+    )
+    contract.validate()
+    return contract
+
+
 def _manifest_from_document(document: Mapping[str, object]) -> EligibleWorkloadManifest:
     root = _exact_mapping(
         document,
@@ -409,6 +642,7 @@ def _manifest_from_document(document: Mapping[str, object]) -> EligibleWorkloadM
                 "search",
                 "identity",
                 "vector_mapping",
+                "schedule_stability",
                 "occurrences",
             }
         ),
@@ -468,6 +702,7 @@ def _manifest_from_document(document: Mapping[str, object]) -> EligibleWorkloadM
             hnsw_binding_id=_text(identity["hnsw_binding_id"], field="hnsw_binding_id"),
         ),
         vector_mapping=_text(root["vector_mapping"], field="eligible workload vector_mapping"),
+        schedule_stability=_schedule_stability_from_document(root["schedule_stability"]),
         occurrences=tuple(_occurrence_from_document(item) for item in occurrences),
     )
     manifest.validate()
@@ -548,6 +783,63 @@ def _routing_oracle_contract(
     return next(iter(values))
 
 
+def _schedule_stability_contract(
+    *, dataset002_dir: Path, last_known_good_ef: int
+) -> ScheduleStabilityContract:
+    """Bind the frozen Stage-4 LKG controls without exposing query vectors."""
+
+    try:
+        ids = np.load(dataset002_dir / "recall_audit_ids.npy", allow_pickle=False)
+        vectors = np.load(dataset002_dir / "recall_audit_queries.npy", allow_pickle=False)
+    except (OSError, ValueError) as exc:
+        raise ContractViolation("DATASET-002 schedule-control arrays are unreadable") from exc
+    expected_ids = np.arange(
+        EXP009_ROUTING_POPULATION_COUNT,
+        EXP009_ROUTING_POPULATION_COUNT + SCHEDULE_CONTROL_COUNT,
+        dtype=np.int64,
+    )
+    if (
+        ids.ndim != 1
+        or vectors.ndim != 2
+        or ids.shape[0] < SCHEDULE_CONTROL_COUNT
+        or vectors.shape[0] < SCHEDULE_CONTROL_COUNT
+        or ids.dtype.str != "<i8"
+        or vectors.dtype.str != "<f4"
+        or not np.array_equal(ids[:SCHEDULE_CONTROL_COUNT], expected_ids)
+        or not np.all(np.isfinite(vectors[:SCHEDULE_CONTROL_COUNT]))
+    ):
+        raise ContractViolation("DATASET-002 schedule-control arrays violate the frozen contract")
+    controls = tuple(
+        ScheduleControl(
+            query_id=int(query_id),
+            vector_sha256=hashlib.sha256(
+                np.ascontiguousarray(vector, dtype="<f4").tobytes(order="C")
+            ).hexdigest(),
+        )
+        for query_id, vector in zip(
+            ids[:SCHEDULE_CONTROL_COUNT], vectors[:SCHEDULE_CONTROL_COUNT], strict=True
+        )
+    )
+    result = ScheduleStabilityContract(
+        schema_version=SCHEDULE_STABILITY_SCHEMA_VERSION,
+        control_role=SCHEDULE_CONTROL_ROLE,
+        control_ef=last_known_good_ef,
+        controls=controls,
+        pre_sweep_count=SCHEDULE_PRE_SWEEP_COUNT,
+        routing_block_size=SCHEDULE_ROUTING_BLOCK_SIZE,
+        interleaved_sweep_count=SCHEDULE_INTERLEAVED_SWEEP_COUNT,
+        post_sweep_count=SCHEDULE_POST_SWEEP_COUNT,
+        execution_mode=SCHEDULE_EXECUTION_MODE,
+        absolute_p95_latency_ms_ceiling=SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
+        p95_relative_ceiling=SCHEDULE_P95_RELATIVE_CEILING,
+        median_relative_ceiling=SCHEDULE_MEDIAN_RELATIVE_CEILING,
+        require_all_success=True,
+        require_identity_and_health_per_sweep=True,
+    )
+    result.validate()
+    return result
+
+
 def build_eligible_workload_manifest(
     *,
     dataset002_dir: str | os.PathLike[str],
@@ -602,6 +894,10 @@ def build_eligible_workload_manifest(
     )
     if limit != RESULT_LIMIT:
         raise ContractViolation("DATASET-002 routing oracle limit is incompatible")
+    schedule_stability = _schedule_stability_contract(
+        dataset002_dir=dataset002_path,
+        last_known_good_ef=lkg,
+    )
     occurrences: list[EligibleOccurrence] = []
     for sequence_index, (query_id, vector) in enumerate(zip(ids, vectors, strict=True)):
         integer_id = int(query_id)
@@ -638,6 +934,7 @@ def build_eligible_workload_manifest(
         limit=limit,
         identity=identity,
         vector_mapping=VECTOR_MAPPING_ONE_TO_ONE,
+        schedule_stability=schedule_stability,
         occurrences=tuple(occurrences),
     )
     result.validate()
@@ -825,9 +1122,12 @@ def verify_candidate_selection_record(
 __all__ = [
     "CANDIDATE_SELECTION_SCHEMA_VERSION",
     "ELIGIBLE_WORKLOAD_SCHEMA_VERSION",
+    "SCHEDULE_STABILITY_SCHEMA_VERSION",
     "CandidateSelectionRecord",
     "EligibleOccurrence",
     "EligibleWorkloadManifest",
+    "ScheduleControl",
+    "ScheduleStabilityContract",
     "WorkloadIdentityBinding",
     "build_eligible_workload_manifest",
     "create_candidate_selection_record",

@@ -20,6 +20,7 @@ from vdbench.exp009_stage1 import (
     _load_canonical_json,
     assert_clean_committed_source,
     run_stage1,
+    verify_stage1_bundle,
 )
 from vdbench.milvus import CollectionIdentity
 
@@ -141,6 +142,40 @@ class Exp009Stage1Tests(unittest.TestCase):
             self.assertEqual(
                 completion["run_manifest_sha256"], sha256_file(result.manifest_path)
             )
+            self.assertEqual(
+                verify_stage1_bundle(
+                    output_dir=target,
+                    dataset001_dir=self.dataset001,
+                    dataset002_dir=self.dataset002,
+                    baseline_path=self.baseline_path,
+                ),
+                result,
+            )
+
+    def test_public_verifier_rejects_a_tampered_published_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "stage1"
+            with patch(
+                "vdbench.exp009_stage1.assert_clean_committed_source",
+                return_value="a" * 40,
+            ):
+                run_stage1(
+                    repository=Path.cwd(),
+                    dataset001_dir=self.dataset001,
+                    dataset002_dir=self.dataset002,
+                    baseline_path=self.baseline_path,
+                    output_dir=target,
+                    clock=lambda: "2026-08-04T12:00:00Z",
+                )
+            calibration_path = target / "calibration.json"
+            calibration_path.write_bytes(calibration_path.read_bytes() + b"\n")
+            with self.assertRaisesRegex(Exp009Stage1Error, "CALIBRATION_ARTIFACT_INVALID"):
+                verify_stage1_bundle(
+                    output_dir=target,
+                    dataset001_dir=self.dataset001,
+                    dataset002_dir=self.dataset002,
+                    baseline_path=self.baseline_path,
+                )
 
     def test_runner_rejects_a_reviewed_baseline_for_any_other_transition(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

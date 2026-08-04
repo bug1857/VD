@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 
 from vdbench.artifacts import sha256_file, write_dataset_artifacts
 from vdbench.canary_workload import (
@@ -133,6 +136,65 @@ class CanaryWorkloadTests(unittest.TestCase):
             self.assertEqual(loaded.vector_mapping, "one_to_one_unique_dataset002_routing_vectors")
             self.assertEqual(loaded.radius, loaded.occurrences[0].threshold_radius)
             self.assertEqual(loaded.limit, 100)
+
+    def test_manifest_freezes_the_stage4_schedule_stability_control_contract(self) -> None:
+        """Stage 1 must bind the future no-interference diagnostic before selection."""
+
+        manifest = self._manifest()
+        schedule = manifest.schedule_stability
+
+        self.assertEqual(schedule.control_role, "recall_audit")
+        self.assertEqual(schedule.control_ef, 400)
+        self.assertEqual(schedule.control_query_ids, tuple(range(600, 650)))
+        self.assertEqual(len(schedule.control_query_ids), 50)
+        self.assertEqual(len(set(schedule.control_vector_sha256)), 50)
+        self.assertEqual(schedule.pre_sweep_count, 3)
+        self.assertEqual(schedule.routing_block_size, 100)
+        self.assertEqual(schedule.interleaved_sweep_count, 6)
+        self.assertEqual(schedule.post_sweep_count, 3)
+        self.assertEqual(schedule.execution_mode, "synchronous_serial_manifest_order")
+        self.assertEqual(schedule.absolute_p95_latency_ms_ceiling, 10.0)
+        self.assertEqual(schedule.p95_relative_ceiling, 1.5)
+        self.assertEqual(schedule.median_relative_ceiling, 1.25)
+        self.assertTrue(schedule.require_all_success)
+        self.assertTrue(schedule.require_identity_and_health_per_sweep)
+        self.assertEqual(
+            schedule.control_vector_sha256,
+            tuple(
+                hashlib.sha256(
+                    np.ascontiguousarray(vector, dtype="<f4").tobytes(order="C")
+                ).hexdigest()
+                for vector in np.load(
+                    self.dataset002 / "recall_audit_queries.npy", allow_pickle=False
+                )[:50]
+            ),
+        )
+
+    def test_manifest_rejects_tampered_or_overlapping_schedule_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "eligible.json"
+            overlap_path = Path(temporary) / "overlap.json"
+            persist_eligible_workload_manifest(path, self._manifest())
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["schedule_stability"]["controls"][0]["query_id"] = 0
+            path.write_text(
+                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ContractViolation, "schedule stability"):
+                load_eligible_workload_manifest(path)
+
+            persist_eligible_workload_manifest(overlap_path, self._manifest())
+            document = json.loads(overlap_path.read_text(encoding="utf-8"))
+            document["schedule_stability"]["controls"][0]["vector_sha256"] = document[
+                "occurrences"
+            ][0]["vector_sha256"]
+            overlap_path.write_text(
+                json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ContractViolation, "disjoint from routing"):
+                load_eligible_workload_manifest(overlap_path)
 
     def test_selection_is_csprng_draw_after_persisted_manifest_and_binds_exact_file_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

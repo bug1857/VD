@@ -48,6 +48,15 @@ _REQUIRED_SOURCE_PATHS = (
     Path("src/vdbench/dataset002.py"),
     Path("src/vdbench/exp005_acquisition.py"),
 )
+_BUNDLE_FILES = frozenset(
+    {
+        "eligible_workload.json",
+        "candidate_selection.json",
+        "calibration.json",
+        "run_manifest.json",
+        "completion.json",
+    }
+)
 
 
 class Exp009Stage1Error(RuntimeError):
@@ -285,6 +294,251 @@ def _run_manifest(
     }
 
 
+def _exact_mapping(
+    value: object, *, fields: frozenset[str], error_code: str
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or frozenset(value) != fields:
+        raise Exp009Stage1Error(error_code)
+    return value
+
+
+def _require(value: bool, *, error_code: str) -> None:
+    if not value:
+        raise Exp009Stage1Error(error_code)
+
+
+def verify_stage1_bundle(
+    *,
+    output_dir: str | os.PathLike[str],
+    dataset001_dir: str | os.PathLike[str],
+    dataset002_dir: str | os.PathLike[str],
+    baseline_path: str | os.PathLike[str],
+) -> Exp009Stage1Result:
+    """Independently verify one published offline EXP-009 Stage-1 bundle.
+
+    This validates artifact integrity, input bindings, selection provenance, and
+    deterministic calibration recomputation.  The recorded commit is treated
+    as immutable provenance; source equivalence is intentionally not inferred
+    merely because a caller runs this verifier from a later checkout.
+    """
+
+    target = Path(output_dir).resolve()
+    dataset001_path = Path(dataset001_dir).resolve()
+    dataset002_path = Path(dataset002_dir).resolve()
+    baseline = Path(baseline_path).resolve()
+    try:
+        inventory = {path.name for path in target.iterdir()}
+    except OSError as exc:
+        raise Exp009Stage1Error("BUNDLE_UNREADABLE") from exc
+    _require(inventory == _BUNDLE_FILES, error_code="BUNDLE_INVENTORY_INVALID")
+
+    eligible_path = target / "eligible_workload.json"
+    selection_path = target / "candidate_selection.json"
+    calibration_path = target / "calibration.json"
+    manifest_path = target / "run_manifest.json"
+    completion_path = target / "completion.json"
+    try:
+        workload = verify_eligible_workload_manifest(
+            eligible_path,
+            dataset002_dir=dataset002_path,
+            dataset001_dir=dataset001_path,
+        )
+    except Exception as exc:
+        raise Exp009Stage1Error("ELIGIBLE_WORKLOAD_ARTIFACT_INVALID") from exc
+    try:
+        selection = verify_candidate_selection_record(selection_path, eligible_path)
+    except Exception as exc:
+        raise Exp009Stage1Error("CANDIDATE_SELECTION_ARTIFACT_INVALID") from exc
+    calibration = _load_canonical_json(
+        calibration_path, error_code="CALIBRATION_ARTIFACT_INVALID"
+    )
+    _require(
+        calibration == run_exp009_calibration().to_document(),
+        error_code="CALIBRATION_RECOMPUTATION_MISMATCH",
+    )
+    manifest = _load_canonical_json(manifest_path, error_code="RUN_MANIFEST_INVALID")
+    root = _exact_mapping(
+        manifest,
+        fields=frozenset(
+            {
+                "schema_version",
+                "created_at_utc",
+                "repository",
+                "transition",
+                "inputs",
+                "artifacts",
+                "scope",
+            }
+        ),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _require(root["schema_version"] == EXP009_STAGE1_SCHEMA_VERSION, error_code="RUN_MANIFEST_INVALID")
+    _StrictUtcClock(lambda: root["created_at_utc"])()
+    repository = _exact_mapping(
+        root["repository"],
+        fields=frozenset({"commit", "tracked_source_clean"}),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    commit = repository["commit"]
+    _require(
+        isinstance(commit, str)
+        and len(commit) == 40
+        and all(character in "0123456789abcdef" for character in commit),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _require(repository["tracked_source_clean"] is True, error_code="RUN_MANIFEST_INVALID")
+    transition = _exact_mapping(
+        root["transition"],
+        fields=frozenset(
+            {
+                "metric",
+                "threshold_stratum",
+                "last_known_good_ef",
+                "candidate_ef",
+                "candidate_fraction",
+            }
+        ),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _require(
+        transition
+        == {
+            "metric": "L2",
+            "threshold_stratum": "target-075",
+            "last_known_good_ef": 400,
+            "candidate_ef": 800,
+            "candidate_fraction": 0.10,
+        },
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _require(
+        (
+            workload.metric.value,
+            workload.threshold_stratum,
+            workload.last_known_good_ef,
+            workload.candidate_ef,
+        )
+        == _TRANSITION,
+        error_code="ELIGIBLE_WORKLOAD_ARTIFACT_INVALID",
+    )
+    _require(
+        len(workload.occurrences) == 600
+        and len(selection.candidate_occurrence_ids) == 60,
+        error_code="CARDINALITY_INVALID",
+    )
+    inputs = _exact_mapping(
+        root["inputs"],
+        fields=frozenset(
+            {
+                "dataset001_dir",
+                "dataset001_generation_manifest_sha256",
+                "dataset002_dir",
+                "dataset002_manifest_sha256",
+                "reviewed_baseline_file_sha256",
+            }
+        ),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _validated_identity(baseline)
+    _require(
+        inputs
+        == {
+            "dataset001_dir": str(dataset001_path),
+            "dataset001_generation_manifest_sha256": sha256_file(
+                dataset001_path / "generation_manifest.json"
+            ),
+            "dataset002_dir": str(dataset002_path),
+            "dataset002_manifest_sha256": sha256_file(
+                dataset002_path / "dataset002_manifest.json"
+            ),
+            "reviewed_baseline_file_sha256": sha256_file(baseline),
+        },
+        error_code="INPUT_BINDING_MISMATCH",
+    )
+    artifacts = _exact_mapping(
+        root["artifacts"],
+        fields=frozenset({"eligible_workload.json", "candidate_selection.json", "calibration.json"}),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    for artifact_name, artifact in artifacts.items():
+        expected = _artifact_entry(target / artifact_name)
+        _require(artifact == expected, error_code="ARTIFACT_HASH_MISMATCH")
+    scope = _exact_mapping(
+        root["scope"],
+        fields=frozenset(
+            {
+                "offline_only",
+                "candidate_route_implemented",
+                "milvus_operation_performed",
+                "automatic_actuation_authorized",
+            }
+        ),
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    _require(
+        scope
+        == {
+            "offline_only": True,
+            "candidate_route_implemented": False,
+            "milvus_operation_performed": False,
+            "automatic_actuation_authorized": False,
+        },
+        error_code="RUN_MANIFEST_INVALID",
+    )
+    completion = _load_canonical_json(completion_path, error_code="COMPLETION_INVALID")
+    completed = _exact_mapping(
+        completion,
+        fields=frozenset(
+            {
+                "schema_version",
+                "completed_at_utc",
+                "status",
+                "run_manifest_sha256",
+                "eligible_occurrence_count",
+                "candidate_count",
+                "verification",
+            }
+        ),
+        error_code="COMPLETION_INVALID",
+    )
+    _require(
+        completed["schema_version"] == EXP009_STAGE1_COMPLETION_SCHEMA_VERSION,
+        error_code="COMPLETION_INVALID",
+    )
+    _StrictUtcClock(lambda: completed["completed_at_utc"])()
+    _require(completed["status"] == "COMPLETE", error_code="COMPLETION_INVALID")
+    _require(
+        completed["run_manifest_sha256"] == sha256_file(manifest_path),
+        error_code="COMPLETION_MANIFEST_HASH_MISMATCH",
+    )
+    _require(
+        completed["eligible_occurrence_count"] == 600 and completed["candidate_count"] == 60,
+        error_code="CARDINALITY_INVALID",
+    )
+    verification = _exact_mapping(
+        completed["verification"],
+        fields=frozenset(
+            {
+                "eligible_workload_rebuilt",
+                "candidate_selection_bound",
+                "calibration_recomputed",
+                "manifest_artifact_hashes_match",
+                "exact_cardinality",
+                "offline_scope",
+            }
+        ),
+        error_code="COMPLETION_INVALID",
+    )
+    _require(all(value is True for value in verification.values()), error_code="COMPLETION_INVALID")
+    return Exp009Stage1Result(
+        output_dir=target,
+        manifest_path=manifest_path,
+        completion_path=completion_path,
+        eligible_occurrence_count=600,
+        candidate_count=60,
+    )
+
+
 def run_stage1(
     *,
     repository: str | os.PathLike[str] = _REPOSITORY_ROOT,
@@ -445,4 +699,5 @@ __all__ = [
     "Exp009Stage1Result",
     "assert_clean_committed_source",
     "run_stage1",
+    "verify_stage1_bundle",
 ]
