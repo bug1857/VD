@@ -1400,6 +1400,40 @@ or filesystem imports.  This convention creates no route authority and does
 not authorize a candidate query; the later runner still requires the Stage-4
 admission receipt, fresh pre-dispatch preflight, and an externally signed grant.
 
+**Stage-4 execution-ledger implementation convention (proposed).** The later
+serial runner requires a durable, independently inspectable record of the
+attempted frozen schedule, without letting a log implementation dispatch or
+interpret queries.  The choices are:
+
+| Option | Correctness and operational behavior | Decision |
+|---|---|---|
+| A — append JSONL records only | Simple, but an incomplete final line, duplicate index, restart resume, and cross-record ordering require bespoke locking and recovery rules | Rejected |
+| B — local SQLite append-only record table, strict schema, and SHA-256 chain | Uses the established single-host durable-store pattern; transactions enforce one next slot while the chain makes accidental/reordered record corruption detectable | Chosen |
+| C — rely on Milvus/client logs | Those logs do not bind the frozen schedule, route partition, or per-slot monotonic interval and cannot prove no unscheduled runner search | Rejected |
+
+`Stage4ExecutionLedger(path, run_id, schedule)` will accept only a verified
+immutable schedule.  Its private single-host database has immutable run
+metadata (`run_id`, schedule digest, deterministic genesis hash) and an
+append-only row for each attempted step.  Every row binds its exact next
+execution index, expected `ef`, observed non-sensitive outcome, strict
+monotonic start/end interval, previous-record hash, and canonical record hash.
+SQLite triggers prohibit row or metadata updates/deletes through the ledger
+database.  The implementation revalidates schema, schedule digest, hash chain,
+and sequence before every append and after restart; corruption, wrong schedule,
+out-of-order/repeated slot, non-monotonic interval, or private-path failure is a
+stable fail-closed error.  One failed/timed-out/threshold-invalid/
+health-invalid/identity-invalid outcome is recorded then terminally blocks all
+later slots.  Only exactly 1,200 valid records constitute a complete ledger.
+
+This is integrity evidence against accidental loss, reordering, and ordinary
+store misuse; it is not a tamper-proof audit system against an attacker who can
+replace both the local database and all external evidence.  A later evidence
+bundle must bind the final chain hash into an independently verified manifest.
+The ledger contains no raw vector, hit, score, oracle result, approval grant,
+credential, client object, filesystem path, or query dispatch code.  It cannot
+resume or authorize candidate routing after process restart; Stage-3 recovery
+still clears to LKG-only and a new human-approved activation is required.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
