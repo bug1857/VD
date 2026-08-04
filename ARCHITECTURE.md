@@ -1643,6 +1643,26 @@ failures; one preflight call per adapter operation; and an AST import boundary.
 No live preflight is authorized until this offline implementation has passed its
 own tests and sealed evidence.
 
+**Implementation/evidence update — 2026-08-04.** The adapter and neutral
+runtime values were implemented at `f0f0511`. They preserve the existing
+admission/root public re-exports while removing the adapter's transitive
+dependency on the candidate-capable root. The separate fake-only verifier
+profile was added at `a8373ad` and its immutable bundle was published at
+`1c995f7`: `artifacts/exp-009/run-20260804T145434Z/`. Generated from clean
+commit `a8373adf14a2efff117479f580b817c2e0c381f6`, independent verification
+returns `COMPLETE` with manifest SHA-256
+`ed6bf268a9c61d97e2f04b7cd02217f6a068741417fc15b4a35eea12d85fd890`, raw-result
+SHA-256 `59bdfc984f75d52bfbdbf8b1a8a46835952bb80da31dc59785c66b08340289a2`, and
+receipt SHA-256 `f8ae51cce6770a6d70100efbeb89f8c720c51c65ea4c2a0fe4e63b58bbcbb12c`.
+Its eight commands passed, including five focused suites and 537 repository
+tests in 153.481 seconds; `pip check` found no broken requirements. The sealed
+profile records false for real-client construction, real serving preflight,
+live search, real-grant verification, candidate-route enablement, and Milvus
+configuration mutation. This verifies only offline adapter conformance. It
+permits a separately captured read-only ENV-001 preflight; ADR-008 remains
+**Proposed** and no candidate routing, grant use, or configuration change is
+authorized.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.

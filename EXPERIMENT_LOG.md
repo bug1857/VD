@@ -1552,3 +1552,36 @@ that maps the existing serving preflight to `Stage4RuntimeReadiness` and
 per-slot `Stage4SlotSafety`. Only after that adapter and a fresh read-only
 ENV-001 preflight are verified may an externally supplied exact grant be
 considered; candidate dispatch remains blocked.
+
+#### Stage 4 runtime-probe fake-only verification result — 2026-08-04
+
+**Stage status: VERIFIED (fake-only runtime-probe conformance only).** This is
+an append-only result after the live-root fake-only record above. It verifies
+the narrow `Stage4ServingRuntimeProbe` mapping from one structural serving
+preflight result to exact `Stage4RuntimeReadiness` and `Stage4SlotSafety`
+values. It does not execute a real serving preflight, create a Milvus client,
+issue a search, use a grant, claim a candidate route, or mutate Milvus.
+
+- Implementation: `f0f0511`; separate evidence profile: `a8373ad`; immutable
+  evidence publication: `1c995f7`.
+- Immutable bundle: `artifacts/exp-009/run-20260804T145434Z/`, generated from
+  clean commit `a8373adf14a2efff117479f580b817c2e0c381f6`. Independent
+  verification returns `COMPLETE`; manifest SHA-256
+  `ed6bf268a9c61d97e2f04b7cd02217f6a068741417fc15b4a35eea12d85fd890`, raw-result
+  SHA-256 `59bdfc984f75d52bfbdbf8b1a8a46835952bb80da31dc59785c66b08340289a2`, and
+  receipt SHA-256 `f8ae51cce6770a6d70100efbeb89f8c720c51c65ea4c2a0fe4e63b58bbcbb12c`.
+- Eight commands passed: clean-tree `git diff --check`, five focused suites,
+  the 537-test repository suite in 153.481 seconds, and `pip check` with no
+  broken requirements. The fake-port suite covers exact one-stream binding,
+  health/load/identity mapping, incomplete-scope rejection, unknown/malformed/
+  exceptional preflight, invalid clocks, requested-binding mismatch, API
+  re-export compatibility, and the import boundary.
+- The sealed safety assertion records `false` for real-client construction,
+  real serving preflight, live search, real-grant verification,
+  candidate-route enablement, and configuration mutation. It verifies no live
+  effect, not real ENV-001 health, load, or identity.
+
+**Next gate:** capture and independently verify one fresh read-only ENV-001
+health/load/exact-identity preflight through this adapter for the frozen L2 /
+`target-075` binding. It must remain LKG-only and must not supply, verify, or
+use a grant. Candidate dispatch remains blocked.
