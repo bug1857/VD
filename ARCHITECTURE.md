@@ -1109,6 +1109,27 @@ readback, corruption/schema failure, and audit-failure consumption. This is
 still an offline prerequisite; it does not authorize a candidate search,
 route installation, or live Milvus action.
 
+**Activation-coordinator implementation convention (proposed).** The sole
+offline coordinator composes the verifier, immutable plan, grant ledger,
+lifecycle audit, route-state marker, and in-memory authority in this exact
+order: (1) verify the externally signed grant against the exact policy and
+artifact bindings; (2) cross-check the verified grant, plan, and LKG binding;
+(3) reserve the one-time grant/payload pair; (4) fsync an
+`ACTIVATION_AUTHORIZED` lifecycle audit record; (5) atomically write the
+`ACTIVATING` marker; then and only then (6) publish the immutable plan to the
+authority. The authority starts empty and is never published on a refusal.
+
+Every failure before publication produces an inactive/LKG-only result. An
+audit-write failure consumes the grant with `REFUSED_AUDIT_WRITE_FAILED` and
+must not write a marker. A marker or authority failure clears the authority,
+attempts to restore the LKG-only marker, and consumes the grant with a specific
+terminal reason. The coordinator neither performs a candidate search nor
+accepts a later retry of a reserved grant. It returns immutable attempt evidence
+only; Stage 3 owns runtime rollback/restoration auditing and Stage 4 remains
+human-gated. Tests must trap every downstream dependency at each refusal and
+prove the authority made zero candidate route assignments until all six steps
+succeed.
+
 **Immutable route authority.** The future `CanaryRoutePlan` is constructed
 only from a verified eligible-workload manifest and candidate-selection record.
 It binds all 600 canonical occurrence IDs to their immutable DATASET-002 query
