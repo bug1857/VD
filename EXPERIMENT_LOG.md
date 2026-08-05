@@ -1622,7 +1622,8 @@ cannot manufacture, substitute for, or consume any of those gates.
 
 #### Stage 4 evidence-binding repair prerequisite — 2026-08-05
 
-**Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN.** Before any
+**Status: VERIFIED — CONTRACT DEFINED, IMPLEMENTED, ADVERSARIALLY TESTED, AND
+COMMITTED.** Before any
 unintegrated 1,200-query recall-audit draft may be accepted, EXP-009 must
 verify one canonical binding across recall and finite-manifest latency evidence.
 The binding must cover the exact run, clean revision, metric/stratum,
@@ -1637,3 +1638,30 @@ SLO breach, and only one exact, fully bound pair can produce a `PASSING`
 read-only qualification report. This is evidence integrity work only: it does
 not establish a `QualificationResult`, authorize a grant, install a route, or
 permit any candidate query.
+
+- Implementation and full test suite: commit
+  `088d325cfce099754f0efa63e0f46f1dc4e2f68d` ("fix: bind Stage-4 recall and
+  latency evidence to verified ledgers"), pushed to `origin/main`. Touches
+  `canary_recall_audit_ledger.py`, `canary_recall_audit_evaluation.py`,
+  `canary_stage4_decision.py`, `canary_stage4_latency_evidence.py` (new),
+  `canary_stage4_qualification_report.py`, and six corresponding test files;
+  12 files changed, 4,183 insertions.
+- Focused suites: recall-audit ledger 38/38, recall evaluator 26/26, decision
+  combiner 14/14, latency evidence 7/7, end-to-end pipeline 3/3,
+  qualification-report CLI 21/21 — 109/109 total, 0 failures. Full repository
+  suite: 662/662 passing, 0 failures, 0 errors, 872.428 seconds.
+- The end-to-end pipeline includes
+  `test_hand_fabricated_latency_evidence_cannot_combine_with_real_recall_evidence`,
+  a direct proof that individually valid recall and latency evidence bound to
+  different run contexts yield `INCOMPLETE`, never a silently combined
+  `PASSING` or `FAILING` decision.
+- Two real defects were found and fixed by this test suite during
+  implementation: `main()` was missing the newly required `binding_sha256`
+  keyword when opening the recall ledger, and a CLI test fixture computed its
+  `frozen_recall_audit_ids_sha256` over a different byte serialization than
+  the one `main()` actually digests from `--frozen-query-ids-json`, which
+  produced spurious `EVIDENCE_BINDING_MISMATCH` failures until both were
+  hashed from the same bytes.
+- This remains evidence-integrity work only: it establishes no
+  `QualificationResult`, authorizes no grant, installs no route, and permits
+  no candidate query. ADR-008's overall acceptance status is unchanged.

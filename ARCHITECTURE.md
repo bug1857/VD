@@ -1711,7 +1711,7 @@ then completed 550 repository tests in 193.153 seconds. This verifies only
 the defined point-in-time preflight; ADR-008 remains **Proposed**, and no
 candidate routing, approval use, rollback, or automatic tuning is authorized.
 
-**Stage-4 recall/latency evidence-binding repair convention (proposed).** A
+**Stage-4 recall/latency evidence-binding repair convention (implemented).** A
 review of unintegrated recall-audit draft code found that a recall result and a
 latency result could otherwise be combined without proving they came from the
 same run and exact configuration. That is unacceptable for EXP-009: a passing
@@ -1758,6 +1758,35 @@ run binding; hand-authored or hash-mismatched latency input; tampered recall
 row, chain, schema, or external manifest; missing latency evidence; and a
 complete, correctly bound evidence pair that fails its SLO. All must prove no
 candidate routing, approval, policy actuation, or Milvus mutation.
+
+**Implementation evidence — 2026-08-05.** Implemented and committed at
+`088d325cfce099754f0efa63e0f46f1dc4e2f68d` ("fix: bind Stage-4 recall and
+latency evidence to verified ledgers"), pushed to `origin/main`. Touches
+`canary_recall_audit_ledger.py` (schema v2; binding-bound genesis; append-only
+hash chain with a dedicated `insertion_seq` rowid alias so chain order depends
+on arrival order, not the caller-supplied `query_id`; external immutable
+manifest publication), `canary_recall_audit_evaluation.py` (a binding-mismatch
+gate checked before any observation is examined), `canary_stage4_latency_evidence.py`
+(new — wraps the verified execution ledger and schedule with the same binding
+digest), `canary_stage4_decision.py` (rewritten — a full decision requires an
+equal `evidence_binding_sha256` on both the recall and latency sides, else it
+is forced `INCOMPLETE` even when both sides individually report `PASSING`),
+and `canary_stage4_qualification_report.py` (rewritten — the free-form
+`--latency-evaluation-json` CLI path is removed entirely; latency evidence can
+only be derived from a verified ledger, schedule, and binding, each checked
+against an independently supplied SHA-256 before being trusted).
+
+All required adversarial test categories above are covered, including a direct
+proof (`test_hand_fabricated_latency_evidence_cannot_combine_with_real_recall_evidence`
+in `test_canary_recall_audit_pipeline.py`) that individually valid recall and
+latency evidence bound to different run contexts cannot combine into a
+`PASSING` or `FAILING` decision. Focused suites: recall-audit ledger 38/38,
+recall evaluator 26/26, decision combiner 14/14, latency evidence 7/7,
+end-to-end pipeline 3/3, qualification-report CLI 21/21 — 109/109 total, 0
+failures. Full repository suite: 662/662 passing, 0 failures, 0 errors,
+872.428 seconds. This closes the evidence-binding repair itself; it does not
+change ADR-008's own **Proposed** status above, and it still authorizes no
+candidate routing, approval use, rollback, or automatic tuning.
 
 Research references:
 
