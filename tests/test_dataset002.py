@@ -12,12 +12,13 @@ import unittest
 import numpy as np
 
 from vdbench.artifacts import write_dataset_artifacts
-from vdbench.config import ContractViolation, EXP001_DATASET_SPEC
+from vdbench.config import ContractViolation, EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
 from vdbench.dataset002 import (
     DATASET002_SPEC,
     Dataset002Spec,
     generate_dataset002,
+    load_recall_audit_oracle_ids,
     verify_dataset002_artifacts,
     write_dataset002_artifacts,
 )
@@ -206,6 +207,58 @@ class Dataset002Tests(unittest.TestCase):
                     generate_dataset002(self.spec),
                     dataset001_dir=dataset001,
                 )
+
+    def test_recall_audit_oracle_loader_filters_role_metric_and_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset001 = root / "dataset001"
+            output = root / "dataset002"
+            _small_dataset001(dataset001)
+            write_dataset002_artifacts(
+                output,
+                generate_dataset002(self.spec),
+                dataset001_dir=dataset001,
+            )
+
+            all_records = [
+                json.loads(line)
+                for line in (output / "oracle_records.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            expected = {
+                record["query_id"]: tuple(hit["id"] for hit in record["hits"])
+                for record in all_records
+                if record["role"] == "recall_audit"
+                and record["metric"] == Metric.L2.value
+                and record["threshold_label"] == "target-025"
+            }
+            self.assertEqual(len(expected), self.spec.recall_audit_query_count)
+
+            loaded = load_recall_audit_oracle_ids(
+                output, metric=Metric.L2, threshold_label="target-025"
+            )
+
+            self.assertEqual(loaded, expected)
+            # Routing-role and other metric/threshold records must never leak in.
+            self.assertFalse(
+                set(loaded).intersection(
+                    record["query_id"] for record in all_records if record["role"] == "routing"
+                )
+            )
+
+    def test_recall_audit_oracle_loader_rejects_unregistered_threshold_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset001 = root / "dataset001"
+            output = root / "dataset002"
+            _small_dataset001(dataset001)
+            write_dataset002_artifacts(
+                output,
+                generate_dataset002(self.spec),
+                dataset001_dir=dataset001,
+            )
+
+            with self.assertRaises(ContractViolation):
+                load_recall_audit_oracle_ids(output, metric=Metric.L2, threshold_label="not-a-label")
 
 
 if __name__ == "__main__":

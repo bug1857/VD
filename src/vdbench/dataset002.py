@@ -648,6 +648,58 @@ def verify_dataset002_artifacts(
     return manifest
 
 
+def load_recall_audit_oracle_ids(
+    output_dir: str | os.PathLike[str],
+    *,
+    metric: Metric,
+    threshold_label: str,
+) -> dict[int, tuple[int, ...]]:
+    """Read already-verified ``oracle_records.jsonl`` for one recall-audit slice.
+
+    Callers must have already run ``verify_dataset002_artifacts`` against
+    ``output_dir`` -- this function trusts the file's bytes and re-derives
+    nothing about the base vectors or generator; it only parses and filters
+    the same schema ``_verify_oracle_records`` already validates byte-exact.
+    Returns ``{query_id: oracle_hit_ids}`` for every ``role == "recall_audit"``
+    record at the given ``(metric, threshold_label)``, ordered ascending by
+    hit rank (Milvus-style: nearest/most-similar first), never deduplicated
+    or reordered by this function.
+    """
+
+    if not isinstance(metric, Metric):
+        raise ContractViolation("metric must be a Metric")
+    if threshold_label not in THRESHOLD_LABELS:
+        raise ContractViolation("threshold_label must be a registered THRESHOLD_LABELS value")
+    path = Path(output_dir) / "oracle_records.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ContractViolation("DATASET-002 oracle records are unreadable") from exc
+    result: dict[int, tuple[int, ...]] = {}
+    for line in lines:
+        try:
+            record = json.loads(line, object_pairs_hook=_no_duplicate_json_fields)
+        except (json.JSONDecodeError, _DuplicateJsonField) as exc:
+            raise ContractViolation("DATASET-002 oracle record JSON is invalid") from exc
+        if not isinstance(record, dict) or frozenset(record) != _ORACLE_FIELDS:
+            raise ContractViolation("DATASET-002 oracle record schema is invalid")
+        if record["role"] != "recall_audit" or record["metric"] != metric.value or record["threshold_label"] != threshold_label:
+            continue
+        query_id = record["query_id"]
+        hits = record["hits"]
+        if isinstance(query_id, bool) or not isinstance(query_id, int):
+            raise ContractViolation("DATASET-002 oracle record query ID is invalid")
+        if query_id in result:
+            raise ContractViolation("DATASET-002 oracle records contain duplicates")
+        if not isinstance(hits, list) or not all(
+            isinstance(hit, dict) and frozenset(hit) == _HIT_FIELDS and isinstance(hit["id"], int) and not isinstance(hit["id"], bool)
+            for hit in hits
+        ):
+            raise ContractViolation("DATASET-002 oracle record hits are invalid")
+        result[query_id] = tuple(hit["id"] for hit in hits)
+    return result
+
+
 __all__ = [
     "DATASET002_ARTIFACTS",
     "DATASET002_SCHEMA_VERSION",
@@ -655,6 +707,7 @@ __all__ = [
     "Dataset002Bundle",
     "Dataset002Spec",
     "generate_dataset002",
+    "load_recall_audit_oracle_ids",
     "verify_dataset002_artifacts",
     "write_dataset002_artifacts",
 ]
