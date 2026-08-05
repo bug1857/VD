@@ -4,3 +4,10 @@ __pycache__/
 .venv-exp001/
 .venv/
 build/
+/bin/
+/lib/
+/pyvenv.cfg
+*.egg-info/
+/scratch.py
+/out.json
+artifacts/*/environment/volumes/
