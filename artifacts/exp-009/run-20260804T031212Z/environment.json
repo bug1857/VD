@@ -1,0 +1,1 @@
+{"numpy_version":"2.4.3","performance_scope":"offline_nonperformance","platform":{"machine":"arm64","processor":"arm","release":"25.5.0","system":"Darwin"},"python":{"executable":"/opt/homebrew/opt/python@3.14/bin/python3.14","implementation":"CPython","version":"3.14.5"},"schema_version":"exp009-stage1-environment-v1"}
