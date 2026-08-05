@@ -44,6 +44,7 @@ from .config import ContractViolation, HNSW_EF_SWEEP, Metric, RESULT_LIMIT, THRE
 
 
 __all__ = [
+    "CanaryRouteKind",
     "Stage4ExecutionSchedule",
     "Stage4ScheduleStep",
     "Stage4ScheduleStepKind",
