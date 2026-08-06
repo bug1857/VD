@@ -125,7 +125,37 @@ Artifact checksums:
 | `dataset002_manifest.json` | `45ae2d754cd0e0923a6e2be38c0878c27665b5f0cbd9dce2b7de3c3c5ae77b01` |
 | `SHA256SUMS` | `848de8c74377acc57fa5385caabe812629a4a63074d9fa31c5008f3bed81af30` |
 Verification: `verify_dataset002_artifacts(Path("artifacts/exp-009/dataset"), dataset001_dir=Path("artifacts/exp-001/dataset"))` independently regenerated the vectors, validated inherited DATASET-001 identity, reread all artifact checksums, and recomputed all 10,800 exact-oracle records successfully.
+Known evidence-portability item (unresolved, 2026-08-06): a later re-run of the same verification command in a different session's environment found environment-sensitive COSINE floating-point score reproduction, most plausibly caused by BLAS/Accelerate differences; the exact historical environmental trigger remains unresolved. Every manifest hash, `SHA256SUMS` entry, inherited DATASET-001 identity, and deterministically-regenerated array above still matches exactly in that later environment; only 4,984/10,800 `oracle_records.jsonl` entries (exclusively COSINE, zero L2) disagree with a fresh recomputation, exclusively at few-ULP score precision (max delta `1.665e-16`), with hit membership/order/`full_count`/`capped` unaffected in every case. This does not change this entry's acceptance status or checksums above; it is recorded here as an open item, not fixed, tolerated, or worked around. DATASET-003 (below) depends only on this dataset's query-identity contract, not its oracle-correctness contract, and is unaffected by this item.
 Used by: Planned EXP-009 Stage 1; no other experiment may consume it without an explicit registry update.
+
+---
+
+### DATASET-003: Deterministic LKG-qualification query workload
+
+Source: Deterministic independent standard-normal query vectors generated locally with NumPy `Generator(PCG64(20260806))`; DATASET-001's 10,000 base vectors and DATASET-002's 1,800 routing/recall-audit query IDs are consumed strictly read-only, through their own existing verifiers, and are neither regenerated, copied, relabeled, nor modified.
+License: Project-generated data. No external copyright-bearing data is included.
+Dimensions: 128; little-endian IEEE-754 `float32`.
+Embedding model: None — synthetic vectors, not model embeddings.
+Number of vectors: 2,400 query vectors, single `lkg_qualification` role. IDs occupy `[10000, 12400)` — immediately after DATASET-001's `base_ids` range `[0, 10000)` and disjoint from DATASET-002's `routing` (`[0, 600)`) and `recall_audit` (`[600, 1800)`) roles. The writer and verifier both assert this disjointness against the actually-loaded parent arrays, not merely the generation arithmetic.
+Metadata schema: Canonical integer query ID; fixed `lkg_qualification` role; inherited DATASET-001 identity (`generation_manifest`/`thresholds`/`base_ids`/`base_vectors` SHA-256) and inherited DATASET-002 identity (dataset ID/version, manifest SHA-256, `routing_ids`/`recall_audit_ids` SHA-256, and a `verification_scope` tag fixed to `QUERY_IDENTITY_ONLY`); seed/generator/version metadata; byte size and SHA-256 for every artifact.
+Ground truth method: None precomputed. The live LKG shadow-audit path computes its oracle result at audit time via `exact_range_search` against DATASET-001's base vectors directly (`MilvusActuationClient._oracle`); it never reads a dataset's `oracle_records.jsonl`. DATASET-003 therefore registers only query IDs and vectors.
+Parent verification scope: DATASET-003 depends on DATASET-002 through `verify_dataset002_query_identity` only (manifest schema, every artifact hash, `SHA256SUMS`, exact file inventory, inherited DATASET-001 identity, deterministic routing/recall-audit array regeneration, role disjointness) -- never `verify_dataset002_artifacts`'s oracle-record semantic recomputation. This is a deliberate scope separation, not a relaxation: DATASET-002's own EXP-009 Stage 1 acceptance contract above is unchanged and still requires the complete strict verifier. See ARCHITECTURE.md's ADR-002 LKG qualification amendment for the governed statement of this separation.
+Version: `DATASET-003-v1`; primary seed `20260806`; implemented and covered by 18 focused tests across `tests/test_dataset002.py` (7 new: narrow-verifier accept/reject adversarial coverage) and `tests/test_dataset003.py` (10: 8 original + 2 proving the narrow-verifier dependency), all passing.
+Artifact status: GENERATED AND CHECKSUM-VERIFIED against the real accepted DATASET-001 and DATASET-002 artifacts -- no Milvus ingestion, search, candidate routing, or approval action was performed during generation.
+Artifact location: `artifacts/exp-009/dataset003/`.
+Artifact checksums:
+
+| Artifact | SHA-256 |
+|---|---|
+| `lkg_qualification_ids.npy` | `59c4c5a2b079c3a5377c3a4e0ffd2524141f88cedb493cdcd3388affa19df177` |
+| `lkg_qualification_queries.npy` | `8d7914eb6ebb7f3624defd0f958d1aaa1d5c34c02e149065ce53a4ce39f44215` |
+| `inherited_dataset001.json` | `832d681185d674d3a6e0d55645907101f1064175e41d89b1925f6f11d27e9388` |
+| `inherited_dataset002.json` | `1d89e894451fb35972d7a3bf3705a15b30f83dc128a61ddd7f194e2202a9ad9c` |
+| `dataset003_manifest.json` | `be2b5c7c133b70913b17c5243f61e7f89400f6f3adc010401827172ffa62360d` |
+| `SHA256SUMS` | `7cc2f2c78099aef62b82d748177f2100225f8b4aad24e9b8565124ee6530e980` |
+Verification: `verify_dataset003_artifacts(Path("artifacts/exp-009/dataset003"), dataset001_dir=Path("artifacts/exp-001/dataset"), dataset002_dir=Path("artifacts/exp-009/dataset"))` independently regenerated the vectors, reverified all artifact checksums, and reconfirmed cross-dataset ID disjointness against DATASET-001's `base_ids` and both DATASET-002 roles. IDs occupy `[10000, 12400)`, contiguous, 2,400 total.
+Use restrictions: Not usable for real LKG qualification until the raw per-query evidence capture, epoch assembly, and consumption-ledger code (ARCHITECTURE.md's ADR-002 LKG qualification amendment) is implemented. Not affected by the DATASET-002 oracle-reproduction item above, by design.
+Used by: Planned LKG qualification (ADR-002 amendment); no other experiment may consume it without an explicit registry update.
 
 ---
 

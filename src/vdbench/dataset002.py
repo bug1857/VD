@@ -589,12 +589,60 @@ def _verify_oracle_records(
         raise ContractViolation("DATASET-002 oracle records are incomplete")
 
 
-def verify_dataset002_artifacts(
+DATASET002_QUERY_IDENTITY_SCOPE = "QUERY_IDENTITY_ONLY"
+
+
+@dataclass(frozen=True, slots=True)
+class Dataset002QueryIdentityResult:
+    """Structural/query-identity verification only.
+
+    This result does NOT verify, imply, or depend on ``oracle_records.jsonl``
+    being semantically correct. Its ``verification_scope`` is always
+    ``DATASET002_QUERY_IDENTITY_SCOPE`` so a caller can never mistake it for a
+    full :func:`verify_dataset002_artifacts` result.
+    """
+
+    verification_scope: str
+    dataset_id: str
+    version: str
+    manifest_sha256: str
+    routing_ids_sha256: str
+    recall_audit_ids_sha256: str
+    routing_ids: tuple[int, ...]
+    recall_audit_ids: tuple[int, ...]
+    inherited_dataset001: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _Dataset002Structure:
+    """Internal bundle shared by both public DATASET-002 verifiers."""
+
+    manifest: dict[str, Any]
+    spec: Dataset002Spec
+    manifest_sha256: str
+    thresholds: Mapping[Metric, tuple[tuple[str, float], ...]]
+    base_ids: npt.NDArray[np.int64]
+    base_vectors: npt.NDArray[np.float32]
+    routing_ids: npt.NDArray[np.int64]
+    routing_queries: npt.NDArray[np.float32]
+    audit_ids: npt.NDArray[np.int64]
+    audit_queries: npt.NDArray[np.float32]
+    inherited_dataset001: dict[str, Any]
+
+
+def _verify_dataset002_structure(
     output_dir: str | os.PathLike[str],
     *,
     dataset001_dir: str | os.PathLike[str],
-) -> dict[str, Any]:
-    """Independently revalidate every DATASET-002 byte, role, and oracle record."""
+) -> _Dataset002Structure:
+    """Validate everything about DATASET-002 except oracle-record semantics.
+
+    Covers manifest schema/generation contract, every artifact hash,
+    SHA256SUMS, the exact closed file inventory, inherited DATASET-001
+    identity/hashes, deterministic routing/recall-audit array regeneration,
+    and role counts/schema/disjointness (via ``_load_output_arrays``). Never
+    reads or judges ``oracle_records.jsonl`` content.
+    """
 
     output = Path(output_dir)
     manifest = _read_json(output / _MANIFEST_NAME)
@@ -635,17 +683,75 @@ def verify_dataset002_artifacts(
         and np.array_equal(audit_queries, expected.recall_audit_queries)
     ):
         raise ContractViolation("DATASET-002 arrays disagree with the deterministic generator")
-    _verify_oracle_records(
-        output,
+    return _Dataset002Structure(
+        manifest=manifest,
+        spec=spec,
+        manifest_sha256=sha256_file(output / _MANIFEST_NAME),
+        thresholds=thresholds,
+        base_ids=base_ids,
+        base_vectors=base_vectors,
         routing_ids=routing_ids,
         routing_queries=routing_queries,
         audit_ids=audit_ids,
         audit_queries=audit_queries,
-        base_ids=base_ids,
-        base_vectors=base_vectors,
-        thresholds=thresholds,
+        inherited_dataset001=inherited,
     )
-    return manifest
+
+
+def verify_dataset002_query_identity(
+    output_dir: str | os.PathLike[str],
+    *,
+    dataset001_dir: str | os.PathLike[str],
+) -> Dataset002QueryIdentityResult:
+    """Verify DATASET-002 query identity and role-disjointness only.
+
+    Deliberately does not read or judge ``oracle_records.jsonl``. Callers that
+    need oracle-record correctness (e.g. EXP-009 Stage 1 recall-audit
+    evidence) must use :func:`verify_dataset002_artifacts` instead; this
+    narrower function exists for consumers -- such as DATASET-003 -- whose
+    contract depends only on DATASET-002's query IDs and vectors, not its
+    oracle semantics.
+    """
+
+    structure = _verify_dataset002_structure(output_dir, dataset001_dir=dataset001_dir)
+    output = Path(output_dir)
+    return Dataset002QueryIdentityResult(
+        verification_scope=DATASET002_QUERY_IDENTITY_SCOPE,
+        dataset_id=structure.spec.dataset_id,
+        version=structure.spec.version,
+        manifest_sha256=structure.manifest_sha256,
+        routing_ids_sha256=sha256_file(output / "routing_ids.npy"),
+        recall_audit_ids_sha256=sha256_file(output / "recall_audit_ids.npy"),
+        routing_ids=tuple(int(value) for value in structure.routing_ids),
+        recall_audit_ids=tuple(int(value) for value in structure.audit_ids),
+        inherited_dataset001=structure.inherited_dataset001,
+    )
+
+
+def verify_dataset002_artifacts(
+    output_dir: str | os.PathLike[str],
+    *,
+    dataset001_dir: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Independently revalidate every DATASET-002 byte, role, and oracle record.
+
+    The complete, strict verifier: structural/query-identity checks plus the
+    byte-exact oracle-record semantic recomputation. Never weakens, tolerates,
+    or bypasses the oracle comparison.
+    """
+
+    structure = _verify_dataset002_structure(output_dir, dataset001_dir=dataset001_dir)
+    _verify_oracle_records(
+        Path(output_dir),
+        routing_ids=structure.routing_ids,
+        routing_queries=structure.routing_queries,
+        audit_ids=structure.audit_ids,
+        audit_queries=structure.audit_queries,
+        base_ids=structure.base_ids,
+        base_vectors=structure.base_vectors,
+        thresholds=structure.thresholds,
+    )
+    return structure.manifest
 
 
 def load_recall_audit_oracle_ids(
@@ -702,12 +808,15 @@ def load_recall_audit_oracle_ids(
 
 __all__ = [
     "DATASET002_ARTIFACTS",
+    "DATASET002_QUERY_IDENTITY_SCOPE",
     "DATASET002_SCHEMA_VERSION",
     "DATASET002_SPEC",
     "Dataset002Bundle",
+    "Dataset002QueryIdentityResult",
     "Dataset002Spec",
     "generate_dataset002",
     "load_recall_audit_oracle_ids",
     "verify_dataset002_artifacts",
+    "verify_dataset002_query_identity",
     "write_dataset002_artifacts",
 ]
