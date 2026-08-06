@@ -72,6 +72,7 @@ def _build_binding(**overrides: object) -> Stage4EvidenceBinding:
         current_ef=400,
         candidate_ef=_SEARCH_CONFIGURATION.ef,
         last_known_good_ef=400,
+        candidate_search_configuration=_SEARCH_CONFIGURATION,
         identity=_IDENTITY,
         dataset002_manifest_sha256=_sha("dataset002"),
         frozen_recall_audit_ids_sha256=_sha(",".join(str(i) for i in sorted(_FROZEN_IDS))),
@@ -197,6 +198,33 @@ class Stage4RecallAuditProducerConstructionTests(unittest.TestCase):
             Stage4RecallAuditProducer(
                 binding=self.binding,
                 search_configuration=mismatched,
+                dataset002_schema_version=DATASET002_SCHEMA_VERSION,
+                query_source=_NeverCalled(),
+                oracle_result_ids_by_query_id=self.oracle_map,
+                client=_NeverCalled(),
+                ledger=self._ledger(),
+                utc_now=_clock(),
+            )
+        self.assertEqual(str(ctx.exception), "SEARCH_CONFIGURATION_BINDING_MISMATCH")
+
+    def test_search_configuration_radius_mismatch_is_rejected(self) -> None:
+        """The radius-binding-omission repair: same metric/threshold_label/ef
+        as the binding's embedded configuration, radius alone altered. This
+        is the exact shape that previously let the producer construct and
+        dispatch real observations under an unchanged binding."""
+        altered = SearchConfiguration(
+            metric=_SEARCH_CONFIGURATION.metric,
+            threshold_label=_SEARCH_CONFIGURATION.threshold_label,
+            radius=3.0,  # binding.candidate_search_configuration.radius is 0.6
+            index_track=IndexTrack.HNSW,
+            ef=_SEARCH_CONFIGURATION.ef,
+            limit=100,
+            consistency_level="Strong",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Stage4RecallAuditProducer(
+                binding=self.binding,
+                search_configuration=altered,
                 dataset002_schema_version=DATASET002_SCHEMA_VERSION,
                 query_source=_NeverCalled(),
                 oracle_result_ids_by_query_id=self.oracle_map,

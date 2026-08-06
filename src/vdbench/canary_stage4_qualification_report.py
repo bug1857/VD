@@ -68,6 +68,11 @@ from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 from .canary_stage4_latency_evidence import Stage4LatencyEvidence, build_stage4_latency_evidence
 from .canary_workload import WorkloadIdentityBinding
 from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
+from .artifacts import canonical_json_bytes
+from .search_configuration_digest import (
+    SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION,
+    search_configuration_document,
+)
 
 
 __all__ = [
@@ -81,6 +86,44 @@ HUMAN_AUTHORIZATION_NOTICE = (
     "This report is read-only. It does not apply, promote, route, or modify "
     "any Milvus configuration. Any live action requires separate, explicit "
     "human authorization."
+)
+
+# Explicit, immutable expected-field sets for the active v2 binding.json
+# loader. An externally supplied document is rejected -- not silently
+# trimmed -- if its key set differs from these in any way.
+_BINDING_DOCUMENT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "source_revision",
+        "metric",
+        "threshold_stratum",
+        "current_ef",
+        "candidate_ef",
+        "last_known_good_ef",
+        "candidate_search_configuration",
+        "identity",
+        "dataset002_manifest_sha256",
+        "frozen_recall_audit_ids_sha256",
+        "eligible_workload_sha256",
+        "candidate_selection_sha256",
+        "execution_schedule_sha256",
+        "recall_evidence_schema_version",
+        "latency_evidence_schema_version",
+    }
+)
+_SEARCH_CONFIGURATION_DOCUMENT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "metric",
+        "threshold_label",
+        "radius",
+        "range_filter",
+        "index_track",
+        "ef",
+        "limit",
+        "consistency_level",
+    }
 )
 
 
@@ -191,11 +234,49 @@ def _binding_from_document(document: dict) -> Stage4EvidenceBinding:
     constructor only -- never a free-form/loosely-validated document. The
     binding's own ``__post_init__`` re-validates every field; this function
     adds no additional trust beyond the byte-level digest check already
-    performed by ``_load_and_verify`` on the raw file contents."""
+    performed by ``_load_and_verify`` on the raw file contents.
+
+    Strict v2 loading, two layers:
+
+    1. Explicit immutable field sets for the top-level document and the
+       embedded ``candidate_search_configuration`` document give a fast,
+       clearly-named rejection for gross structural problems (unknown/missing
+       fields, wrong nested schema version) before any object is built.
+    2. After the complete ``Stage4EvidenceBinding`` is reconstructed, the
+       *entire supplied document* must be byte-identical to
+       ``canonical_json_bytes(reconstructed.to_document())``. This is the
+       comprehensive final gate: it covers every field -- schema_version,
+       run/source fields, metric/threshold/ef headers,
+       candidate_search_configuration, identity, every governed SHA-256
+       field, both evidence schema versions -- so a noncanonical numeric
+       representation, a contradictory derived field, or any other
+       byte-level divergence anywhere in the document is caught even if it
+       happened to survive layer 1 and the object's own field-level
+       validation.
+    """
 
     try:
+        if not isinstance(document, dict) or frozenset(document) != _BINDING_DOCUMENT_FIELDS:
+            raise ValueError("binding document top-level fields are invalid")
+        sc_doc = document["candidate_search_configuration"]
+        if not isinstance(sc_doc, dict) or frozenset(sc_doc) != _SEARCH_CONFIGURATION_DOCUMENT_FIELDS:
+            raise ValueError("candidate_search_configuration fields are invalid")
+        if sc_doc["schema_version"] != SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION:
+            raise ValueError("candidate_search_configuration schema_version is unsupported")
         identity_document = document["identity"]
-        return Stage4EvidenceBinding(
+        if not isinstance(identity_document, dict):
+            raise ValueError("identity must be a document")
+
+        candidate_search_configuration = SearchConfiguration(
+            metric=Metric(sc_doc["metric"]),
+            threshold_label=sc_doc["threshold_label"],
+            radius=sc_doc["radius"],
+            index_track=IndexTrack(sc_doc["index_track"]),
+            ef=sc_doc["ef"],
+            limit=sc_doc["limit"],
+            consistency_level=sc_doc["consistency_level"],
+        )
+        binding = Stage4EvidenceBinding(
             run_id=document["run_id"],
             source_revision=document["source_revision"],
             metric=Metric(document["metric"]),
@@ -203,6 +284,7 @@ def _binding_from_document(document: dict) -> Stage4EvidenceBinding:
             current_ef=document["current_ef"],
             candidate_ef=document["candidate_ef"],
             last_known_good_ef=document["last_known_good_ef"],
+            candidate_search_configuration=candidate_search_configuration,
             identity=WorkloadIdentityBinding(**identity_document),
             dataset002_manifest_sha256=document["dataset002_manifest_sha256"],
             frozen_recall_audit_ids_sha256=document["frozen_recall_audit_ids_sha256"],
@@ -213,6 +295,17 @@ def _binding_from_document(document: dict) -> Stage4EvidenceBinding:
             latency_evidence_schema_version=document["latency_evidence_schema_version"],
             schema_version=document["schema_version"],
         )
+
+        supplied_bytes = canonical_json_bytes(document)
+        canonical_bytes = canonical_json_bytes(binding.to_document())
+        if supplied_bytes != canonical_bytes:
+            raise ValueError(
+                "binding document is not byte-identical to its canonical "
+                "reconstruction (noncanonical numeric representation, a "
+                "contradictory derived field, or a value that does not "
+                "round-trip through the binding's own public constructor)"
+            )
+        return binding
     except (KeyError, TypeError, ValueError, ContractViolation) as exc:
         raise _ReportError(f"binding-json is malformed: {exc}") from exc
 

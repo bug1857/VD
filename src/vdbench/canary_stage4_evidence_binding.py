@@ -14,14 +14,15 @@ import unicodedata
 
 from .artifacts import canonical_json_bytes
 from .canary_workload import WorkloadIdentityBinding
-from .config import Metric
+from .config import IndexTrack, Metric, SearchConfiguration
 from .policy import ACTUATION_LADDER
+from .search_configuration_digest import search_configuration_document, search_configuration_sha256
 
 
 __all__ = ["STAGE4_EVIDENCE_BINDING_SCHEMA_VERSION", "Stage4EvidenceBinding"]
 
 
-STAGE4_EVIDENCE_BINDING_SCHEMA_VERSION = "stage4-evidence-binding-v1"
+STAGE4_EVIDENCE_BINDING_SCHEMA_VERSION = "stage4-evidence-binding-v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _REVISION_RE = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_TEXT_CODEPOINTS = 256
@@ -65,6 +66,7 @@ class Stage4EvidenceBinding:
     current_ef: int
     candidate_ef: int
     last_known_good_ef: int
+    candidate_search_configuration: SearchConfiguration
     identity: WorkloadIdentityBinding
     dataset002_manifest_sha256: str
     frozen_recall_audit_ids_sha256: str
@@ -89,6 +91,19 @@ class Stage4EvidenceBinding:
             raise ValueError("current_ef must equal last_known_good_ef for Stage-4 evidence")
         if self.candidate_ef == self.last_known_good_ef:
             raise ValueError("candidate_ef must differ from last_known_good_ef")
+        if not isinstance(self.candidate_search_configuration, SearchConfiguration):
+            raise ValueError("candidate_search_configuration must be a SearchConfiguration")
+        self.candidate_search_configuration.validate()
+        if self.candidate_search_configuration.index_track is not IndexTrack.HNSW:
+            raise ValueError("candidate_search_configuration.index_track must be HNSW")
+        if self.candidate_search_configuration.metric is not self.metric:
+            raise ValueError("candidate_search_configuration.metric must equal binding.metric")
+        if self.candidate_search_configuration.threshold_label != self.threshold_stratum:
+            raise ValueError(
+                "candidate_search_configuration.threshold_label must equal binding.threshold_stratum"
+            )
+        if self.candidate_search_configuration.ef != self.candidate_ef:
+            raise ValueError("candidate_search_configuration.ef must equal binding.candidate_ef")
         if not isinstance(self.identity, WorkloadIdentityBinding):
             raise ValueError("identity must be a WorkloadIdentityBinding")
         self.identity.validate()
@@ -117,6 +132,9 @@ class Stage4EvidenceBinding:
             "current_ef": self.current_ef,
             "candidate_ef": self.candidate_ef,
             "last_known_good_ef": self.last_known_good_ef,
+            "candidate_search_configuration": search_configuration_document(
+                self.candidate_search_configuration
+            ),
             "identity": self.identity.to_document(),
             "dataset002_manifest_sha256": self.dataset002_manifest_sha256,
             "frozen_recall_audit_ids_sha256": self.frozen_recall_audit_ids_sha256,
@@ -126,6 +144,12 @@ class Stage4EvidenceBinding:
             "recall_evidence_schema_version": self.recall_evidence_schema_version,
             "latency_evidence_schema_version": self.latency_evidence_schema_version,
         }
+
+    @property
+    def candidate_search_configuration_sha256(self) -> str:
+        """Always derived from the embedded configuration, never asserted."""
+
+        return search_configuration_sha256(self.candidate_search_configuration)
 
     @property
     def sha256(self) -> str:

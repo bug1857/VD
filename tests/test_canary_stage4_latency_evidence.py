@@ -44,14 +44,14 @@ from vdbench.canary_workload import (
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
-from vdbench.config import Metric, RESULT_LIMIT
+from vdbench.config import IndexTrack, Metric, RESULT_LIMIT, SearchConfiguration
 
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _build_schedule():
+def _build_schedule(*, radius: float = 0.75):
     controls = tuple(ScheduleControl(600 + index, _sha(f"control-{index}")) for index in range(50))
     stability = ScheduleStabilityContract(
         schema_version=SCHEDULE_STABILITY_SCHEMA_VERSION,
@@ -78,7 +78,7 @@ def _build_schedule():
         threshold_stratum="target-075",
         candidate_ef=800,
         last_known_good_ef=400,
-        radius=0.75,
+        radius=radius,
         range_filter=0.0,
         limit=RESULT_LIMIT,
         identity=WorkloadIdentityBinding("config", "data", "flat", "hnsw"),
@@ -86,7 +86,7 @@ def _build_schedule():
         schedule_stability=stability,
         occurrences=tuple(
             EligibleOccurrence(
-                index, f"exp009-routing-{index:06d}", index, _sha(f"route-{index}"), 0.75, 0.0, RESULT_LIMIT
+                index, f"exp009-routing-{index:06d}", index, _sha(f"route-{index}"), radius, 0.0, RESULT_LIMIT
             )
             for index in range(600)
         ),
@@ -121,6 +121,15 @@ def _binding_for(schedule, **overrides) -> Stage4EvidenceBinding:
         current_ef=schedule.last_known_good_ef,
         candidate_ef=schedule.candidate_ef,
         last_known_good_ef=schedule.last_known_good_ef,
+        candidate_search_configuration=SearchConfiguration(
+            metric=schedule.metric,
+            threshold_label=schedule.threshold_stratum,
+            radius=0.75,
+            index_track=IndexTrack.HNSW,
+            ef=schedule.candidate_ef,
+            limit=RESULT_LIMIT,
+            consistency_level="Strong",
+        ),
         identity=WorkloadIdentityBinding("config", "data", "flat", "hnsw"),
         dataset002_manifest_sha256=_sha("dataset002"),
         frozen_recall_audit_ids_sha256=_sha("frozen-ids"),
@@ -149,6 +158,22 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
     def _ledger(self, *, run_id: str = "exp009-stage4-latency-test") -> Stage4ExecutionLedger:
         return Stage4ExecutionLedger(self.ledger_path, run_id=run_id, schedule=self.schedule)
 
+    def test_changing_occurrence_radius_changes_schedule_sha256(self) -> None:
+        """Non-regression guard for the radius-binding-omission repair: the
+        latency side was found NOT exploitable specifically because radius is
+        baked into every routing step's hashed document, which feeds
+        schedule_sha256. This locks that property in so a future refactor of
+        canary_schedule.py cannot silently drop it."""
+        altered = _build_schedule(radius=0.50)
+        self.assertNotEqual(self.schedule.schedule_sha256, altered.schedule_sha256)
+
+        ledger = self._ledger()
+        # The unchanged, original binding must reject the altered schedule.
+        binding = _binding_for(self.schedule)
+        result = build_stage4_latency_evidence(binding=binding, schedule=altered, ledger=ledger)
+        self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
+        self.assertIn("EVIDENCE_BINDING_MISMATCH", result.reason_codes)
+
     def test_mismatched_execution_schedule_binding_is_incomplete(self) -> None:
         ledger = self._ledger()
         binding = _binding_for(self.schedule, execution_schedule_sha256="f" * 64)
@@ -164,7 +189,19 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
 
     def test_mismatched_metric_binding_is_incomplete(self) -> None:
         ledger = self._ledger()
-        binding = _binding_for(self.schedule, metric=Metric.COSINE)
+        binding = _binding_for(
+            self.schedule,
+            metric=Metric.COSINE,
+            candidate_search_configuration=SearchConfiguration(
+                metric=Metric.COSINE,
+                threshold_label=self.schedule.threshold_stratum,
+                radius=0.5,
+                index_track=IndexTrack.HNSW,
+                ef=self.schedule.candidate_ef,
+                limit=RESULT_LIMIT,
+                consistency_level="Strong",
+            ),
+        )
 
         result = build_stage4_latency_evidence(binding=binding, schedule=self.schedule, ledger=ledger)
 
@@ -173,7 +210,19 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
 
     def test_mismatched_candidate_ef_binding_is_incomplete(self) -> None:
         ledger = self._ledger()
-        binding = _binding_for(self.schedule, candidate_ef=1600)
+        binding = _binding_for(
+            self.schedule,
+            candidate_ef=1600,
+            candidate_search_configuration=SearchConfiguration(
+                metric=self.schedule.metric,
+                threshold_label=self.schedule.threshold_stratum,
+                radius=0.75,
+                index_track=IndexTrack.HNSW,
+                ef=1600,
+                limit=RESULT_LIMIT,
+                consistency_level="Strong",
+            ),
+        )
 
         result = build_stage4_latency_evidence(binding=binding, schedule=self.schedule, ledger=ledger)
 

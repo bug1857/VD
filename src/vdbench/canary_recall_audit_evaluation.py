@@ -153,6 +153,13 @@ def evaluate_recall_audit_evidence(
     only once that match is confirmed here -- it is never copied from the
     caller's claim, so a caller cannot assert a binding this evaluator did
     not itself verify.
+
+    Schema-v2 repair: ``search_configuration`` is compared for complete
+    field-wise equality against ``binding.candidate_search_configuration``
+    (metric, threshold_label, radius, index_track, ef, limit,
+    consistency_level), not merely metric/threshold_label/ef. A candidate
+    search run at a different, unregistered radius under an otherwise
+    unchanged binding no longer reaches the Hoeffding bound at all.
     """
 
     if len(expected_query_ids) != EXP009_RECALL_AUDIT_COUNT:
@@ -163,9 +170,7 @@ def evaluate_recall_audit_evidence(
         raise TypeError("binding must be a Stage4EvidenceBinding")
 
     if (
-        search_configuration.metric is not binding.metric
-        or search_configuration.threshold_label != binding.threshold_stratum
-        or search_configuration.ef != binding.candidate_ef
+        search_configuration != binding.candidate_search_configuration
         or identity != binding.identity
         or dataset002_manifest_sha256 != binding.dataset002_manifest_sha256
         or frozen_query_ids_sha256 != binding.frozen_recall_audit_ids_sha256

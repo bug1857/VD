@@ -194,12 +194,9 @@ class Stage4RecallAuditProducer:
 
         if ledger.binding_sha256 != binding.sha256:
             raise ValueError("LEDGER_BINDING_MISMATCH")
-        if (
-            search_configuration.index_track is not IndexTrack.HNSW
-            or search_configuration.metric is not binding.metric
-            or search_configuration.threshold_label != binding.threshold_stratum
-            or search_configuration.ef != binding.candidate_ef
-        ):
+        if search_configuration.index_track is not IndexTrack.HNSW:
+            raise ValueError("SEARCH_CONFIGURATION_INDEX_TRACK_INVALID")
+        if search_configuration != binding.candidate_search_configuration:
             raise ValueError("SEARCH_CONFIGURATION_BINDING_MISMATCH")
         if dataset002_schema_version != DATASET002_SCHEMA_VERSION:
             raise ValueError("DATASET002_SCHEMA_VERSION_MISMATCH")

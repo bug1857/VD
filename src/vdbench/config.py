@@ -125,19 +125,43 @@ class SearchConfiguration:
         )
 
     def validate(self) -> None:
-        """Reject any value outside ARCHITECTURE.md's EXP-001 registry."""
+        """Reject any value outside ARCHITECTURE.md's EXP-001 registry.
 
-        if isinstance(self.limit, bool) or self.limit != RESULT_LIMIT:
-            raise ContractViolation(f"limit must equal {RESULT_LIMIT}")
-        if self.consistency_level != CONSISTENCY_LEVEL:
-            raise ContractViolation("consistency_level must equal Strong")
-        if not np.isfinite(self.radius):
+        This is the root type/contract gate: every runtime type check here
+        exists so that no downstream consumer (a canonical-digest serializer,
+        a producer, an evaluator, a database adapter) can ever be the first
+        layer to discover an invalid configuration. A caller-supplied value
+        of the wrong Python type -- a bool where a number is expected, a
+        plain string where an enum member is expected -- is rejected here,
+        not coerced or silently accepted because it happens to compare equal
+        to a valid value.
+        """
+
+        if not isinstance(self.metric, Metric):
+            raise ContractViolation("metric must be a Metric enum member")
+        if not isinstance(self.index_track, IndexTrack):
+            raise ContractViolation("index_track must be an IndexTrack enum member")
+        if not isinstance(self.threshold_label, str) or self.threshold_label not in THRESHOLD_LABELS:
+            raise ContractViolation(f"threshold_label must be one of {THRESHOLD_LABELS}")
+
+        if isinstance(self.radius, bool) or not isinstance(self.radius, (int, float)):
+            raise ContractViolation("radius must be a real number")
+        radius_value = float(self.radius)
+        if not np.isfinite(radius_value):
             raise ContractViolation("radius must be finite")
         if self.metric is Metric.L2:
-            if not 0.0 < self.radius:
+            if not 0.0 < radius_value:
                 raise ContractViolation("L2 radius must be greater than 0.0")
-        elif not -1.0 <= self.radius < 1.0:
+        elif not -1.0 <= radius_value < 1.0:
             raise ContractViolation("COSINE radius must be in [-1.0, 1.0)")
+
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int):
+            raise ContractViolation("limit must be an integer")
+        if self.limit != RESULT_LIMIT:
+            raise ContractViolation(f"limit must equal {RESULT_LIMIT}")
+
+        if not isinstance(self.consistency_level, str) or self.consistency_level != CONSISTENCY_LEVEL:
+            raise ContractViolation("consistency_level must equal Strong")
 
         if self.index_track is IndexTrack.FLAT:
             if self.ef is not None:

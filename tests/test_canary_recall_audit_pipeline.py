@@ -202,6 +202,7 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
             current_ef=self.schedule.last_known_good_ef,
             candidate_ef=self.context["search_configuration"].ef,
             last_known_good_ef=self.schedule.last_known_good_ef,
+            candidate_search_configuration=self.context["search_configuration"],
             identity=self.context["identity"],
             dataset002_manifest_sha256=self.context["dataset002_manifest_sha256"],
             frozen_recall_audit_ids_sha256=self.frozen_query_ids_sha256,

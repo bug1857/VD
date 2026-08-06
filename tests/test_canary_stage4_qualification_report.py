@@ -23,8 +23,10 @@ routes, or mutates Milvus state.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -176,6 +178,7 @@ def _build_binding(schedule) -> Stage4EvidenceBinding:
         current_ef=schedule.last_known_good_ef,
         candidate_ef=schedule.candidate_ef,
         last_known_good_ef=schedule.last_known_good_ef,
+        candidate_search_configuration=_CONTEXT["search_configuration"],
         identity=_CONTEXT["identity"],
         dataset002_manifest_sha256=_CONTEXT["dataset002_manifest_sha256"],
         frozen_recall_audit_ids_sha256=_FROZEN_QUERY_IDS_SHA256,
@@ -381,6 +384,109 @@ class QualificationReportCliTests(unittest.TestCase):
         argv[argv.index("--expected-binding-sha256") + 1] = "f" * 64
         exit_code = main(["--report-kind", "recall-only", *argv])
         self.assertNotEqual(exit_code, 0)
+
+    # -- strict v2 binding.json loading -------------------------------------
+    #
+    # Each case below writes a *structurally* tampered binding.json whose
+    # bytes correctly match its own --expected-binding-sha256 (the outer
+    # digest-verify step is deliberately made to pass), so the test actually
+    # exercises the inner structural/byte-identity checks in
+    # _binding_from_document, not the outer trust-anchor check above.
+
+    def _tampered_binding_argv(self, *, run_id: str, document: dict) -> list[str]:
+        tampered_path = Path(self._tempdir.name) / f"binding-{run_id}.json"
+        tampered_bytes = json.dumps(document).encode("utf-8")
+        tampered_path.write_bytes(tampered_bytes)
+        argv = self._base_argv(ledger_path=self.ledger_path, run_id=run_id)
+        argv[argv.index("--binding-json") + 1] = str(tampered_path)
+        argv[argv.index("--expected-binding-sha256") + 1] = _sha256_bytes(tampered_bytes)
+        return argv
+
+    def test_unknown_top_level_field_is_rejected(self) -> None:
+        document = dict(self.binding.to_document(), unexpected_field="x")
+        argv = self._tampered_binding_argv(run_id="run-unknown-top", document=document)
+        exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_unknown_nested_configuration_field_is_rejected(self) -> None:
+        document = dict(self.binding.to_document())
+        document["candidate_search_configuration"] = dict(
+            document["candidate_search_configuration"], unexpected_field="x"
+        )
+        argv = self._tampered_binding_argv(run_id="run-unknown-nested", document=document)
+        exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_wrong_nested_schema_version_is_rejected(self) -> None:
+        document = dict(self.binding.to_document())
+        document["candidate_search_configuration"] = dict(
+            document["candidate_search_configuration"], schema_version="not-a-real-version"
+        )
+        argv = self._tampered_binding_argv(run_id="run-wrong-nested-version", document=document)
+        exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_contradictory_range_filter_is_rejected(self) -> None:
+        document = dict(self.binding.to_document())
+        # self.binding is L2, whose canonical range_filter is 0.0.
+        document["candidate_search_configuration"] = dict(
+            document["candidate_search_configuration"], range_filter=1.0
+        )
+        argv = self._tampered_binding_argv(run_id="run-contradictory-range-filter", document=document)
+        exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_noncanonical_negative_zero_radius_is_rejected(self) -> None:
+        """The COSINE-only -0.0-vs-0.0 finding: an externally supplied
+        document carrying the noncanonical -0.0 byte form must be rejected,
+        never silently normalized on the loader's behalf. L2 (self.binding's
+        own metric) cannot express this case at all -- L2 radius must be
+        strictly greater than 0.0 -- so a fresh, otherwise-valid COSINE
+        binding is built here to exercise it."""
+        cosine_config = SearchConfiguration(
+            metric=Metric.COSINE, threshold_label="target-025", radius=0.2,
+            index_track=IndexTrack.HNSW, ef=self.schedule.candidate_ef, limit=100, consistency_level="Strong",
+        )
+        cosine_binding = Stage4EvidenceBinding(
+            run_id="exp009-stage4-report-test-cosine", source_revision="0" * 40,
+            metric=Metric.COSINE, threshold_stratum="target-025",
+            current_ef=self.schedule.last_known_good_ef, candidate_ef=self.schedule.candidate_ef,
+            last_known_good_ef=self.schedule.last_known_good_ef,
+            candidate_search_configuration=cosine_config, identity=_CONTEXT["identity"],
+            dataset002_manifest_sha256=_CONTEXT["dataset002_manifest_sha256"],
+            frozen_recall_audit_ids_sha256=_FROZEN_QUERY_IDS_SHA256,
+            eligible_workload_sha256=_sha("eligible-workload"), candidate_selection_sha256=_sha("candidate-selection"),
+            execution_schedule_sha256=self.schedule.schedule_sha256,
+            recall_evidence_schema_version=RECALL_AUDIT_EVALUATOR_VERSION,
+            latency_evidence_schema_version="exp009-stage4-execution-schedule-v1",
+        )
+        document = dict(cosine_binding.to_document())
+        document["candidate_search_configuration"] = dict(
+            document["candidate_search_configuration"], radius=-0.0
+        )
+        argv = self._tampered_binding_argv(run_id="run-noncanonical-negative-zero", document=document)
+        exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_valid_canonical_v2_document_still_loads(self) -> None:
+        """A genuinely canonical document (this test's own untampered
+        ``self.binding.to_document()``) must be accepted by the strict
+        loader -- proven by reaching real recall evaluation (an
+        OBSERVATION_COUNT_INVALID INCOMPLETE from a 5-of-1200 ledger, never
+        a "binding-json is malformed" rejection)."""
+        document = dict(self.binding.to_document())
+        argv = self._tampered_binding_argv(run_id="run-valid-canonical-v2", document=document)
+        _populate_ledger(
+            self.ledger_path, run_id="run-valid-canonical-v2", binding_sha256=self.binding_sha256,
+            all_perfect=True, count=5,
+        )
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            exit_code = main(["--report-kind", "recall-only", *argv])
+        self.assertNotEqual(exit_code, 0)
+        output = json.loads(buffer.getvalue())
+        self.assertNotIn("error", output)
+        self.assertEqual(output["recall_evaluation"]["reason_codes"], ["OBSERVATION_COUNT_INVALID"])
 
     def test_internally_consistent_but_undigested_context_is_insufficient(self) -> None:
         """A context.json that is perfectly self-consistent with the ledger's

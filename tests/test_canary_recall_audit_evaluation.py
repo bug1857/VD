@@ -75,6 +75,7 @@ def _binding(**overrides) -> Stage4EvidenceBinding:
         current_ef=400,
         candidate_ef=800,
         last_known_good_ef=400,
+        candidate_search_configuration=_search_configuration(),
         identity=_identity(),
         dataset002_manifest_sha256="e" * 64,
         frozen_recall_audit_ids_sha256=_FROZEN_QUERY_IDS_SHA256,
@@ -323,23 +324,58 @@ class EvidenceBindingTests(unittest.TestCase):
         )
 
     def test_mismatched_binding_metric_is_incomplete(self) -> None:
-        result = self._evaluate(binding=_binding(metric=Metric.L2))
+        # The binding's own coherence check now requires candidate_search_configuration
+        # to agree with the binding's header metric -- so a self-consistent
+        # L2 binding is constructed, and the mismatch is against the caller's
+        # (still-COSINE) claimed search_configuration in _CONTEXT.
+        result = self._evaluate(
+            binding=_binding(
+                metric=Metric.L2,
+                candidate_search_configuration=_search_configuration(metric=Metric.L2, radius=0.6),
+            )
+        )
         self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
         self.assertIn("EVIDENCE_BINDING_MISMATCH", result.reason_codes)
         self.assertIsNone(result.evidence_binding_sha256)
         self.assertIsNone(result.lower_bound)
 
     def test_mismatched_binding_threshold_stratum_is_incomplete(self) -> None:
-        result = self._evaluate(binding=_binding(threshold_stratum="target-075"))
+        result = self._evaluate(
+            binding=_binding(
+                threshold_stratum="target-075",
+                candidate_search_configuration=_search_configuration(threshold_label="target-075"),
+            )
+        )
         self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
         self.assertIn("EVIDENCE_BINDING_MISMATCH", result.reason_codes)
         self.assertIsNone(result.evidence_binding_sha256)
 
     def test_mismatched_binding_candidate_ef_is_incomplete(self) -> None:
-        result = self._evaluate(binding=_binding(candidate_ef=400, last_known_good_ef=200, current_ef=200))
+        result = self._evaluate(
+            binding=_binding(
+                candidate_ef=400,
+                last_known_good_ef=200,
+                current_ef=200,
+                candidate_search_configuration=_search_configuration(ef=400),
+            )
+        )
         self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
         self.assertIn("EVIDENCE_BINDING_MISMATCH", result.reason_codes)
         self.assertIsNone(result.evidence_binding_sha256)
+
+    def test_mismatched_binding_radius_is_incomplete(self) -> None:
+        """The radius-binding-omission repair: a binding whose embedded
+        candidate_search_configuration agrees on metric/threshold_label/ef
+        but disagrees on radius alone must still fail the gate -- this is
+        the exact shape of the originally discovered exploit."""
+        result = self._evaluate(
+            binding=_binding(candidate_search_configuration=_search_configuration(radius=0.6))
+        )
+        self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
+        self.assertIn("EVIDENCE_BINDING_MISMATCH", result.reason_codes)
+        self.assertIsNone(result.evidence_binding_sha256)
+        self.assertIsNone(result.lower_bound)
+        self.assertEqual(result.sample_count, 0)
 
     def test_mismatched_binding_identity_is_incomplete(self) -> None:
         result = self._evaluate(binding=_binding(identity=_identity(hnsw_binding_id="different")))
@@ -377,7 +413,12 @@ class EvidenceBindingTests(unittest.TestCase):
     def test_binding_mismatch_examines_no_observations(self) -> None:
         """A binding-context mismatch must fail before any per-observation
         work, not after partially scanning observations."""
-        result = self._evaluate(binding=_binding(metric=Metric.L2))
+        result = self._evaluate(
+            binding=_binding(
+                metric=Metric.L2,
+                candidate_search_configuration=_search_configuration(metric=Metric.L2, radius=0.6),
+            )
+        )
         self.assertEqual(result.sample_count, 0)
         self.assertIsNone(result.evidence_digest)
 
