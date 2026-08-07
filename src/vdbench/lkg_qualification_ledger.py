@@ -165,12 +165,27 @@ import re
 import sqlite3
 import stat
 
+from datetime import datetime, timezone
+
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation, Metric
 from .lkg_qualification_evidence import (
     LkgAttemptStatus,
     LkgQueryAttempt,
     LkgQueryObservation,
+)
+from .lkg_qualification_seal import (
+    LkgPositionClassification,
+    LkgPositionStatus,
+    LkgRunSeal,
+    LkgSealCompletionState,
+    LkgSealWorkloadIdentity,
+    SEAL_SCHEMA_VERSION,
+    derive_completion_state,
+    lkg_run_seal_from_payload,
+    seal_payload_document,
+    seal_payload_document_digest,
+    validate_seal_reason,
 )
 from .lkg_run_binding import (
     LkgRunBinding,
@@ -186,10 +201,12 @@ __all__ = [
     "LkgAppendResult",
     "LkgQualificationLedger",
     "LkgQualificationLedgerError",
+    "seal_lkg_qualification_run",
+    "verify_seal",
 ]
 
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _EXPECTED_SCHEMA_OBJECTS = frozenset(
     {
@@ -203,6 +220,11 @@ _EXPECTED_SCHEMA_OBJECTS = frozenset(
         "lkg_qualification_workload_positions_no_delete",
         "lkg_qualification_attempts_no_update",
         "lkg_qualification_attempts_no_delete",
+        "lkg_qualification_seal",
+        "lkg_qualification_seal_no_update",
+        "lkg_qualification_seal_no_delete",
+        "lkg_qualification_seal_single_row",
+        "lkg_qualification_attempts_no_insert_after_seal",
     }
 )
 
@@ -438,33 +460,41 @@ class LkgQualificationLedger:
 
         return self._run_binding_sha256
 
-    def stored_run_binding(self) -> LkgRunBinding:
-        """Independently reconstruct and verify the persisted LkgRunBinding.
+    @staticmethod
+    def _read_pragma_user_version_locked(connection: sqlite3.Connection) -> int:
+        """Read ``PRAGMA user_version`` from an already-open connection --
+        the SQLite engine's own authoritative schema-version record, kept
+        separate from (and cross-checked against) the application-level
+        ``lkg_qualification_run.schema_version`` column, which a hostile
+        writer with row-level access could tamper with independently."""
 
-        Reads the complete canonical document back from
-        ``lkg_qualification_run``, strictly re-parses it (rejecting
-        unknown/missing/malformed/noncanonical fields), and recomputes its
-        digest -- proving the binding is reconstructable from the ledger
-        file alone, not from this process's in-memory object.
+        row = connection.execute("PRAGMA user_version").fetchone()
+        if row is None or type(row[0]) is not int:
+            raise _ledger_error("LKG_LEDGER_CORRUPTED")
+        return row[0]
+
+    def _read_and_verify_run_binding_locked(
+        self, connection: sqlite3.Connection
+    ) -> tuple[LkgRunBinding, int]:
+        """Read and independently re-verify the persisted ``LkgRunBinding``
+        from an already-open connection/transaction, returning it together
+        with its stored ``schema_version`` column value. Shared by
+        ``stored_run_binding()`` (which opens its own session) and the
+        sealing functions (which call this within their own single locked
+        transaction, alongside every other read they perform) -- so both
+        paths share one verification implementation rather than risking
+        two that could silently drift apart.
         """
 
-        try:
-            with self._session() as connection:
-                row_count = connection.execute(
-                    "SELECT COUNT(*) FROM lkg_qualification_run"
-                ).fetchone()[0]
-                if row_count > 1:
-                    raise _ledger_error("LKG_LEDGER_MULTIPLE_RUN_ROWS")
-                row = connection.execute(
-                    "SELECT run_id, schema_version, binding_document_json, run_binding_sha256 "
-                    "FROM lkg_qualification_run"
-                ).fetchone()
-        except LkgQualificationLedgerError:
-            raise
-        except sqlite3.OperationalError as exc:
-            raise _ledger_error("LKG_LEDGER_UNAVAILABLE", exc) from exc
-        except sqlite3.DatabaseError as exc:
-            raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM lkg_qualification_run"
+        ).fetchone()[0]
+        if row_count > 1:
+            raise _ledger_error("LKG_LEDGER_MULTIPLE_RUN_ROWS")
+        row = connection.execute(
+            "SELECT run_id, schema_version, binding_document_json, run_binding_sha256 "
+            "FROM lkg_qualification_run"
+        ).fetchone()
         if row is None:
             raise _ledger_error("LKG_LEDGER_CORRUPTED")
         stored_run_id, stored_schema_version, binding_document_json, stored_sha256 = row
@@ -478,7 +508,64 @@ class LkgQualificationLedger:
         recomputed_sha256 = lkg_run_binding_sha256(binding)
         if recomputed_sha256 != stored_sha256 or binding.run_id != stored_run_id:
             raise _ledger_error("LKG_LEDGER_CORRUPTED")
-        return binding
+        return binding, stored_schema_version
+
+    def stored_run_binding(self) -> LkgRunBinding:
+        """Independently reconstruct and verify the persisted LkgRunBinding.
+
+        Reads the complete canonical document back from
+        ``lkg_qualification_run``, strictly re-parses it (rejecting
+        unknown/missing/malformed/noncanonical fields), and recomputes its
+        digest -- proving the binding is reconstructable from the ledger
+        file alone, not from this process's in-memory object.
+        """
+
+        try:
+            with self._session() as connection:
+                binding, _ = self._read_and_verify_run_binding_locked(connection)
+                return binding
+        except LkgQualificationLedgerError:
+            raise
+        except sqlite3.OperationalError as exc:
+            raise _ledger_error("LKG_LEDGER_UNAVAILABLE", exc) from exc
+        except sqlite3.DatabaseError as exc:
+            raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
+
+    def _read_and_verify_workload_positions_locked(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        expected_length: int,
+        expected_ordered_query_ids_sha256: str,
+    ) -> tuple[int, ...]:
+        """Read and independently re-verify the persisted workload-position
+        sequence from an already-open connection/transaction, against a
+        caller-supplied expected length/digest. ``stored_ordered_query_ids()``
+        supplies this ledger's own bound ``run_binding`` fields (preserving
+        its exact existing behavior); the sealing functions supply whatever
+        they just freshly re-read within their own transaction, never
+        assuming it still matches this ledger's in-memory binding.
+        """
+
+        rows = connection.execute(
+            """
+            SELECT attempt_sequence, query_id
+            FROM lkg_qualification_workload_positions
+            WHERE run_id = ?
+            ORDER BY attempt_sequence ASC
+            """,
+            (self._run_id,),
+        ).fetchall()
+        if len(rows) != expected_length:
+            raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
+        for index, (attempt_sequence, query_id) in enumerate(rows):
+            if attempt_sequence != index:
+                raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
+        ids = tuple(query_id for _, query_id in rows)
+        recomputed = lkg_ordered_query_ids_sha256(ids)
+        if recomputed != expected_ordered_query_ids_sha256:
+            raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
+        return ids
 
     def stored_ordered_query_ids(self) -> tuple[int, ...]:
         """Independently reconstruct the ordered workload-position sequence.
@@ -495,30 +582,17 @@ class LkgQualificationLedger:
 
         try:
             with self._session() as connection:
-                rows = connection.execute(
-                    """
-                    SELECT attempt_sequence, query_id
-                    FROM lkg_qualification_workload_positions
-                    WHERE run_id = ?
-                    ORDER BY attempt_sequence ASC
-                    """,
-                    (self._run_id,),
-                ).fetchall()
+                return self._read_and_verify_workload_positions_locked(
+                    connection,
+                    expected_length=self._run_binding.qualification_expected_query_count,
+                    expected_ordered_query_ids_sha256=(
+                        self._run_binding.qualification_ordered_query_ids_sha256
+                    ),
+                )
         except sqlite3.OperationalError as exc:
             raise _ledger_error("LKG_LEDGER_UNAVAILABLE", exc) from exc
         except sqlite3.DatabaseError as exc:
             raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
-        expected_length = self._run_binding.qualification_expected_query_count
-        if len(rows) != expected_length:
-            raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
-        for index, (attempt_sequence, query_id) in enumerate(rows):
-            if attempt_sequence != index:
-                raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
-        ids = tuple(query_id for _, query_id in rows)
-        recomputed = lkg_ordered_query_ids_sha256(ids)
-        if recomputed != self._run_binding.qualification_ordered_query_ids_sha256:
-            raise _ledger_error("LKG_LEDGER_WORKLOAD_POSITIONS_CORRUPTED")
-        return ids
 
     def append(self, attempt: LkgQueryAttempt) -> LkgAppendResult:
         """Append one attempt once; a conflicting duplicate fails closed.
@@ -912,6 +986,89 @@ class LkgQualificationLedger:
                     BEGIN SELECT RAISE(ABORT, 'lkg qualification attempts are append-only'); END
                     """
                 )
+                connection.execute(
+                    f"""
+                    CREATE TABLE lkg_qualification_seal (
+                        run_id TEXT PRIMARY KEY NOT NULL,
+                        seal_schema_version INTEGER NOT NULL,
+                        run_binding_sha256 TEXT NOT NULL,
+                        phase1_ledger_schema_version INTEGER NOT NULL,
+                        expected_query_count INTEGER NOT NULL,
+                        qualification_ordered_query_ids_sha256 TEXT NOT NULL,
+                        final_chain_head_sha256 TEXT NOT NULL,
+                        successful_position_count INTEGER NOT NULL,
+                        failed_position_count INTEGER NOT NULL,
+                        malformed_position_count INTEGER NOT NULL,
+                        missing_position_count INTEGER NOT NULL,
+                        successful_attempt_count INTEGER NOT NULL,
+                        failed_attempt_count INTEGER NOT NULL,
+                        total_durable_attempt_count INTEGER NOT NULL,
+                        completion_state TEXT NOT NULL,
+                        expected_completion_state TEXT NOT NULL,
+                        seal_reason TEXT NOT NULL,
+                        sealed_at_utc TEXT NOT NULL,
+                        document_json TEXT NOT NULL,
+                        canonical_seal_document_digest TEXT NOT NULL,
+                        FOREIGN KEY (run_id) REFERENCES lkg_qualification_run(run_id),
+                        CHECK (seal_schema_version = {SEAL_SCHEMA_VERSION}),
+                        CHECK (phase1_ledger_schema_version = {_SCHEMA_VERSION}),
+                        CHECK (length(run_binding_sha256) = 64),
+                        CHECK (length(qualification_ordered_query_ids_sha256) = 64),
+                        CHECK (length(final_chain_head_sha256) = 64),
+                        CHECK (length(canonical_seal_document_digest) = 64),
+                        CHECK (expected_query_count > 0),
+                        CHECK (successful_position_count >= 0),
+                        CHECK (failed_position_count >= 0),
+                        CHECK (malformed_position_count >= 0),
+                        CHECK (missing_position_count >= 0),
+                        CHECK (successful_position_count + failed_position_count
+                               + malformed_position_count + missing_position_count
+                               = expected_query_count),
+                        CHECK (successful_attempt_count >= 0),
+                        CHECK (failed_attempt_count >= 0),
+                        CHECK (successful_attempt_count + failed_attempt_count
+                               = total_durable_attempt_count),
+                        CHECK (completion_state IN (
+                            'ALL_POSITIONS_SUCCESSFUL', 'CONTAINS_DURABLE_FAILURE', 'INCOMPLETE_NO_FAILURE'
+                        )),
+                        CHECK (expected_completion_state IN (
+                            'ALL_POSITIONS_SUCCESSFUL', 'CONTAINS_DURABLE_FAILURE', 'INCOMPLETE_NO_FAILURE'
+                        )),
+                        CHECK (completion_state = expected_completion_state)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER lkg_qualification_seal_no_update
+                    BEFORE UPDATE ON lkg_qualification_seal
+                    BEGIN SELECT RAISE(ABORT, 'lkg qualification seal is append-only'); END
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER lkg_qualification_seal_no_delete
+                    BEFORE DELETE ON lkg_qualification_seal
+                    BEGIN SELECT RAISE(ABORT, 'lkg qualification seal is append-only'); END
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER lkg_qualification_seal_single_row
+                    BEFORE INSERT ON lkg_qualification_seal
+                    WHEN (SELECT COUNT(*) FROM lkg_qualification_seal) >= 1
+                    BEGIN SELECT RAISE(ABORT, 'lkg qualification ledger holds exactly one seal'); END
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER lkg_qualification_attempts_no_insert_after_seal
+                    BEFORE INSERT ON lkg_qualification_attempts
+                    WHEN (SELECT COUNT(*) FROM lkg_qualification_seal) >= 1
+                    BEGIN SELECT RAISE(ABORT,
+                        'lkg qualification attempts are frozen once the run is sealed'); END
+                    """
+                )
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             elif version[0] != _SCHEMA_VERSION:
                 raise _ledger_error("LKG_LEDGER_SCHEMA_MISMATCH")
@@ -1026,3 +1183,508 @@ class LkgQualificationLedger:
         except BaseException:
             connection.rollback()
             raise
+
+    def _read_and_verify_seal_row_locked(
+        self, connection: sqlite3.Connection
+    ) -> LkgRunSeal | None:
+        """Read, strictly reconstruct, and cross-verify the seal row (if
+        any exists) from an already-open connection/transaction.
+
+        Returns ``None`` if this run has never been sealed. Never trusts
+        the stored row's own claims: parses ``document_json`` via
+        ``lkg_run_seal_from_payload``'s strict reconstruction (rejecting
+        unknown/missing/malformed/noncanonical fields, top-level or
+        nested), requires an exact canonical-byte round-trip of that
+        payload, recomputes ``canonical_seal_document_digest`` from it, and
+        cross-checks every denormalized scalar column against the
+        reconstructed ``LkgRunSeal`` -- any disagreement is
+        ``LKG_SEAL_CORRUPTED``/``LKG_SEAL_COLUMN_MISMATCH``, never silently
+        accepted. This is the seal-row analogue of ``_verified_chain``'s
+        existing document-vs-column cross-check discipline for attempts.
+        """
+
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM lkg_qualification_seal"
+        ).fetchone()[0]
+        if row_count > 1:
+            raise _ledger_error("LKG_SEAL_MULTIPLE_SEAL_ROWS")
+        row = connection.execute(
+            """
+            SELECT run_id, seal_schema_version, run_binding_sha256,
+                   phase1_ledger_schema_version, expected_query_count,
+                   qualification_ordered_query_ids_sha256, final_chain_head_sha256,
+                   successful_position_count, failed_position_count,
+                   malformed_position_count, missing_position_count,
+                   successful_attempt_count, failed_attempt_count,
+                   total_durable_attempt_count, completion_state,
+                   expected_completion_state, seal_reason, sealed_at_utc,
+                   document_json, canonical_seal_document_digest
+            FROM lkg_qualification_seal
+            WHERE run_id = ?
+            """,
+            (self._run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        (
+            row_run_id,
+            row_seal_schema_version,
+            row_run_binding_sha256,
+            row_phase1_ledger_schema_version,
+            row_expected_query_count,
+            row_ordered_query_ids_sha256,
+            row_final_chain_head_sha256,
+            row_successful_position_count,
+            row_failed_position_count,
+            row_malformed_position_count,
+            row_missing_position_count,
+            row_successful_attempt_count,
+            row_failed_attempt_count,
+            row_total_durable_attempt_count,
+            row_completion_state,
+            row_expected_completion_state,
+            row_seal_reason,
+            row_sealed_at_utc,
+            document_json,
+            row_canonical_seal_document_digest,
+        ) = row
+
+        try:
+            document = json.loads(document_json)
+            if not isinstance(document, dict):
+                raise ValueError("stored seal document must be a JSON object")
+            seal = lkg_run_seal_from_payload(
+                document, canonical_seal_document_digest=row_canonical_seal_document_digest
+            )
+        except (TypeError, ValueError, ContractViolation, json.JSONDecodeError) as exc:
+            raise _ledger_error("LKG_SEAL_CORRUPTED", exc) from exc
+
+        # Canonical byte round-trip: a payload that parses but was not
+        # stored in canonical form is corrupted, exactly as a noncanonical
+        # binding_document_json would be for the run table.
+        rebuilt_payload = seal_payload_document(seal)
+        if canonical_json_bytes(rebuilt_payload) != document_json.encode("utf-8"):
+            raise _ledger_error("LKG_SEAL_CORRUPTED")
+        recomputed_digest = seal_payload_document_digest(rebuilt_payload)
+        if recomputed_digest != row_canonical_seal_document_digest:
+            raise _ledger_error("LKG_SEAL_CORRUPTED")
+
+        if (
+            row_run_id != seal.run_id
+            or row_seal_schema_version != seal.seal_schema_version
+            or row_run_binding_sha256 != seal.run_binding_sha256
+            or row_phase1_ledger_schema_version != seal.phase1_ledger_schema_version
+            or row_expected_query_count != seal.expected_query_count
+            or row_ordered_query_ids_sha256 != seal.qualification_ordered_query_ids_sha256
+            or row_final_chain_head_sha256 != seal.final_chain_head_sha256
+            or row_successful_position_count != seal.successful_position_count
+            or row_failed_position_count != seal.failed_position_count
+            or row_malformed_position_count != seal.malformed_position_count
+            or row_missing_position_count != seal.missing_position_count
+            or row_successful_attempt_count != seal.successful_attempt_count
+            or row_failed_attempt_count != seal.failed_attempt_count
+            or row_total_durable_attempt_count != seal.total_durable_attempt_count
+            or row_completion_state != seal.completion_state.value
+            or row_expected_completion_state != seal.expected_completion_state.value
+            or row_seal_reason != seal.seal_reason
+            or row_sealed_at_utc != seal.sealed_at_utc
+        ):
+            raise _ledger_error("LKG_SEAL_COLUMN_MISMATCH")
+
+        return seal
+
+
+def _classify_positions(
+    ordered_query_ids: tuple[int, ...],
+    attempts: tuple[LkgQueryAttempt, ...],
+) -> tuple[LkgPositionClassification, ...]:
+    """Classify every one of a run's fixed workload positions from its
+    durable attempt history. Mutually exclusive, exhaustive precedence
+    (ARCHITECTURE.md's ADR-002 Phase-2 addendum, ``73ade90``): more than
+    one durable ``SUCCESS`` attempt classifies a position ``MALFORMED``
+    regardless of whether durable failures are also present at that same
+    position (recorded in its reason codes, never changing the
+    classification itself); otherwise any durable non-``SUCCESS`` attempt
+    classifies it ``FAILED``; otherwise exactly one durable ``SUCCESS``
+    classifies it ``CLEAN_SUCCESS``; otherwise (no durable attempts at
+    all) it is ``MISSING``. The four resulting classifications always
+    partition every position exactly once -- this is a total function of
+    each position's (success_count, failure_count) pair.
+    """
+
+    by_position: dict[int, list[LkgQueryAttempt]] = {
+        position: [] for position in range(len(ordered_query_ids))
+    }
+    for attempt in attempts:
+        if attempt.attempt_sequence not in by_position:
+            # Structurally unreachable while the composite foreign key to
+            # lkg_qualification_workload_positions is enforced -- retained
+            # as a defensive, fail-closed guard against a hostile writer
+            # that bypassed it (PRAGMA foreign_keys=OFF), rather than a
+            # silent KeyError or an attempt disappearing from evidence.
+            raise _ledger_error("LKG_LEDGER_SEQUENCE_OUT_OF_RANGE")
+        by_position[attempt.attempt_sequence].append(attempt)
+
+    classifications: list[LkgPositionClassification] = []
+    for position in range(len(ordered_query_ids)):
+        position_attempts = by_position[position]
+        success_count = sum(
+            1 for attempt in position_attempts if attempt.status is LkgAttemptStatus.SUCCESS
+        )
+        failure_count = len(position_attempts) - success_count
+        if success_count > 1:
+            status = LkgPositionStatus.MALFORMED
+            reason_codes: tuple[str, ...] = ("MULTIPLE_SUCCESSFUL_ATTEMPTS",) + (
+                ("DURABLE_FAILURES_ALSO_PRESENT",) if failure_count > 0 else ()
+            )
+        elif failure_count > 0:
+            status, reason_codes = LkgPositionStatus.FAILED, ("DURABLE_FAILURE_PRESENT",)
+        elif success_count == 1:
+            status, reason_codes = LkgPositionStatus.CLEAN_SUCCESS, ()
+        else:
+            status, reason_codes = LkgPositionStatus.MISSING, ()
+        classifications.append(
+            LkgPositionClassification(
+                attempt_sequence=position,
+                query_id=ordered_query_ids[position],
+                classification=status,
+                reason_codes=reason_codes,
+            )
+        )
+    return tuple(classifications)
+
+
+def _current_rfc3339_utc() -> str:
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
+
+
+@dataclass(frozen=True, slots=True)
+class _FreshLkgEvidence:
+    """Every source-derived fact needed to seal or re-verify a run,
+    re-read from scratch within one locked transaction -- never assembled
+    from a caller's in-memory state, and never reused across two separate
+    transactions."""
+
+    run_binding: LkgRunBinding
+    run_binding_sha256: str
+    phase1_ledger_schema_version: int
+    workload_identity: LkgSealWorkloadIdentity
+    ordered_query_ids: tuple[int, ...]
+    attempts: tuple[LkgQueryAttempt, ...]
+    chain_head: str
+    position_classifications: tuple[LkgPositionClassification, ...]
+    successful_position_count: int
+    failed_position_count: int
+    malformed_position_count: int
+    missing_position_count: int
+    successful_attempt_count: int
+    failed_attempt_count: int
+    completion_state: LkgSealCompletionState
+
+
+def _read_fresh_evidence_locked(
+    ledger: "LkgQualificationLedger", connection: sqlite3.Connection
+) -> _FreshLkgEvidence:
+    """Perform every read ``seal_lkg_qualification_run``/``verify_seal``
+    need, within the caller's already-open ``BEGIN IMMEDIATE`` transaction
+    -- shared so both never risk computing this evidence two different
+    ways."""
+
+    pragma_version = ledger._read_pragma_user_version_locked(connection)
+    if pragma_version != _SCHEMA_VERSION:
+        raise _ledger_error("LKG_LEDGER_SCHEMA_MISMATCH")
+    run_binding, row_schema_version = ledger._read_and_verify_run_binding_locked(connection)
+    if row_schema_version != pragma_version:
+        raise _ledger_error("LKG_LEDGER_SCHEMA_MISMATCH")
+    ordered_query_ids = ledger._read_and_verify_workload_positions_locked(
+        connection,
+        expected_length=run_binding.qualification_expected_query_count,
+        expected_ordered_query_ids_sha256=run_binding.qualification_ordered_query_ids_sha256,
+    )
+    attempts, chain_head = ledger._verified_chain(connection)
+    position_classifications = _classify_positions(ordered_query_ids, attempts)
+
+    successful_position_count = sum(
+        1 for entry in position_classifications if entry.classification is LkgPositionStatus.CLEAN_SUCCESS
+    )
+    failed_position_count = sum(
+        1 for entry in position_classifications if entry.classification is LkgPositionStatus.FAILED
+    )
+    malformed_position_count = sum(
+        1 for entry in position_classifications if entry.classification is LkgPositionStatus.MALFORMED
+    )
+    missing_position_count = sum(
+        1 for entry in position_classifications if entry.classification is LkgPositionStatus.MISSING
+    )
+    successful_attempt_count = sum(1 for attempt in attempts if attempt.status is LkgAttemptStatus.SUCCESS)
+    failed_attempt_count = len(attempts) - successful_attempt_count
+
+    workload_identity = LkgSealWorkloadIdentity(
+        dataset_id=run_binding.qualification_dataset_id,
+        dataset_version=run_binding.qualification_dataset_version,
+        manifest_sha256=run_binding.qualification_manifest_sha256,
+        query_role=run_binding.qualification_query_role,
+    )
+    completion_state = derive_completion_state(
+        failed_position_count=failed_position_count,
+        malformed_position_count=malformed_position_count,
+        missing_position_count=missing_position_count,
+    )
+
+    return _FreshLkgEvidence(
+        run_binding=run_binding,
+        run_binding_sha256=lkg_run_binding_sha256(run_binding),
+        phase1_ledger_schema_version=pragma_version,
+        workload_identity=workload_identity,
+        ordered_query_ids=ordered_query_ids,
+        attempts=attempts,
+        chain_head=chain_head,
+        position_classifications=position_classifications,
+        successful_position_count=successful_position_count,
+        failed_position_count=failed_position_count,
+        malformed_position_count=malformed_position_count,
+        missing_position_count=missing_position_count,
+        successful_attempt_count=successful_attempt_count,
+        failed_attempt_count=failed_attempt_count,
+        completion_state=completion_state,
+    )
+
+
+def _evidence_matches_seal(evidence: _FreshLkgEvidence, seal: LkgRunSeal) -> bool:
+    """Compare every source-derived field -- not only summary counts and
+    chain head -- against an already-verified stored seal. Deliberately
+    excludes ``seal_reason``/``expected_completion_state``/``sealed_at_utc``,
+    which are the caller-asserted-at-first-sealing fields compared
+    separately (and only relevant on the reseal path, never on
+    ``verify_seal``, which supplies no arguments of its own).
+    """
+
+    return (
+        evidence.run_binding_sha256 == seal.run_binding_sha256
+        and evidence.phase1_ledger_schema_version == seal.phase1_ledger_schema_version
+        and evidence.workload_identity == seal.workload_identity
+        and evidence.run_binding.qualification_expected_query_count == seal.expected_query_count
+        and (
+            evidence.run_binding.qualification_ordered_query_ids_sha256
+            == seal.qualification_ordered_query_ids_sha256
+        )
+        and evidence.chain_head == seal.final_chain_head_sha256
+        and evidence.position_classifications == seal.position_classifications
+        and evidence.successful_position_count == seal.successful_position_count
+        and evidence.failed_position_count == seal.failed_position_count
+        and evidence.malformed_position_count == seal.malformed_position_count
+        and evidence.missing_position_count == seal.missing_position_count
+        and evidence.successful_attempt_count == seal.successful_attempt_count
+        and evidence.failed_attempt_count == seal.failed_attempt_count
+        and len(evidence.attempts) == seal.total_durable_attempt_count
+        and evidence.completion_state == seal.completion_state
+    )
+
+
+def _seal_payload_from_evidence(
+    evidence: _FreshLkgEvidence,
+    *,
+    run_id: str,
+    expected_completion_state: LkgSealCompletionState,
+    seal_reason: str,
+    sealed_at_utc: str,
+) -> dict[str, object]:
+    return {
+        "seal_schema_version": SEAL_SCHEMA_VERSION,
+        "run_id": run_id,
+        "run_binding_sha256": evidence.run_binding_sha256,
+        "phase1_ledger_schema_version": evidence.phase1_ledger_schema_version,
+        "workload_identity": {
+            "dataset_id": evidence.workload_identity.dataset_id,
+            "dataset_version": evidence.workload_identity.dataset_version,
+            "manifest_sha256": evidence.workload_identity.manifest_sha256,
+            "query_role": evidence.workload_identity.query_role,
+        },
+        "expected_query_count": evidence.run_binding.qualification_expected_query_count,
+        "qualification_ordered_query_ids_sha256": (
+            evidence.run_binding.qualification_ordered_query_ids_sha256
+        ),
+        "final_chain_head_sha256": evidence.chain_head,
+        "position_classifications": [
+            {
+                "attempt_sequence": entry.attempt_sequence,
+                "query_id": entry.query_id,
+                "classification": entry.classification.value,
+                "reason_codes": list(entry.reason_codes),
+            }
+            for entry in evidence.position_classifications
+        ],
+        "successful_position_count": evidence.successful_position_count,
+        "failed_position_count": evidence.failed_position_count,
+        "malformed_position_count": evidence.malformed_position_count,
+        "missing_position_count": evidence.missing_position_count,
+        "successful_attempt_count": evidence.successful_attempt_count,
+        "failed_attempt_count": evidence.failed_attempt_count,
+        "total_durable_attempt_count": len(evidence.attempts),
+        "completion_state": evidence.completion_state.value,
+        "expected_completion_state": expected_completion_state.value,
+        "seal_reason": seal_reason,
+        "sealed_at_utc": sealed_at_utc,
+    }
+
+
+def seal_lkg_qualification_run(
+    ledger: LkgQualificationLedger,
+    *,
+    expected_completion_state: LkgSealCompletionState,
+    seal_reason: str,
+) -> LkgRunSeal:
+    """Atomically seal (or idempotently re-verify) exactly one Phase-1
+    qualification run's complete evidence -- see ARCHITECTURE.md's
+    ADR-002 Phase-2 addendum (``73ade90``) for the full normative
+    contract.
+
+    One ``BEGIN IMMEDIATE`` transaction covers every read (schema-version
+    pragma, run binding, workload positions, full chain re-verification),
+    classification, comparison, and the seal insertion itself -- the lock
+    is never released before the outcome (insert, idempotent return, or
+    refusal) is fully decided, so no concurrent ``append`` can land
+    between this function's final chain verification and its seal
+    insertion, and this function can never observe an ``append`` only
+    partially committed.
+
+    First sealing requires ``expected_completion_state`` to match what
+    the evidence actually shows, refusing (before any write) otherwise --
+    a caller cannot accidentally seal a run in a state it did not intend.
+    A second call against an already-sealed, unchanged run returns the
+    *original* seal (same ``sealed_at_utc``, same digest, never
+    regenerated); a second call whose caller-supplied arguments differ
+    from the original is ``LKG_SEAL_CALL_ARGUMENTS_MISMATCH``; a second
+    call where the underlying evidence itself has changed since sealing
+    (only reachable via a foreign-keys-disabled/trigger-bypassing
+    external writer, since normal operation makes this impossible once
+    sealed) is ``LKG_SEAL_SOURCE_LEDGER_CHANGED_SINCE_SEALING``.
+    """
+
+    if not isinstance(ledger, LkgQualificationLedger):
+        raise ContractViolation("ledger must be an LkgQualificationLedger")
+    if not isinstance(expected_completion_state, LkgSealCompletionState):
+        raise ContractViolation("expected_completion_state must be an LkgSealCompletionState")
+    validate_seal_reason(seal_reason)
+
+    try:
+        with ledger._session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                evidence = _read_fresh_evidence_locked(ledger, connection)
+                existing_seal = ledger._read_and_verify_seal_row_locked(connection)
+
+                if existing_seal is not None:
+                    if not _evidence_matches_seal(evidence, existing_seal):
+                        raise _ledger_error("LKG_SEAL_SOURCE_LEDGER_CHANGED_SINCE_SEALING")
+                    if (
+                        seal_reason != existing_seal.seal_reason
+                        or expected_completion_state != existing_seal.expected_completion_state
+                    ):
+                        raise _ledger_error("LKG_SEAL_CALL_ARGUMENTS_MISMATCH")
+                    connection.commit()
+                    return existing_seal
+
+                if evidence.completion_state != expected_completion_state:
+                    raise _ledger_error("LKG_SEAL_COMPLETION_STATE_MISMATCH")
+
+                sealed_at_utc = _current_rfc3339_utc()
+                payload = _seal_payload_from_evidence(
+                    evidence,
+                    run_id=ledger.run_id,
+                    expected_completion_state=expected_completion_state,
+                    seal_reason=seal_reason,
+                    sealed_at_utc=sealed_at_utc,
+                )
+                digest = seal_payload_document_digest(payload)
+                new_seal = lkg_run_seal_from_payload(payload, canonical_seal_document_digest=digest)
+                document_json = canonical_json_bytes(payload).decode("utf-8")
+                connection.execute(
+                    """
+                    INSERT INTO lkg_qualification_seal(
+                        run_id, seal_schema_version, run_binding_sha256,
+                        phase1_ledger_schema_version, expected_query_count,
+                        qualification_ordered_query_ids_sha256, final_chain_head_sha256,
+                        successful_position_count, failed_position_count,
+                        malformed_position_count, missing_position_count,
+                        successful_attempt_count, failed_attempt_count,
+                        total_durable_attempt_count, completion_state,
+                        expected_completion_state, seal_reason, sealed_at_utc,
+                        document_json, canonical_seal_document_digest
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_seal.run_id,
+                        new_seal.seal_schema_version,
+                        new_seal.run_binding_sha256,
+                        new_seal.phase1_ledger_schema_version,
+                        new_seal.expected_query_count,
+                        new_seal.qualification_ordered_query_ids_sha256,
+                        new_seal.final_chain_head_sha256,
+                        new_seal.successful_position_count,
+                        new_seal.failed_position_count,
+                        new_seal.malformed_position_count,
+                        new_seal.missing_position_count,
+                        new_seal.successful_attempt_count,
+                        new_seal.failed_attempt_count,
+                        new_seal.total_durable_attempt_count,
+                        new_seal.completion_state.value,
+                        new_seal.expected_completion_state.value,
+                        new_seal.seal_reason,
+                        new_seal.sealed_at_utc,
+                        document_json,
+                        digest,
+                    ),
+                )
+                connection.commit()
+                return new_seal
+            except BaseException:
+                connection.rollback()
+                raise
+    except LkgQualificationLedgerError:
+        raise
+    except sqlite3.IntegrityError as exc:
+        raise _ledger_error("LKG_LEDGER_CONSTRAINT_VIOLATION", exc) from exc
+    except sqlite3.OperationalError as exc:
+        raise _ledger_error("LKG_LEDGER_UNAVAILABLE", exc) from exc
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
+
+
+def verify_seal(ledger: LkgQualificationLedger) -> LkgRunSeal:
+    """Independently re-derive and re-verify a Phase-1 run's seal from
+    scratch, within one locked, ``BEGIN IMMEDIATE`` transaction -- never
+    trusting a previously cached verification. Raises ``LKG_SEAL_MISSING``
+    if the run has never been sealed; raises
+    ``LKG_SEAL_SOURCE_LEDGER_CHANGED_SINCE_SEALING`` if the live evidence
+    no longer matches what was sealed (only reachable via an external
+    writer that bypassed the append-after-seal trigger and/or the
+    per-row append-only triggers, since normal operation cannot produce
+    this once a run is sealed).
+    """
+
+    if not isinstance(ledger, LkgQualificationLedger):
+        raise ContractViolation("ledger must be an LkgQualificationLedger")
+
+    try:
+        with ledger._session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing_seal = ledger._read_and_verify_seal_row_locked(connection)
+                if existing_seal is None:
+                    raise _ledger_error("LKG_SEAL_MISSING")
+                evidence = _read_fresh_evidence_locked(ledger, connection)
+                if not _evidence_matches_seal(evidence, existing_seal):
+                    raise _ledger_error("LKG_SEAL_SOURCE_LEDGER_CHANGED_SINCE_SEALING")
+                connection.commit()
+                return existing_seal
+            except BaseException:
+                connection.rollback()
+                raise
+    except LkgQualificationLedgerError:
+        raise
+    except sqlite3.OperationalError as exc:
+        raise _ledger_error("LKG_LEDGER_UNAVAILABLE", exc) from exc
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
