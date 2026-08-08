@@ -1812,6 +1812,188 @@ failures. Full repository suite: 662/662 passing, 0 failures, 0 errors,
 change ADR-008's own **Proposed** status above, and it still authorizes no
 candidate routing, approval use, rollback, or automatic tuning.
 
+#### Phase-3 D3 amendment — Checkpoint-C authority at Stage-4 admission (proposed)
+
+Status: Accepted — implementation and adversarial verification pending
+Date: 2026-08-08
+Risk level: CRITICAL
+Scope: This amendment narrows the Stage-4 admission trust boundary. It does
+not authorize candidate routing, change a signed-grant schema, or recompute
+qualification evidence.
+
+**Context.** The existing Stage-4 admission request accepts the legacy
+`QualificationResult` value. Phase-3 D1 and D2 now provide a stronger trust
+chain: D1 can expose an immutable `LkgPhase3Authority` only after fresh replay
+verification of one terminal, `PASSING` Checkpoint-C evaluation against its
+Phase-1 and Phase-2 ledgers, while D2 persists append-only identity/lineage
+references without creating a qualification verdict. Stage-4 admission must
+consume that trust chain directly so Checkpoint C is the sole new LKG
+qualification authority. It must not infer authority from a detached D2 row,
+legacy windows, or repeated statistics.
+
+**Decision.** A candidate-capable Stage-4 admission evaluation requires both:
+
+1. a freshly resolved D1 `LkgPhase3Authority` whose exact terminal
+   Checkpoint-C artifact has passed the D1 upstream replay and lineage gates;
+   and
+2. an opaque, privately constructed D2 **verified-latest-chain-head** value
+   issued by `LkgPhase3AuthorityReferenceStore` after the store has verified
+   its complete schema, canonical row/document agreement, record digest,
+   append-only chain, timestamp order, and current chain head.
+
+A plain or detached historical `PersistedLkgPhase3AuthorityReference` is an
+identity-only record and never authorizes admission, even when its fields look
+valid. D2 evidence alone never authorizes. D1 authority without matching,
+store-verified latest D2 persistence also never authorizes. The D2-issued
+latest-head value remains non-authorizing by itself and must not expose a
+public construction path.
+
+The fresh D1 authority and verified D2 latest head must match exactly on every
+identity/lineage field D2 persists: canonical Checkpoint-C evaluation digest;
+source run ID and run-binding digest; source-run seal and sealed Phase-1 chain
+head; Phase-2 source-binding digest; evaluated `ef`; search-configuration
+digest; metric and threshold stratum; collection, HNSW index, and base-data
+identities; qualification dataset ID/version/manifest, query role, ordered-ID,
+ID-array, query-array, and expected-count commitments; environment identity;
+and LKG source revision. A missing, malformed, unequal, non-latest, or
+unable-to-verify field fails closed.
+
+The fresh-authority provider returns exactly one immutable pair containing the
+D1 authority and its verified-latest D2 head for each refresh operation. An
+authority from one refresh and a D2 value from another refresh must never be
+mixed, even if selected fields happen to compare equal. Pair construction and
+validation are one fail-closed operation; an incomplete pair is unusable.
+
+**Explicit configuration bridge.** `Stage4EvidenceBinding` is the sole D3
+bridge between the LKG search configuration and the Stage-4 route-plan
+configuration identity. Admission must:
+
+1. require the binding's metric, threshold stratum, current/LKG/candidate
+   `ef`, workload and selection digests, and complete `WorkloadIdentityBinding`
+   to match the rebuilt `CanaryRoutePlan` exactly;
+2. derive the expected candidate `SearchConfiguration` from the fresh D1
+   authority's complete LKG `SearchConfiguration` by changing **only** `ef` to
+   `plan.candidate_ef`; and
+3. require exact object equality between that derived value and
+   `Stage4EvidenceBinding.candidate_search_configuration`, then bind the
+   evidence-binding digest into the admission receipt.
+
+**Execution-schedule binding.** `Stage4AdmissionRequest` consumes the actual
+immutable `Stage4ExecutionSchedule`, not only a caller-supplied schedule
+digest. Admission validates the schedule through its public contract and must
+require both:
+
+- `schedule.plan_sha256 == rebuilt_plan.plan_sha256`; and
+- `Stage4EvidenceBinding.execution_schedule_sha256 ==
+  schedule.schedule_sha256`.
+
+The successful admission receipt binds `execution_schedule_sha256`. Both the
+candidate-capable live runner and the non-actuating offline serial runner must
+require exact equality between the receipt's execution-schedule digest and the
+actual immutable schedule they consume. A schedule substitution, a receipt
+for another schedule, or an unable-to-validate schedule fails before dispatch.
+
+Admission must never equate `plan.configuration_identity` with
+`LkgPhase3Authority.search_configuration_digest`: these are distinct,
+domain-specific identities. The former remains the opaque Stage-4 workload
+configuration identity carried by `Stage4EvidenceBinding`; the latter is the
+domain-separated digest of the complete typed LKG `SearchConfiguration`.
+Likewise, the LKG run/source revision and Stage-4 run/source revision are
+separate identities. They are each validated and bound, but are not required
+to be equal unless a separate existing contract explicitly requires that
+equality.
+
+The fresh authority must additionally match `CanaryRoutePlan` on
+`last_known_good_ef`, metric, threshold stratum, data identity, and HNSW
+identity. The plan's FLAT identity remains governed by the Stage-4 evidence,
+policy-provenance, and runtime bindings; it has no fabricated D1 equivalent.
+Admission may compare canonical values and digests only. It must not inspect
+or recompute Phase-1 attempts, Phase-2 readiness, windows, epochs, recall,
+latency, confidence bounds, or any other A/B/C statistic.
+
+**Passing admission receipt and refusal boundary.** A successful evaluation returns
+an immutable, privately constructed admission receipt. Private construction
+prevents supported/manual construction through the public API; it is not a
+cryptographic authenticity mechanism. Trust comes from fresh D1 replay, D2
+store verification, complete admission validation, canonical receipt hashing,
+and the caller's preservation of those boundaries. Field replacement or
+reconstruction from an untrusted mapping must not be a supported path to an
+authorizing receipt. A refusal/result remains a separate non-authorizing value
+and must carry stable, non-sensitive reason codes; a boolean or plan digest in
+a refusal is never an authority token.
+
+The successful receipt uses a strict canonical schema and a domain-separated
+digest over all fields. At minimum it binds: the Checkpoint-C canonical
+evaluation digest; D2 canonical record digest, sequence number, and persisted
+timestamp; source run ID, run-binding digest, source-run seal, sealed Phase-1
+chain head, and Phase-2 source-binding digest; evaluated LKG `ef` and LKG
+search-configuration digest; `Stage4EvidenceBinding` digest; route-plan digest;
+execution-schedule digest; policy audit ID; repository commit; Stage-4
+configuration, data, and HNSW identities; and runtime observation timestamp.
+It may include additional canonical non-sensitive fields only through an
+explicit receipt-schema revision. Receipt construction occurs only after every
+admission gate passes.
+
+**Freshness and two-admission invariant.** Candidate-capable live composition
+must reacquire and freshly verify the latest D1/D2 pair before **both** Stage-4
+admission evaluations: once before activation and again immediately after
+activation alongside fresh runtime evidence. Reusing an admission-request
+snapshot and replacing only its runtime evidence is insufficient. The
+composition boundary therefore consumes an injected fresh-authority provider,
+not a long-lived authority/reference pair embedded in the original request.
+No A/B/C or D2 replay may occur while a D2 database lock is held.
+
+The two successful receipts are not required to be byte-identical: their fresh
+runtime-preflight evidence and runtime observation timestamps may legitimately
+differ, so their canonical receipt digests may also differ. Instead, the live
+composition root performs a stable-lineage comparison. Both receipts must
+match exactly on Checkpoint-C digest; D2 record digest and sequence number;
+`Stage4EvidenceBinding` digest; execution-schedule digest; route-plan digest;
+policy audit ID; configuration, data, and HNSW identities; LKG `ef`; and LKG
+search-configuration digest. Runtime-specific timestamps and evidence are
+excluded from this stable-lineage equality check but remain validated and
+bound in their respective receipts.
+
+Any refresh failure, a newly different D2 head, different D1 authority,
+stable-lineage mismatch, or inability to prove equality fails closed. A
+post-activation failure first contains the candidate route and executes the
+existing rollback path before return; no query is dispatched from an unmatched
+lineage.
+
+**Impact set.** The D3 implementation and regression scope is limited to:
+
+- `canary_admission.py`: replace legacy `QualificationResult` admission with
+  fresh D1 authority, verified-latest D2 evidence, explicit configuration
+  bridge and immutable execution-schedule validation, private success-receipt
+  construction, and canonical receipt hashing;
+- `lkg_phase3_persistence.py`: expose a store-issued, private-construction
+  verified-latest-head boundary while preserving the rule that loading or
+  persistence alone never creates usable authority;
+- `canary_live_runner.py`: reacquire the D1/D2 pair before both admissions and
+  require stable-lineage equality, while permitting separately validated
+  runtime evidence and timestamps, before dispatch;
+- `canary_serial_runner.py`: consume only the non-actuating receipt identity
+  needed by its existing boundary and require receipt/schedule equality; it
+  must neither resolve authority nor become candidate-capable; and
+- the corresponding admission, persistence, live-runner, and serial-runner
+  tests, including deliberate historical-reference, non-latest-head,
+  D1/D2-field substitution, configuration-bridge, receipt-forgery, refresh,
+  schedule-substitution, mixed-refresh-pair, stable-lineage-mismatch, and
+  differing-valid-runtime-timestamp regressions.
+
+`policy.py`, Checkpoint A/B/C evaluators, Milvus adapters, routing algorithms,
+and statistical finalization are outside this amendment. Legacy
+`QualificationResult` compatibility may remain elsewhere during migration,
+but it is not accepted by the D3 Stage-4 admission boundary.
+
+**Deferred signed-activation propagation.** No signed-grant schema changes are
+authorized by D3. Before the admission receipt becomes part of final live
+authorization, its Checkpoint-C/D2 lineage and canonical receipt digest must be
+propagated into the signed activation chain, active context, lifecycle audit,
+and rollback correlation under a separately reviewed amendment. Until then,
+D3 is a non-actuating admission/evidence migration and must not be cited as
+complete end-to-end live authorization.
+
 Research references:
 
 - ADR-002 for conservative bounds, action ladder, SLOs, and rollback obligations.
