@@ -24,6 +24,7 @@ from vdbench.lkg_phase3_persistence import (
     LkgPhase3AuthorityReferenceStore,
     LkgPhase3PersistenceError,
     PersistedLkgPhase3AuthorityReference,
+    VerifiedLatestLkgPhase3AuthorityReference,
 )
 from vdbench.lkg_qualification_evaluation import (
     LkgQualificationEvaluation,
@@ -145,6 +146,218 @@ def _canonical_digest(document: dict[str, object]) -> str:
 
 
 class LkgPhase3PersistenceTests(unittest.TestCase):
+    def test_verified_latest_empty_ledger_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                self.assertIsNone(store.load_verified_latest())
+
+    def test_verified_latest_single_head_wraps_exact_persisted_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            authority = _authority()
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                persisted = store.append(
+                    authority, persisted_at_utc=_TIMESTAMP_1
+                ).reference
+                verified = store.load_verified_latest()
+
+            self.assertIsInstance(
+                verified, VerifiedLatestLkgPhase3AuthorityReference
+            )
+            assert verified is not None
+            self.assertEqual(verified.reference, persisted)
+            self.assertEqual(
+                verified.canonical_record_digest,
+                persisted.canonical_record_digest,
+            )
+            self.assertEqual(verified.sequence_number, persisted.sequence_number)
+            self.assertEqual(
+                verified.reference.canonical_evaluation_digest,
+                authority.canonical_evaluation_digest,
+            )
+            self.assertNotIsInstance(verified, LkgPhase3Authority)
+            self.assertFalse(hasattr(verified, "qualified"))
+            self.assertFalse(hasattr(verified, "usable"))
+
+    def test_verified_latest_two_records_issues_only_newest_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                first = store.append(
+                    _authority(1), persisted_at_utc=_TIMESTAMP_1
+                ).reference
+                second = store.append(
+                    _authority(2), persisted_at_utc=_TIMESTAMP_2
+                ).reference
+                verified = store.load_verified_latest()
+
+            assert verified is not None
+            self.assertEqual(verified.reference, second)
+            self.assertNotEqual(verified.reference, first)
+            self.assertEqual(verified.sequence_number, 1)
+
+    def test_verified_latest_restart_reverifies_exact_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as first_process:
+                expected = first_process.append(
+                    _authority(), persisted_at_utc=_TIMESTAMP_1
+                ).reference
+
+            with LkgPhase3AuthorityReferenceStore(path) as restarted_process:
+                verified = restarted_process.load_verified_latest()
+
+            assert verified is not None
+            self.assertEqual(verified.reference, expected)
+
+    def test_verified_latest_rejects_public_or_invalid_token_construction(self) -> None:
+        with self.assertRaisesRegex(TypeError, "can only be issued"):
+            VerifiedLatestLkgPhase3AuthorityReference()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                reference = store.append(
+                    _authority(), persisted_at_utc=_TIMESTAMP_1
+                ).reference
+            with self.assertRaisesRegex(TypeError, "construction token"):
+                VerifiedLatestLkgPhase3AuthorityReference._from_verified_head(
+                    reference=reference,
+                    construction_token=object(),
+                )
+
+    def test_plain_historical_reference_is_not_verified_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                historical = store.append(
+                    _authority(), persisted_at_utc=_TIMESTAMP_1
+                ).reference
+                loaded = store.load_latest()
+
+            self.assertIsInstance(
+                historical, PersistedLkgPhase3AuthorityReference
+            )
+            self.assertIsInstance(loaded, PersistedLkgPhase3AuthorityReference)
+            self.assertNotIsInstance(
+                historical, VerifiedLatestLkgPhase3AuthorityReference
+            )
+            self.assertNotIsInstance(
+                loaded, VerifiedLatestLkgPhase3AuthorityReference
+            )
+
+    def test_verified_latest_is_issued_inside_complete_read_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                store.append(_authority(), persisted_at_utc=_TIMESTAMP_1)
+                original = (
+                    VerifiedLatestLkgPhase3AuthorityReference._from_verified_head.__func__
+                )
+
+                def issue_while_transaction_is_open(
+                    cls: type[VerifiedLatestLkgPhase3AuthorityReference],
+                    *,
+                    reference: PersistedLkgPhase3AuthorityReference,
+                    construction_token: object,
+                ) -> VerifiedLatestLkgPhase3AuthorityReference:
+                    connection = store._require_connection()
+                    self.assertTrue(connection.in_transaction)
+                    return original(
+                        cls,
+                        reference=reference,
+                        construction_token=construction_token,
+                    )
+
+                with mock.patch.object(
+                    VerifiedLatestLkgPhase3AuthorityReference,
+                    "_from_verified_head",
+                    new=classmethod(issue_while_transaction_is_open),
+                ):
+                    verified = store.load_verified_latest()
+
+            self.assertIsNotNone(verified)
+
+    def test_schema_row_or_chain_tamper_prevents_verified_latest_issuance(self) -> None:
+        for tamper_kind in ("schema", "row", "chain"):
+            with self.subTest(tamper_kind=tamper_kind):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "phase3-authority.db"
+                    with LkgPhase3AuthorityReferenceStore(path) as store:
+                        store.append(_authority(1), persisted_at_utc=_TIMESTAMP_1)
+                        if tamper_kind == "chain":
+                            store.append(
+                                _authority(2), persisted_at_utc=_TIMESTAMP_2
+                            )
+
+                        if tamper_kind == "schema":
+                            connection = sqlite3.connect(path)
+                            try:
+                                connection.execute(
+                                    "DROP TRIGGER "
+                                    "trg_lkg_phase3_reference_no_update"
+                                )
+                                connection.commit()
+                            finally:
+                                connection.close()
+                        elif tamper_kind == "row":
+                            _raw_mutate_preserving_triggers(
+                                path,
+                                f"UPDATE {_TABLE} SET source_run_id='tampered-run' "
+                                "WHERE sequence_number=0",
+                            )
+                        else:
+                            connection = sqlite3.connect(path)
+                            try:
+                                stored_json = connection.execute(
+                                    f"SELECT record_document_json FROM {_TABLE} "
+                                    "WHERE sequence_number=1"
+                                ).fetchone()[0]
+                            finally:
+                                connection.close()
+                            document = json.loads(stored_json)
+                            document["previous_record_digest"] = "a" * 64
+                            replacement_digest = _canonical_digest(document)
+                            _raw_mutate_preserving_triggers(
+                                path,
+                                f"UPDATE {_TABLE} SET previous_record_digest=?, "
+                                "canonical_record_digest=?, record_document_json=? "
+                                "WHERE sequence_number=1",
+                                (
+                                    "a" * 64,
+                                    replacement_digest,
+                                    canonical_json_bytes(document).decode("utf-8"),
+                                ),
+                            )
+
+                        with self.assertRaises(LkgPhase3PersistenceError):
+                            store.load_verified_latest()
+
+    def test_later_append_requires_refresh_for_a_new_verified_latest_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                first_reference = store.append(
+                    _authority(1), persisted_at_utc=_TIMESTAMP_1
+                ).reference
+                first_snapshot = store.load_verified_latest()
+                second_reference = store.append(
+                    _authority(2), persisted_at_utc=_TIMESTAMP_2
+                ).reference
+                second_snapshot = store.load_verified_latest()
+
+            assert first_snapshot is not None
+            assert second_snapshot is not None
+            self.assertEqual(first_snapshot.reference, first_reference)
+            self.assertEqual(second_snapshot.reference, second_reference)
+            self.assertNotEqual(
+                first_snapshot.canonical_record_digest,
+                second_snapshot.canonical_record_digest,
+            )
+            self.assertEqual(first_snapshot.sequence_number, 0)
+            self.assertEqual(second_snapshot.sequence_number, 1)
+
     def test_append_and_load_persists_identity_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "phase3-authority.db"

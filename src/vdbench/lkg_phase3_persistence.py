@@ -10,7 +10,10 @@ Inputs:
     persistence timestamp.
 Outputs:
     Canonical, hash-chained ``PersistedLkgPhase3AuthorityReference`` values and
-    append results that distinguish a new append from an idempotent replay.
+    append results that distinguish a new append from an idempotent replay. A
+    store-issued ``VerifiedLatestLkgPhase3AuthorityReference`` identifies the
+    fully verified chain head observed during one coherent read transaction;
+    it remains an identity-only snapshot and is never qualification authority.
 Durability and concurrency:
     SQLite ``BEGIN IMMEDIATE`` serializes writers.  FULL synchronous mode,
     DELETE journaling, private file permissions, canonical JSON, immutable SQL
@@ -48,6 +51,7 @@ __all__ = [
     "LKG_PHASE3_REFERENCE_HASH_DOMAIN",
     "LkgPhase3PersistenceError",
     "PersistedLkgPhase3AuthorityReference",
+    "VerifiedLatestLkgPhase3AuthorityReference",
     "LkgPhase3AuthorityAppendResult",
     "LkgPhase3AuthorityReferenceStore",
 ]
@@ -63,6 +67,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _RFC3339_UTC_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\Z"
 )
+_VERIFIED_LATEST_CONSTRUCTION_TOKEN = object()
 
 _DOCUMENT_FIELDS = frozenset(
     {
@@ -276,6 +281,59 @@ class PersistedLkgPhase3AuthorityReference:
     persisted_at_utc: str
     previous_record_digest: str
     canonical_record_digest: str
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class VerifiedLatestLkgPhase3AuthorityReference:
+    """Store-issued snapshot of one fully verified D2 chain head.
+
+    Private construction is API discipline, not cryptographic authenticity.
+    The wrapper proves only that its exact immutable ``reference`` was the
+    current head of one complete, coherent D2 verification transaction. It
+    does not promise that the reference remains latest after that refresh and
+    cannot become or substitute for a D1 ``LkgPhase3Authority``.
+    """
+
+    _reference: PersistedLkgPhase3AuthorityReference
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "VerifiedLatestLkgPhase3AuthorityReference can only be issued by "
+            "LkgPhase3AuthorityReferenceStore.load_verified_latest()"
+        )
+
+    @classmethod
+    def _from_verified_head(
+        cls,
+        *,
+        reference: PersistedLkgPhase3AuthorityReference,
+        construction_token: object,
+    ) -> VerifiedLatestLkgPhase3AuthorityReference:
+        if construction_token is not _VERIFIED_LATEST_CONSTRUCTION_TOKEN:
+            raise TypeError("verified-latest construction token is invalid")
+        if not isinstance(reference, PersistedLkgPhase3AuthorityReference):
+            raise TypeError("reference must be a persisted Phase-3 authority reference")
+        value = object.__new__(cls)
+        object.__setattr__(value, "_reference", reference)
+        return value
+
+    @property
+    def reference(self) -> PersistedLkgPhase3AuthorityReference:
+        """Return the exact immutable persisted head verified by the store."""
+
+        return self._reference
+
+    @property
+    def canonical_record_digest(self) -> str:
+        """Return the verified head record digest for stable-lineage binding."""
+
+        return self._reference.canonical_record_digest
+
+    @property
+    def sequence_number(self) -> int:
+        """Return the verified head sequence observed during this refresh."""
+
+        return self._reference.sequence_number
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,6 +1082,44 @@ class LkgPhase3AuthorityReferenceStore:
 
         references = self.load_all()
         return references[-1] if references else None
+
+    def load_verified_latest(
+        self,
+    ) -> VerifiedLatestLkgPhase3AuthorityReference | None:
+        """Issue a snapshot of the head from one complete D2 verification.
+
+        The wrapper is constructed before the coherent read transaction ends.
+        It records what was latest at that refresh instant only; a later append
+        does not mutate or invalidate the already-issued immutable snapshot.
+        This path performs no D1, Checkpoint-C, Phase-1, or Phase-2 work.
+        """
+
+        connection = self._require_connection()
+        self._verify_file_hardening()
+        try:
+            connection.execute("BEGIN;")
+            self._verify_schema()
+            references = self._load_all_locked()
+            verified_latest = (
+                None
+                if not references
+                else VerifiedLatestLkgPhase3AuthorityReference._from_verified_head(
+                    reference=references[-1],
+                    construction_token=_VERIFIED_LATEST_CONSTRUCTION_TOKEN,
+                )
+            )
+            connection.execute("COMMIT;")
+            return verified_latest
+        except BaseException as exc:
+            self._rollback_quietly()
+            if isinstance(exc, LkgPhase3PersistenceError):
+                raise
+            if isinstance(exc, (sqlite3.Error, OSError)):
+                raise LkgPhase3PersistenceError(
+                    f"failed to load verified latest authority reference: {exc}",
+                    code="LKG_PHASE3_REFERENCE_LOAD_FAILED",
+                ) from exc
+            raise
 
     def _rollback_quietly(self) -> None:
         if self._conn is not None:
