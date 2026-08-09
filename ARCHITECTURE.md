@@ -2930,6 +2930,163 @@ members, calibration has exactly 1,200 members, and each prospective segment
 has exactly 1,200 members. No generic manifest rule invents 1,200-member
 semantics for any unrelated governed role.
 
+#### R2-G.2 lifecycle-ledger clarification (proposed 2026-08-09)
+
+This append-only clarification governs only the R2-B durable structural
+lifecycle that consumes the immutable R2-A calibration population and replay
+schedule. It does not change R1, R2-A, the response-profile statistics, or any
+qualification, policy, authorization, routing, execution, or freshness
+contract.
+
+**Canonical run binding.** The schema version is exactly
+`response-profile-lifecycle-run-binding-v1`. Its exact canonical payload is:
+
+```json
+{
+  "schema_version": "response-profile-lifecycle-run-binding-v1",
+  "run_id": "<canonical non-empty NFC identifier>",
+  "created_at_utc": "<strict RFC3339 UTC timestamp>",
+  "cell_id": "<R2-A cell_id>",
+  "workload_manifest_sha256": "<R2-A calibration-population digest>",
+  "replay_schedule_sha256": "<R2-A replay-schedule digest>",
+  "warmup_role_manifest_sha256": "<R2-A 200-member warm-up role-manifest digest>",
+  "source_revision": "<canonical non-empty NFC source revision>"
+}
+```
+
+`run_binding_sha256` is the lowercase hexadecimal SHA-256 of
+`b"VD::RESPONSE_PROFILE_LIFECYCLE_RUN_BINDING::V1\x00"` followed by the
+repository-canonical JSON bytes of that payload. The R2-A population, schedule,
+and warm-up manifest must pass full reconstruction before their digests enter
+this payload. The run binding contains no response result.
+
+**Opaque evidence blobs.** The schema version is exactly
+`response-profile-opaque-evidence-blob-v1`. Evidence bytes are stored as SQLite
+`BLOB` data, not as a path, URI, or caller assertion. Their exact detached
+descriptor payload is:
+
+```json
+{
+  "schema_version": "response-profile-opaque-evidence-blob-v1",
+  "run_binding_sha256": "<canonical run-binding digest>",
+  "event_seq": "<exact non-negative integer of the referencing event>",
+  "evidence_role": "<closed v1 evidence role>",
+  "byte_length": "<exact positive integer>",
+  "evidence_bytes_sha256": "<lowercase SHA-256 of the exact stored bytes>"
+}
+```
+
+`opaque_evidence_sha256` is the lowercase hexadecimal SHA-256 of
+`b"VD::RESPONSE_PROFILE_OPAQUE_EVIDENCE_BLOB::V1\x00"` followed by the
+repository-canonical JSON bytes of that descriptor. The closed v1
+`evidence_role` catalog is exactly `WARMUP_EXECUTION`, `MEASURED_RESULT`,
+`PRE_BLOCK_RUNTIME_SNAPSHOT`, and `POST_BLOCK_RUNTIME_SNAPSHOT`. Respectively,
+those roles may be referenced only by `WARMUP_COMPLETED`,
+`MEASUREMENT_COMPLETED`, `BLOCK_STARTED`, and `BLOCK_CLOSED` events. The blob
+and its sole referencing event are inserted in one SQLite transaction; the
+descriptor's run binding, event sequence, and role must match that event.
+R2-B verifies exact bytes, role, byte length, byte digest, descriptor digest,
+and referential binding only. R2-C owns semantic interpretation and validation
+of those bytes.
+
+**Canonical lifecycle event.** The schema version is exactly
+`response-profile-lifecycle-event-v1`. Its exact common canonical payload is:
+
+```json
+{
+  "schema_version": "response-profile-lifecycle-event-v1",
+  "run_binding_sha256": "<canonical run-binding digest>",
+  "event_seq": "<exact contiguous non-negative integer>",
+  "event_kind": "<closed v1 lifecycle event kind>",
+  "epoch_index": "<exact non-negative integer or null>",
+  "block_index": "<exact integer in 0..1199 or null>",
+  "position_index": "<exact integer in 0..4799 or null>",
+  "recorded_at_utc": "<strict RFC3339 UTC metadata timestamp>",
+  "event_data": "<exact event-kind-specific object>",
+  "previous_event_sha256": "<run-binding digest for event 0; otherwise the immediately preceding event digest>"
+}
+```
+
+`lifecycle_event_sha256` is the lowercase hexadecimal SHA-256 of
+`b"VD::RESPONSE_PROFILE_LIFECYCLE_EVENT::V1\x00"` followed by the
+repository-canonical JSON bytes of that payload. The closed event catalog and
+exact `event_data` variants are:
+
+- `EPOCH_STARTED`: `{}`.
+- `WARMUP_COMPLETED`:
+  `{"warmup_role_manifest_sha256": "<run-bound digest>",
+  "warmup_execution_blob_sha256": "<blob digest>"}`.
+- `BLOCK_STARTED`:
+  `{"pre_block_runtime_snapshot_blob_sha256": "<blob digest>"}`.
+- `MEASUREMENT_STARTED`:
+  `{"within_block_index": <0..3>, "canonical_query_index": <0..1199>,
+  "query_id": <R1-compatible canonical query ID>,
+  "query_id_sha256": "<source-local digest>",
+  "observation_identity_sha256": "<cross-source digest>",
+  "ef": <the exact R2-A scheduled ef>,
+  "started_monotonic_ns": <exact non-negative integer>}`.
+- `MEASUREMENT_COMPLETED`:
+  `{"measurement_started_event_sha256": "<matching STARTED event digest>",
+  "measured_result_blob_sha256": "<blob digest>",
+  "completed_monotonic_ns": <exact integer greater than the matching start>}`.
+- `BLOCK_CLOSED`:
+  `{"block_started_event_sha256": "<matching BLOCK_STARTED event digest>",
+  "measurement_completed_event_sha256": ["<exactly four matching COMPLETED event digests in scheduled within-block order>"],
+  "post_block_runtime_snapshot_blob_sha256": "<blob digest>"}`.
+- `RUN_SEALED`: `{}`.
+- `RUN_INVALIDATED`: `{"reason_code": "<canonical non-empty stable reason>"}`.
+
+Exact fields and types are required and unknown fields fail closed.
+Epoch-level events have a non-null `epoch_index`; block events additionally
+have a non-null `block_index`; measurement events additionally have a non-null
+`position_index`; run-level audit events use null epoch, block, and position
+indexes. Every position identity and order must equal the corresponding R2-A
+schedule position.
+
+**Lifecycle, order, and restart semantics.** “One logical record per schedule
+position” means exactly one immutable `MEASUREMENT_STARTED` ->
+`MEASUREMENT_COMPLETED` pair for that position, never one mutable row and never
+a replacement pair. `event_seq` plus the verified previous-event hash chain is
+the sole lifecycle ordering authority. UTC timestamps are metadata; they may
+not establish, repair, or reorder lifecycle state. Latency chronology is
+derived only from the matching same-epoch monotonic start/completion readings.
+
+Each epoch must begin with `EPOCH_STARTED` and durably bind one opaque
+`WARMUP_EXECUTION` blob through `WARMUP_COMPLETED` before `BLOCK_STARTED` or
+`MEASUREMENT_STARTED`. At R2-B this is a structural completion claim only; R2-C
+must verify that the bytes prove successful execution of all 200 frozen
+warm-up members. Each measured block then contains one `BLOCK_STARTED`, the
+four exact scheduled STARTED/completed pairs, and one `BLOCK_CLOSED`. A
+structurally complete run has exactly 1,200 such closed blocks and exactly
+4,800 completed measured pairs.
+
+An orphan `MEASUREMENT_STARTED` is terminal and its position is never retried.
+Any measured block that was started but not closed is terminal. Restart is
+permitted only after a closed block and requires a fresh epoch plus replay of
+the entire frozen 200-query warm-up role before the next measured start. An
+epoch interrupted during warm-up, with no `BLOCK_STARTED` and no
+`MEASUREMENT_STARTED`, is abandoned execution evidence: it does not invalidate
+previously closed measured evidence. Reopen starts a fresh epoch and replays
+the exact same frozen warm-up membership from the beginning. Such replay adds
+no population member and no calibration observation. This is the precise
+later clarification of the earlier requirement that missing or incomplete
+warm-up evidence invalidates measured execution: incomplete warm-up is fatal
+if measured/block execution begins in that epoch, but a warm-up-only abandoned
+epoch cannot repair, replace, or invalidate prior closed blocks.
+
+`RUN_SEALED` and `RUN_INVALIDATED` are append-only audit/publication events
+only. Completeness and invalidity are always derived mechanically from the
+verified run binding, full event chain, blob references, R2-A schedule, and
+state transitions. A seal cannot make incomplete evidence valid; absence of an
+invalidation event cannot make an orphan or partial block valid; neither event
+can repair or replace lifecycle evidence.
+
+R2-B structural completeness is necessary but insufficient for raw-evidence
+validity or statistical validity. It never grants qualification, profile,
+policy, admission, authorization, routing, or execution authority. R2-C must
+semantically verify the opaque evidence before any later root-pinned
+calibration-evidence capability can exist.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX
