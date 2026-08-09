@@ -1,8 +1,9 @@
-"""Thin, dependency-injected safe-actuation boundary for ADR-002.
+"""Thin, dependency-injected rollback and audit boundary for ADR-002.
 
 Purpose:
-    Execute only policy-authorized START_CANARY and ROLLBACK operations, record
-    immutable outcomes, and leave detector/policy decisions outside this module.
+    Permanently refuse generic START_CANARY, execute policy-authorized ROLLBACK,
+    record immutable outcomes, and leave detector/policy decisions outside this
+    module. Candidate serving is owned exclusively by Stage4LiveRunner.
 Inputs:
     A frozen PolicyDecision, ActuationContext, client-like executor, append-only
     audit sink, and automatic-action controller.
@@ -11,8 +12,8 @@ Outputs:
 Dependencies:
     Protocols and offline policy value objects only; never PyMilvus.
 Failure modes:
-    Missing/duplicate audit identity, unsafe START_CANARY gates, invalid context,
-    excess exposure, client failures, and failed rollback verification fail closed.
+    Missing/duplicate audit identity, retired generic candidate starts, invalid
+    rollback context/ef, client failures, and failed verification fail closed.
 """
 
 from __future__ import annotations
@@ -20,13 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-import math
 import re
 from typing import Protocol, TypeAlias
 
 from .config import Metric, THRESHOLD_LABELS
-from .drift import EvidenceProvenance, evidence_provenance_valid
+from .drift import EvidenceProvenance
 from .policy import (
+    ACTUATION_LADDER,
     CanaryObservation,
     PolicyAction,
     PolicyDecision,
@@ -133,7 +134,7 @@ class ActuationResult:
 
 
 class ActuationClientLike(Protocol):
-    """High-level adapter implemented by fakes now and Milvus/routing later."""
+    """Read-only shadow and rollback adapter; never candidate-start authority."""
 
     def shadow_candidate(
         self,
@@ -142,15 +143,6 @@ class ActuationClientLike(Protocol):
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult: ...
-
-    def start_canary(
-        self,
-        *,
-        context: ActuationContext,
-        candidate_ef: int,
-        last_known_good_ef: int,
-        traffic_fraction: float,
-    ) -> CanaryObservation: ...
 
     def stop_candidate(self) -> None: ...
 
@@ -216,10 +208,9 @@ def _valid_query_ids(values: object) -> bool:
     return True
 
 
-def _context_failure(
-    decision: PolicyDecision,
-    context: ActuationContext,
-) -> str | None:
+def _rollback_context_failure(context: ActuationContext) -> str | None:
+    """Validate explicit runtime rollback context, never legacy qualification."""
+
     if not isinstance(context, ActuationContext):
         return "ACTUATION_CONTEXT_INVALID"
     metric = _metric(context.metric)
@@ -242,87 +233,17 @@ def _context_failure(
         return "ACTUATION_AUDIT_QUERY_IDS_INVALID"
     if not _valid_rfc3339_utc(context.occurred_at_utc):
         return "ACTUATION_TIMESTAMP_INVALID"
-    qualification = context.last_known_good
-    if (
-        not isinstance(qualification, QualificationResult)
-        or not qualification.qualified
-    ):
-        return "LAST_KNOWN_GOOD_NOT_QUALIFIED"
-    if (
-        qualification.ef is None
-        or decision.last_known_good_ef != qualification.ef
-        or qualification.metric is not metric
-        or qualification.threshold_stratum != context.threshold_stratum
-        or qualification.configuration_identity != context.configuration_identity
-        or qualification.index_identity != context.index_identity
-        or qualification.data_identity != context.data_identity
-    ):
-        return "LAST_KNOWN_GOOD_IDENTITY_MISMATCH"
-    if decision.action is PolicyAction.START_CANARY and decision.candidate_ef is None:
-        return "CANDIDATE_EF_MISSING"
     return None
 
 
-def _provenance_failure(
-    decision: PolicyDecision,
-    context: ActuationContext,
-) -> str | None:
-    """Validate provenance for canary start; rollback deliberately bypasses it."""
-
-    provenance = decision.evidence_provenance
-    if provenance is None:
-        return "EVIDENCE_PROVENANCE_MISSING"
-    if not evidence_provenance_valid(provenance):
-        return "EVIDENCE_PROVENANCE_INVALID"
-    metric = _metric(context.metric)
-    if metric is None:
-        return "EVIDENCE_PROVENANCE_CONTEXT_METRIC_INVALID"
-    if not (
-        provenance.metric is metric
-        and provenance.threshold_stratum == context.threshold_stratum
-        and provenance.configuration_identity == context.configuration_identity
-        and provenance.data_identity == context.data_identity
-        and provenance.flat_binding_id == context.flat_index_identity
-        and provenance.hnsw_binding_id == context.index_identity
+def _rollback_ef_failure(value: object) -> str | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value not in ACTUATION_LADDER
     ):
-        return "EVIDENCE_PROVENANCE_CONTEXT_MISMATCH"
+        return "ROLLBACK_LAST_KNOWN_GOOD_EF_INVALID"
     return None
-
-
-def _shadow_failure(result: object) -> str | None:
-    if not isinstance(result, ShadowResult):
-        return "SHADOW_RESULT_INVALID"
-    checks = (
-        result.success is True,
-        isinstance(result.audited_query_count, int)
-        and not isinstance(result.audited_query_count, bool)
-        and result.audited_query_count == AUDIT_QUERY_COUNT,
-        result.failed_query_count == 0,
-        result.timeout_query_count == 0,
-        result.threshold_violation_count == 0,
-        result.candidate_flat_oracle_agreement is True,
-        result.last_known_good_flat_oracle_agreement is True,
-    )
-    return None if all(checks) else "SHADOW_AUDIT_FAILED"
-
-
-def _observation_matches(
-    observation: object,
-    *,
-    decision: PolicyDecision,
-    context: ActuationContext,
-) -> bool:
-    if not isinstance(observation, CanaryObservation):
-        return False
-    return bool(
-        observation.candidate_ef == decision.candidate_ef
-        and observation.last_known_good_ef == decision.last_known_good_ef
-        and _metric(observation.metric) is _metric(context.metric)
-        and observation.threshold_stratum == context.threshold_stratum
-        and observation.configuration_identity == context.configuration_identity
-        and observation.index_identity == context.index_identity
-        and observation.data_identity == context.data_identity
-    )
 
 
 def _verification_succeeded(
@@ -482,7 +403,16 @@ class SafeActuationBoundary:
                 append=True,
             )
 
-        context_failure = _context_failure(decision, context)
+        if decision.action is PolicyAction.START_CANARY:
+            return self._blocked(
+                decision,
+                context,
+                reason="GENERIC_START_CANARY_RETIRED",
+                traffic_fraction=None,
+                append=True,
+            )
+
+        context_failure = _rollback_context_failure(context)
         if context_failure is not None:
             return self._blocked(
                 decision,
@@ -492,175 +422,16 @@ class SafeActuationBoundary:
                 append=True,
             )
 
-        if decision.action is PolicyAction.START_CANARY:
-            provenance_failure = _provenance_failure(decision, context)
-            if provenance_failure is not None:
-                return self._blocked(
-                    decision,
-                    context,
-                    reason=provenance_failure,
-                    traffic_fraction=traffic_fraction,
-                    append=True,
-                )
-            failed_gate = next(
-                (gate for gate in decision.safety_gate_results if not gate.passed),
-                None,
-            )
-            if not decision.safety_gate_results:
-                return self._blocked(
-                    decision,
-                    context,
-                    reason="SAFETY_GATES_MISSING",
-                    traffic_fraction=traffic_fraction,
-                    append=True,
-                )
-            if failed_gate is not None:
-                return self._blocked(
-                    decision,
-                    context,
-                    reason=f"SAFETY_GATE_FAILED:{failed_gate.name}",
-                    traffic_fraction=traffic_fraction,
-                    append=True,
-                )
-            if (
-                isinstance(traffic_fraction, bool)
-                or not isinstance(traffic_fraction, (int, float))
-                or not math.isfinite(traffic_fraction)
-                or not 0.0 < traffic_fraction <= MAX_CANARY_TRAFFIC_FRACTION
-            ):
-                return self._blocked(
-                    decision,
-                    context,
-                    reason="CANARY_TRAFFIC_FRACTION_INVALID",
-                    traffic_fraction=(
-                        float(traffic_fraction)
-                        if isinstance(traffic_fraction, (int, float))
-                        and not isinstance(traffic_fraction, bool)
-                        else None
-                    ),
-                    append=True,
-                )
-            return self._start_canary(
+        ef_failure = _rollback_ef_failure(decision.last_known_good_ef)
+        if ef_failure is not None:
+            return self._blocked(
                 decision,
                 context,
-                traffic_fraction=float(traffic_fraction),
+                reason=ef_failure,
+                traffic_fraction=None,
+                append=True,
             )
         return self._rollback(decision, context)
-
-    def _start_canary(
-        self,
-        decision: PolicyDecision,
-        context: ActuationContext,
-        *,
-        traffic_fraction: float,
-    ) -> ActuationResult:
-        candidate_ef = int(decision.candidate_ef)
-        last_known_good_ef = int(decision.last_known_good_ef)
-        try:
-            shadow = self.client.shadow_candidate(
-                context=context,
-                candidate_ef=candidate_ef,
-                last_known_good_ef=last_known_good_ef,
-            )
-        except Exception as exc:  # client boundary must convert failures to evidence
-            record = self._record(
-                decision,
-                context,
-                outcome=ActuationOutcome.FAILED,
-                attempted=True,
-                success=False,
-                reason=f"SHADOW_CLIENT_EXCEPTION:{type(exc).__name__}",
-                traffic_fraction=traffic_fraction,
-            )
-            return self._result(record, append=True)
-
-        shadow_failure = _shadow_failure(shadow)
-        if shadow_failure is not None:
-            return self._result(
-                self._record(
-                    decision,
-                    context,
-                    outcome=ActuationOutcome.FAILED,
-                    attempted=True,
-                    success=False,
-                    reason=shadow_failure,
-                    traffic_fraction=traffic_fraction,
-                    shadow_result=(
-                        shadow if isinstance(shadow, ShadowResult) else None
-                    ),
-                ),
-                append=True,
-            )
-        try:
-            observation = self.client.start_canary(
-                context=context,
-                candidate_ef=candidate_ef,
-                last_known_good_ef=last_known_good_ef,
-                traffic_fraction=traffic_fraction,
-            )
-        except Exception as exc:  # candidate state may be unknown; disable automation
-            reason = f"CANARY_CLIENT_EXCEPTION:{type(exc).__name__}"
-            self.controller.disable_automatic_actions(
-                audit_id=decision.audit_id,
-                reason=reason,
-            )
-            return self._result(
-                self._record(
-                    decision,
-                    context,
-                    outcome=ActuationOutcome.FAILED,
-                    attempted=True,
-                    success=False,
-                    reason=reason,
-                    traffic_fraction=traffic_fraction,
-                    shadow_result=shadow,
-                    automatic_actions_disabled=True,
-                ),
-                append=True,
-            )
-        if not _observation_matches(
-            observation,
-            decision=decision,
-            context=context,
-        ):
-            reason = "CANARY_OBSERVATION_IDENTITY_MISMATCH"
-            self.controller.disable_automatic_actions(
-                audit_id=decision.audit_id,
-                reason=reason,
-            )
-            return self._result(
-                self._record(
-                    decision,
-                    context,
-                    outcome=ActuationOutcome.FAILED,
-                    attempted=True,
-                    success=False,
-                    reason=reason,
-                    traffic_fraction=traffic_fraction,
-                    shadow_result=shadow,
-                    canary_observation=(
-                        observation
-                        if isinstance(observation, CanaryObservation)
-                        else None
-                    ),
-                    automatic_actions_disabled=True,
-                ),
-                append=True,
-            )
-        return self._result(
-            self._record(
-                decision,
-                context,
-                outcome=ActuationOutcome.SUCCEEDED,
-                attempted=True,
-                success=True,
-                reason="CANARY_STARTED",
-                traffic_fraction=traffic_fraction,
-                shadow_result=shadow,
-                canary_observation=observation,
-            ),
-            append=True,
-        )
 
     def _rollback(
         self,

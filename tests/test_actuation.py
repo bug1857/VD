@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 
 from vdbench.actuation import (
+    ActuationClientLike,
     ActuationContext,
     ActuationOutcome,
     RollbackVerification,
@@ -13,7 +14,6 @@ from vdbench.actuation import (
 from vdbench.config import Metric
 from vdbench.drift import build_evidence_provenance
 from vdbench.policy import (
-    CanaryObservation,
     PolicyAction,
     PolicyDecision,
     PolicyMode,
@@ -112,25 +112,6 @@ def decision(
     )
 
 
-def canary_observation() -> CanaryObservation:
-    return CanaryObservation(
-        metric=Metric.L2,
-        threshold_stratum=THRESHOLD_STRATUM,
-        candidate_ef=800,
-        last_known_good_ef=400,
-        completed_query_count=50,
-        candidate_mean_recall=0.97,
-        candidate_recall_lower_bound_95=0.96,
-        last_known_good_mean_recall=0.96,
-        candidate_p95_latency_ms=4.8,
-        candidate_latency_upper_bound_95_ms=5.0,
-        last_known_good_p95_latency_ms=4.0,
-        configuration_identity=CONFIGURATION_ID,
-        index_identity=INDEX_ID,
-        data_identity=DATA_ID,
-    )
-
-
 def successful_shadow() -> ShadowResult:
     return ShadowResult(
         success=True,
@@ -162,11 +143,9 @@ class FakeActuationClient:
         self,
         *,
         shadow: ShadowResult | None = None,
-        observation: CanaryObservation | None = None,
         verification: RollbackVerification | None = None,
     ) -> None:
         self.shadow = shadow or successful_shadow()
-        self.observation = observation or canary_observation()
         self.verification = verification or successful_verification()
         self.calls: list[tuple[str, object]] = []
 
@@ -184,27 +163,6 @@ class FakeActuationClient:
             )
         )
         return self.shadow
-
-    def start_canary(
-        self,
-        *,
-        context: ActuationContext,
-        candidate_ef: int,
-        last_known_good_ef: int,
-        traffic_fraction: float,
-    ) -> CanaryObservation:
-        self.calls.append(
-            (
-                "start_canary",
-                (
-                    context.collection_name,
-                    candidate_ef,
-                    last_known_good_ef,
-                    traffic_fraction,
-                ),
-            )
-        )
-        return self.observation
 
     def stop_candidate(self) -> None:
         self.calls.append(("stop_candidate", None))
@@ -272,7 +230,7 @@ def harness(
 
 
 class SafeActuationBoundaryTests(unittest.TestCase):
-    def test_start_canary_without_provenance_is_blocked_before_client_calls(self) -> None:
+    def test_start_canary_retirement_precedes_provenance_validation(self) -> None:
         client = FakeActuationClient()
         sink = FakeAuditSink()
         controller = FakeController()
@@ -282,24 +240,40 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
-        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_MISSING")
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
         self.assertEqual(client.calls, [])
         self.assertEqual(len(sink.append_calls), 1)
 
-    def test_start_canary_with_context_binding_mismatch_is_blocked(self) -> None:
+    def test_start_canary_retirement_precedes_context_validation(self) -> None:
         client = FakeActuationClient()
         sink = FakeAuditSink()
         controller = FakeController()
         result = SafeActuationBoundary(client, sink, controller).execute(
             decision(PolicyAction.START_CANARY),
-            replace(context(), flat_index_identity="unexpected-flat-binding"),
+            replace(context(), flat_index_identity=""),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
-        self.assertEqual(result.reason, "EVIDENCE_PROVENANCE_CONTEXT_MISMATCH")
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
         self.assertEqual(client.calls, [])
 
-    def test_successful_canary_start_shadows_then_exposes_ten_percent(self) -> None:
+    def test_start_canary_retirement_ignores_legacy_qualification_status(self) -> None:
+        boundary, client, sink, controller = harness()
+        legacy = QualificationResult(False, None, ("LEGACY_NOT_QUALIFIED",))
+
+        result = boundary.execute(
+            decision(PolicyAction.START_CANARY),
+            replace(context(), last_known_good=legacy),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
+        self.assertFalse(result.executed)
+        self.assertEqual(client.calls, [])
+        self.assertEqual(sink.append_calls, [AUDIT_ID])
+        self.assertEqual(controller.calls, [])
+
+    def test_generic_start_canary_is_permanently_retired_and_audited(self) -> None:
         boundary, client, sink, controller = harness()
 
         result = boundary.execute(
@@ -308,18 +282,14 @@ class SafeActuationBoundaryTests(unittest.TestCase):
             traffic_fraction=0.10,
         )
 
-        self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
-        self.assertTrue(result.executed)
-        self.assertTrue(result.success)
-        self.assertEqual(result.reason, "CANARY_STARTED")
-        self.assertEqual(
-            [name for name, _ in client.calls],
-            ["shadow_candidate", "start_canary"],
-        )
-        self.assertEqual(client.calls[1][1][-1], 0.10)
-        self.assertIs(result.canary_observation, client.observation)
-        self.assertIs(result.audit_record.shadow_result, client.shadow)
-        self.assertIs(result.audit_record.canary_observation, client.observation)
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertFalse(result.executed)
+        self.assertFalse(result.success)
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
+        self.assertEqual(client.calls, [])
+        self.assertFalse(result.audit_record.attempted)
+        self.assertFalse(result.audit_record.success)
+        self.assertIsNone(result.audit_record.traffic_fraction)
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
 
@@ -350,6 +320,93 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
+
+    def test_rollback_ignores_unqualified_legacy_lkg(self) -> None:
+        boundary, client, sink, controller = harness()
+        legacy = QualificationResult(False, None, ("LEGACY_NOT_QUALIFIED",))
+
+        result = boundary.execute(
+            decision(PolicyAction.ROLLBACK),
+            replace(context(), last_known_good=legacy),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
+        self.assertEqual(result.reason, "ROLLBACK_VERIFIED")
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(sink.append_calls, [AUDIT_ID])
+        self.assertEqual(controller.calls, [])
+
+    def test_rollback_ignores_legacy_lkg_identity_disagreement(self) -> None:
+        boundary, client, _, _ = harness()
+        disagreeing = replace(
+            last_known_good(),
+            ef=200,
+            metric=Metric.COSINE,
+            threshold_stratum="target-075",
+            configuration_identity="legacy-other-config",
+            index_identity="legacy-other-index",
+            data_identity="legacy-other-data",
+        )
+
+        result = boundary.execute(
+            decision(PolicyAction.ROLLBACK),
+            replace(context(), last_known_good=disagreeing),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
+        self.assertEqual(
+            client.calls[1],
+            ("restore_last_known_good", 400),
+        )
+
+    def test_rollback_requires_concrete_eligible_decision_lkg_ef(self) -> None:
+        for value in (None, True, 100, 300, 3200):
+            with self.subTest(value=value):
+                boundary, client, sink, controller = harness()
+                malformed = replace(
+                    decision(PolicyAction.ROLLBACK),
+                    last_known_good_ef=value,
+                )
+
+                result = boundary.execute(malformed, context())
+
+                self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+                self.assertEqual(
+                    result.reason,
+                    "ROLLBACK_LAST_KNOWN_GOOD_EF_INVALID",
+                )
+                self.assertEqual(client.calls, [])
+                self.assertEqual(sink.append_calls, [AUDIT_ID])
+                self.assertEqual(controller.calls, [])
+
+    def test_rollback_still_requires_explicit_runtime_context(self) -> None:
+        cases = (
+            ({"metric": "IP"}, "ACTUATION_METRIC_INVALID"),
+            (
+                {"threshold_stratum": "not-registered"},
+                "ACTUATION_THRESHOLD_STRATUM_INVALID",
+            ),
+            ({"collection_name": ""}, "ACTUATION_IDENTITY_MISSING"),
+            ({"configuration_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
+            ({"index_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
+            ({"flat_index_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
+            ({"data_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
+            ({"audited_query_ids": ()}, "ACTUATION_AUDIT_QUERY_IDS_INVALID"),
+            ({"occurred_at_utc": "not-a-time"}, "ACTUATION_TIMESTAMP_INVALID"),
+        )
+        for changes, expected_reason in cases:
+            with self.subTest(changes=changes):
+                boundary, client, sink, _ = harness()
+
+                result = boundary.execute(
+                    decision(PolicyAction.ROLLBACK),
+                    replace(context(), **changes),
+                )
+
+                self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+                self.assertEqual(result.reason, expected_reason)
+                self.assertEqual(client.calls, [])
+                self.assertEqual(sink.append_calls, [AUDIT_ID])
 
     def test_rollback_verification_failure_disables_automatic_actions(self) -> None:
         failed_verification = replace(
@@ -435,7 +492,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         self.assertEqual(sink.append_calls, [])
         self.assertEqual(controller.calls, [])
 
-    def test_traffic_fraction_above_ten_percent_is_rejected(self) -> None:
+    def test_traffic_fraction_cannot_reactivate_generic_start(self) -> None:
         boundary, client, sink, controller = harness()
 
         result = boundary.execute(
@@ -445,12 +502,12 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
-        self.assertEqual(result.reason, "CANARY_TRAFFIC_FRACTION_INVALID")
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
         self.assertEqual(client.calls, [])
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
 
-    def test_start_canary_with_failed_gate_is_blocked_but_rollback_is_not(self) -> None:
+    def test_failed_gate_cannot_reactivate_generic_start(self) -> None:
         boundary, client, sink, controller = harness()
 
         result = boundary.execute(
@@ -462,7 +519,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
-        self.assertEqual(result.reason, "SAFETY_GATE_FAILED:PRE_ACTION_READY")
+        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
         self.assertEqual(client.calls, [])
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
@@ -482,6 +539,17 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         )
         self.assertFalse(any(name.startswith("pymilvus") for name in imports))
         self.assertNotIn("execute_live", MODULE_PATH.read_text(encoding="utf-8"))
+
+    def test_generic_client_protocol_exposes_no_start_canary(self) -> None:
+        self.assertFalse(hasattr(ActuationClientLike, "start_canary"))
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        self.assertFalse(
+            any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in {"start_canary", "_start_canary"}
+                for node in ast.walk(tree)
+            )
+        )
 
 
 if __name__ == "__main__":

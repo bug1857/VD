@@ -1,15 +1,16 @@
-"""Milvus-backed ADR-002 actuation adapter with dependency-injected evidence.
+"""Milvus-backed read-only shadow and rollback adapter.
 
 Purpose:
-    Execute shadow, deterministic canary-routing, and restoration verification
-    through ``MilvusHarness`` without embedding drift or policy decisions.
+    Execute read-only shadow audits and restoration verification through
+    ``MilvusHarness`` without embedding drift or policy decisions. Candidate
+    serving is owned exclusively by the Stage-4 live composition root.
 Inputs:
     An immutable workload, a PyMilvus-client-like object, expected collection
-    identities, deterministic routing seed, external bounds estimator, and
-    external etcd/MinIO health probe.
+    identities and an external etcd/MinIO health probe. Historical constructor
+    inputs for routing/bounds remain inert for read-only acquisition callers.
 Outputs:
-    ``ShadowResult``, ``CanaryObservation``, and ``RollbackVerification`` values
-    consumed by the existing safe-actuation boundary.
+    ``ShadowResult`` and ``RollbackVerification`` values consumed by the safe
+    boundary.
 Dependencies:
     PyMilvus is imported only by ``from_uri``. Unit tests inject a fake client
     and never contact a database. Confidence-bound estimation remains external.
@@ -22,10 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from statistics import mean
 from time import perf_counter_ns
 from types import MappingProxyType
 from typing import Protocol, Self, TypeAlias
@@ -33,13 +32,7 @@ from typing import Protocol, Self, TypeAlias
 import numpy as np
 import numpy.typing as npt
 
-from .actuation import (
-    MAX_CANARY_TRAFFIC_FRACTION,
-    ActuationContext,
-    QueryId,
-    RollbackVerification,
-    ShadowResult,
-)
+from .actuation import ActuationContext, QueryId, RollbackVerification, ShadowResult
 from .config import (
     NUMERIC_TOLERANCE,
     THRESHOLD_LABELS,
@@ -56,11 +49,9 @@ from .oracle import (
     exact_range_search,
     threshold_violations,
 )
-from .policy import ACTUATION_LADDER, CanaryObservation
+from .policy import ACTUATION_LADDER
 
 CANARY_BATCH_SIZE = 500
-CANARY_CANDIDATE_COUNT = 50
-CANARY_ROUTING_DOMAIN = "ADR-002-CANARY-ROUTING-v1"
 
 ClockNs: TypeAlias = Callable[[], int]
 
@@ -232,15 +223,6 @@ class ShadowAuditTraceSinkLike(Protocol):
     """Injected destination for exactly one immutable trace per shadow call."""
 
     def append(self, trace: ShadowAuditTrace) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class CanaryRouteSelection:
-    """Deterministic 50/450 routing result for one 500-query batch."""
-
-    candidate_query_ids: tuple[QueryId, ...]
-    last_known_good_query_ids: tuple[QueryId, ...]
-    candidate_digest_hex: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,68 +454,8 @@ def _identity_fingerprint(identity: CollectionIdentity) -> bytes:
     return hashlib.sha256(payload.encode("utf-8")).digest()
 
 
-def select_canary_routes(
-    query_ids: Sequence[QueryId],
-    *,
-    routing_seed: int,
-    metric: Metric | str,
-    threshold_stratum: str,
-    traffic_fraction: float,
-) -> CanaryRouteSelection:
-    """Select exactly 50 of 500 IDs by keyed-BLAKE2b rank.
-
-    The SHA-256 key is derived from the canonical tuple ``(domain, seed)``. Each
-    rank hashes ``(metric, threshold_stratum, query_id)`` and uses the canonical
-    query-ID bytes as the deterministic collision tie-break.
-    """
-
-    _validate_routing_seed(routing_seed)
-    if (
-        isinstance(traffic_fraction, bool)
-        or not isinstance(traffic_fraction, (int, float))
-        or not math.isfinite(traffic_fraction)
-        or float(traffic_fraction) != MAX_CANARY_TRAFFIC_FRACTION
-    ):
-        raise ValueError("canary traffic_fraction must be exactly 0.10")
-    normalized_metric = Metric(metric)
-    if threshold_stratum not in THRESHOLD_LABELS:
-        raise ValueError("threshold stratum must be canonical")
-    values = tuple(query_ids)
-    if len(values) != CANARY_BATCH_SIZE:
-        raise ValueError("canary routing requires exactly 500 query IDs")
-    for query_id in values:
-        _validate_query_id(query_id)
-    if len(set(values)) != CANARY_BATCH_SIZE:
-        raise ValueError("canary routing requires 500 unique query IDs")
-
-    key = hashlib.sha256(
-        canonical_serialize_tuple((CANARY_ROUTING_DOMAIN, routing_seed))
-    ).digest()
-    ranked: list[tuple[bytes, bytes, QueryId]] = []
-    for query_id in values:
-        encoded_id = canonical_serialize_tuple((query_id,))
-        message = canonical_serialize_tuple(
-            (normalized_metric.value, threshold_stratum, query_id)
-        )
-        digest = hashlib.blake2b(message, key=key, digest_size=32).digest()
-        ranked.append((digest, encoded_id, query_id))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    candidate = ranked[:CANARY_CANDIDATE_COUNT]
-    candidate_keys = {item[1] for item in candidate}
-    last_known_good = tuple(
-        query_id
-        for query_id in values
-        if canonical_serialize_tuple((query_id,)) not in candidate_keys
-    )
-    return CanaryRouteSelection(
-        candidate_query_ids=tuple(item[2] for item in candidate),
-        last_known_good_query_ids=last_known_good,
-        candidate_digest_hex=tuple(item[0].hex() for item in candidate),
-    )
-
-
 class MilvusActuationClient:
-    """ActuationClientLike implementation composed around ``MilvusHarness``."""
+    """Read-only shadow/rollback implementation composed around MilvusHarness."""
 
     def __init__(
         self,
@@ -1124,179 +1046,6 @@ class MilvusActuationClient:
             ),
         )
 
-    def start_canary(
-        self,
-        *,
-        context: ActuationContext,
-        candidate_ef: int,
-        last_known_good_ef: int,
-        traffic_fraction: float,
-    ) -> CanaryObservation:
-        """Route 50/500 requests to candidate ef and shadow those same 50 at LKG."""
-
-        _validate_actuation_ef(candidate_ef, name="candidate_ef")
-        _validate_actuation_ef(last_known_good_ef, name="last_known_good_ef")
-        self.workload.validate_for_canary()
-        if not self._context_configuration_valid(context):
-            raise ContractViolation("workload/context configuration identity mismatch")
-        metric = self._metric(context)
-        routes = select_canary_routes(
-            self.workload.canary_query_ids,
-            routing_seed=self.routing_seed,
-            metric=metric,
-            threshold_stratum=context.threshold_stratum,
-            traffic_fraction=traffic_fraction,
-        )
-        candidate_ids = set(routes.candidate_query_ids)
-        flat_configuration = self._configuration(
-            metric=metric,
-            threshold_stratum=context.threshold_stratum,
-            track=IndexTrack.FLAT,
-        )
-        candidate_configuration = self._configuration(
-            metric=metric,
-            threshold_stratum=context.threshold_stratum,
-            track=IndexTrack.HNSW,
-            ef=candidate_ef,
-        )
-        last_known_good_configuration = self._configuration(
-            metric=metric,
-            threshold_stratum=context.threshold_stratum,
-            track=IndexTrack.HNSW,
-            ef=last_known_good_ef,
-        )
-        flat_name = self.workload.collection_names[(metric, IndexTrack.FLAT)]
-        hnsw_name = self.workload.collection_names[(metric, IndexTrack.HNSW)]
-
-        self._candidate_ef = candidate_ef
-        self._default_ef = last_known_good_ef
-        failures = 0
-        timeouts = 0
-        violations = 0
-        flat_agreement = True
-        candidate_query_ids: list[QueryId] = []
-        candidate_recalls: list[float] = []
-        paired_recalls: list[float] = []
-        candidate_latencies: list[float] = []
-        paired_latencies: list[float] = []
-
-        for query_id in self.workload.canary_query_ids:
-            query = self._query(query_id)
-            if query_id not in candidate_ids:
-                served = self._timed_search(
-                    name=hnsw_name,
-                    query=query,
-                    configuration=last_known_good_configuration,
-                )
-                if served.exception is not None:
-                    failures += 1
-                    timeouts += int(served.timed_out)
-                else:
-                    assert served.hits is not None
-                    violations += self._violation_count(
-                        served.hits, last_known_good_configuration
-                    )
-                continue
-
-            oracle = self._oracle(query, flat_configuration)
-            flat = self._timed_search(
-                name=flat_name,
-                query=query,
-                configuration=flat_configuration,
-            )
-            candidate = self._timed_search(
-                name=hnsw_name,
-                query=query,
-                configuration=candidate_configuration,
-            )
-            paired = self._timed_search(
-                name=hnsw_name,
-                query=query,
-                configuration=last_known_good_configuration,
-            )
-            candidate_query_ids.append(query_id)
-
-            for result, configuration in (
-                (flat, flat_configuration),
-                (candidate, candidate_configuration),
-                (paired, last_known_good_configuration),
-            ):
-                if result.exception is not None:
-                    failures += 1
-                    timeouts += int(result.timed_out)
-                else:
-                    assert result.hits is not None
-                    violations += self._violation_count(result.hits, configuration)
-            flat_agreement &= self._flat_agrees(flat, oracle, flat_configuration)
-            if candidate.hits is not None:
-                candidate_recalls.append(
-                    capped_threshold_recall(
-                        (hit.id for hit in candidate.hits), oracle.ids
-                    )
-                )
-                candidate_latencies.append(candidate.latency_ms)
-            if paired.hits is not None:
-                paired_recalls.append(
-                    capped_threshold_recall((hit.id for hit in paired.hits), oracle.ids)
-                )
-                paired_latencies.append(paired.latency_ms)
-
-        complete_measurements = bool(
-            len(candidate_query_ids) == CANARY_CANDIDATE_COUNT
-            and len(candidate_recalls) == CANARY_CANDIDATE_COUNT
-            and len(paired_recalls) == CANARY_CANDIDATE_COUNT
-            and len(candidate_latencies) == CANARY_CANDIDATE_COUNT
-            and len(paired_latencies) == CANARY_CANDIDATE_COUNT
-        )
-        candidate_mean = mean(candidate_recalls) if candidate_recalls else 0.0
-        paired_mean = mean(paired_recalls) if paired_recalls else 0.0
-        candidate_p95 = _p95(candidate_latencies)
-        paired_p95 = _p95(paired_latencies)
-        recall_lower_bound = 0.0
-        latency_upper_bound = candidate_p95
-        if complete_measurements:
-            measurements = CanaryPairedMeasurements(
-                query_ids=tuple(candidate_query_ids),
-                candidate_recalls=tuple(candidate_recalls),
-                last_known_good_recalls=tuple(paired_recalls),
-                candidate_latencies_ms=tuple(candidate_latencies),
-                last_known_good_latencies_ms=tuple(paired_latencies),
-            )
-            bounds = self.bound_estimator.estimate(measurements)
-            _validate_bounds(bounds, mean_recall=candidate_mean, p95=candidate_p95)
-            recall_lower_bound = bounds.recall_lower_bound_95
-            latency_upper_bound = bounds.latency_upper_bound_95_ms
-
-        status = self._runtime_status(context)
-        return CanaryObservation(
-            metric=metric,
-            threshold_stratum=context.threshold_stratum,
-            candidate_ef=candidate_ef,
-            last_known_good_ef=last_known_good_ef,
-            completed_query_count=len(candidate_query_ids),
-            candidate_mean_recall=candidate_mean,
-            candidate_recall_lower_bound_95=recall_lower_bound,
-            last_known_good_mean_recall=paired_mean,
-            candidate_p95_latency_ms=candidate_p95,
-            candidate_latency_upper_bound_95_ms=latency_upper_bound,
-            last_known_good_p95_latency_ms=paired_p95,
-            configuration_identity=self.workload.configuration_identity,
-            index_identity=self._hnsw_binding(metric).identity_id,
-            data_identity=self.workload.data_identity,
-            failed_query_count=failures,
-            timeout_query_count=timeouts,
-            threshold_violation_count=violations,
-            flat_oracle_agreement=flat_agreement,
-            milvus_healthy=status.milvus_healthy,
-            etcd_healthy=status.etcd_healthy,
-            minio_healthy=status.minio_healthy,
-            collection_loaded=status.collection_loaded,
-            configuration_valid=status.configuration_valid,
-            index_identity_unchanged=status.index_identity_unchanged,
-            audit_record_present=True,
-            actuation_exception=False,
-        )
-
     def stop_candidate(self) -> None:
         """Clear adapter routing state; ef has no persistent Milvus server state."""
 
@@ -1361,7 +1110,8 @@ class MilvusActuationClient:
         try:
             metric = self._metric(context)
             hnsw_name = self.workload.collection_names[(metric, IndexTrack.HNSW)]
-            binding = self._hnsw_binding(metric)
+            hnsw_binding = self._hnsw_binding(metric)
+            flat_binding = self.workload.identity_bindings[(metric, IndexTrack.FLAT)]
             return bool(
                 context.threshold_stratum in THRESHOLD_LABELS
                 and (metric, context.threshold_stratum) in self.workload.threshold_radii
@@ -1369,7 +1119,8 @@ class MilvusActuationClient:
                 and context.configuration_identity
                 == self.workload.configuration_identity
                 and context.data_identity == self.workload.data_identity
-                and context.index_identity == binding.identity_id
+                and context.index_identity == hnsw_binding.identity_id
+                and context.flat_index_identity == flat_binding.identity_id
             )
         except (KeyError, TypeError, ValueError):
             return False
@@ -1433,42 +1184,12 @@ class MilvusActuationClient:
         )
 
 
-def _p95(values: Sequence[float]) -> float:
-    if not values:
-        return 0.0
-    return float(
-        np.percentile(np.asarray(values, dtype=np.float64), 95, method="linear")
-    )
-
-
-def _validate_bounds(
-    bounds: object,
-    *,
-    mean_recall: float,
-    p95: float,
-) -> None:
-    if not isinstance(bounds, CanaryBounds):
-        raise TypeError("bound estimator must return CanaryBounds")
-    if (
-        not math.isfinite(bounds.recall_lower_bound_95)
-        or not 0.0 <= bounds.recall_lower_bound_95 <= mean_recall <= 1.0
-        or not math.isfinite(bounds.latency_upper_bound_95_ms)
-        or bounds.latency_upper_bound_95_ms < p95
-        or bounds.confidence_level != 0.95
-        or not _nonempty(bounds.provenance)
-    ):
-        raise ValueError("bound estimator returned invalid one-sided 95% bounds")
-
-
 __all__ = [
     "CANARY_BATCH_SIZE",
-    "CANARY_CANDIDATE_COUNT",
-    "CANARY_ROUTING_DOMAIN",
     "ActuationWorkload",
     "CanaryBoundEstimatorLike",
     "CanaryBounds",
     "CanaryPairedMeasurements",
-    "CanaryRouteSelection",
     "CollectionIdentityBinding",
     "MilvusActuationClient",
     "ShadowAuditStageEvidence",
@@ -1478,5 +1199,4 @@ __all__ = [
     "ShadowQueryAuditTrace",
     "StackHealth",
     "StackHealthProbeLike",
-    "select_canary_routes",
 ]

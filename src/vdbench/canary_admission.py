@@ -44,10 +44,9 @@ from .canary_workload import (
 )
 from .config import IndexTrack, Metric, SearchConfiguration
 from .drift import evidence_provenance_valid
-from .lkg_phase3_authority import LkgPhase3Authority
-from .lkg_phase3_persistence import (
-    PersistedLkgPhase3AuthorityReference,
-    VerifiedLatestLkgPhase3AuthorityReference,
+from .lkg_phase3_binding import (
+    LkgPhase3AuthorityPair,
+    bind_lkg_phase3_authority,
 )
 from .policy import (
     PolicyAction,
@@ -84,35 +83,7 @@ _MAX_LATENCY_MS = 10.0
 _EXCEPTION_MINIMUM_RECALL_IMPROVEMENT = 0.005
 _RECEIPT_SCHEMA_VERSION = "stage4-admission-receipt-v1"
 _RECEIPT_HASH_DOMAIN = b"vdbench.stage4-admission-receipt.v1\0"
-_PAIR_CONSTRUCTION_TOKEN = object()
 _RECEIPT_CONSTRUCTION_TOKEN = object()
-
-
-_PERSISTED_IDENTITY_FIELDS = (
-    "canonical_evaluation_digest",
-    "source_run_id",
-    "source_run_binding_sha256",
-    "source_run_seal_digest",
-    "source_sealed_phase1_chain_head_sha256",
-    "phase2_source_binding_digest",
-    "evaluated_ef",
-    "search_configuration_digest",
-    "metric",
-    "threshold_stratum",
-    "collection_name",
-    "index_identity",
-    "data_identity",
-    "qualification_dataset_id",
-    "qualification_dataset_version",
-    "qualification_manifest_sha256",
-    "qualification_query_role",
-    "qualification_ordered_query_ids_sha256",
-    "qualification_query_id_array_sha256",
-    "qualification_query_array_sha256",
-    "qualification_expected_query_count",
-    "environment_identity",
-    "source_revision",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,88 +95,10 @@ class Stage4RepositoryEvidence:
     observed_at_utc: str
 
 
-@dataclass(frozen=True, slots=True, init=False)
-class Stage4LkgAuthorityPair:
-    """One validated D1 authority and its exact D2 verified-head snapshot.
-
-    Private construction is API discipline, not cryptographic authenticity.
-    This value performs no replay or persistence I/O and is usable only after
-    :func:`bind_stage4_lkg_authority` has compared every D2-persisted identity
-    and lineage field with the concrete D1 authority.
-    """
-
-    _authority: LkgPhase3Authority
-    _verified_latest_reference: VerifiedLatestLkgPhase3AuthorityReference
-
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError(
-            "Stage4LkgAuthorityPair can only be created by "
-            "bind_stage4_lkg_authority()"
-        )
-
-    @classmethod
-    def _from_validated(
-        cls,
-        *,
-        authority: LkgPhase3Authority,
-        verified_latest_reference: VerifiedLatestLkgPhase3AuthorityReference,
-        construction_token: object,
-    ) -> Stage4LkgAuthorityPair:
-        if construction_token is not _PAIR_CONSTRUCTION_TOKEN:
-            raise TypeError("Stage4 LKG pair construction token is invalid")
-        value = object.__new__(cls)
-        object.__setattr__(value, "_authority", authority)
-        object.__setattr__(
-            value, "_verified_latest_reference", verified_latest_reference
-        )
-        return value
-
-    @property
-    def authority(self) -> LkgPhase3Authority:
-        return self._authority
-
-    @property
-    def verified_latest_reference(
-        self,
-    ) -> VerifiedLatestLkgPhase3AuthorityReference:
-        return self._verified_latest_reference
-
-
-def bind_stage4_lkg_authority(
-    *,
-    authority: object,
-    verified_latest_reference: object,
-) -> Stage4LkgAuthorityPair:
-    """Bind an exact D1 authority to one store-issued D2 head snapshot.
-
-    D2 record metadata is intentionally excluded: sequence, persistence time,
-    previous digest, canonical record digest, and schema version describe the
-    append-only record rather than the persisted D1 identity.
-    """
-
-    if type(authority) is not LkgPhase3Authority:
-        raise TypeError("authority must be a concrete LkgPhase3Authority")
-    if type(verified_latest_reference) is not VerifiedLatestLkgPhase3AuthorityReference:
-        raise TypeError(
-            "verified_latest_reference must be a concrete store-issued "
-            "VerifiedLatestLkgPhase3AuthorityReference"
-        )
-    try:
-        reference = verified_latest_reference.reference
-        if type(reference) is not PersistedLkgPhase3AuthorityReference:
-            raise TypeError("verified latest reference contains an invalid record")
-        mismatches = _lkg_pair_identity_mismatches(authority, reference)
-    except AttributeError as exc:
-        raise TypeError("Phase-3 authority pair is structurally malformed") from exc
-    if mismatches:
-        raise ValueError(
-            "D1/D2 Phase-3 authority identity mismatch: " + ",".join(mismatches)
-        )
-    return Stage4LkgAuthorityPair._from_validated(
-        authority=authority,
-        verified_latest_reference=verified_latest_reference,
-        construction_token=_PAIR_CONSTRUCTION_TOKEN,
-    )
+# Narrow compatibility aliases.  The neutral module owns the sole real pair
+# implementation and validator.
+Stage4LkgAuthorityPair = LkgPhase3AuthorityPair
+bind_stage4_lkg_authority = bind_lkg_phase3_authority
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +110,7 @@ class Stage4AdmissionRequest:
     plan: CanaryRoutePlan
     schedule: Stage4ExecutionSchedule
     policy_decision: PolicyDecision
-    lkg_authority: Stage4LkgAuthorityPair
+    lkg_authority: LkgPhase3AuthorityPair
     evidence_binding: Stage4EvidenceBinding
     repository: Stage4RepositoryEvidence
     runtime: Stage4RuntimeReadiness
@@ -585,12 +478,12 @@ def _validate_policy_bounds(decision: PolicyDecision, reasons: list[str]) -> Non
 def _validate_lkg_pair(
     value: object,
     reasons: list[str],
-) -> Stage4LkgAuthorityPair | None:
-    if type(value) is not Stage4LkgAuthorityPair:
+) -> LkgPhase3AuthorityPair | None:
+    if type(value) is not LkgPhase3AuthorityPair:
         _append_once(reasons, "PHASE3_LKG_AUTHORITY_PAIR_INVALID")
         return None
     try:
-        rebound = bind_stage4_lkg_authority(
+        rebound = bind_lkg_phase3_authority(
             authority=value.authority,
             verified_latest_reference=value.verified_latest_reference,
         )
@@ -627,7 +520,7 @@ def _revalidate_evidence_binding(
 
 def _validate_configuration_bridge(
     *,
-    pair: Stage4LkgAuthorityPair,
+    pair: LkgPhase3AuthorityPair,
     binding: Stage4EvidenceBinding,
     manifest: EligibleWorkloadManifest,
     plan: CanaryRoutePlan,
@@ -727,23 +620,9 @@ def _validate_runtime(
         _append_once(reasons, "RUNTIME_BINDING_MISMATCH")
 
 
-def _lkg_pair_identity_mismatches(
-    authority: LkgPhase3Authority,
-    reference: PersistedLkgPhase3AuthorityReference,
-) -> tuple[str, ...]:
-    mismatches: list[str] = []
-    for field in _PERSISTED_IDENTITY_FIELDS:
-        authority_value = getattr(authority, field)
-        if field == "metric":
-            authority_value = authority_value.value
-        if getattr(reference, field) != authority_value:
-            mismatches.append(field)
-    return tuple(mismatches)
-
-
 def _build_receipt(
     *,
-    pair: Stage4LkgAuthorityPair,
+    pair: LkgPhase3AuthorityPair,
     binding: Stage4EvidenceBinding,
     plan: CanaryRoutePlan,
     schedule: Stage4ExecutionSchedule,

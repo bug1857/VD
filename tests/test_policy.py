@@ -1,13 +1,35 @@
-from dataclasses import replace
+import ast
+from dataclasses import fields, replace
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
+from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.drift import (
     DetectorState,
     DriftClassification,
     DriftDecision,
     build_evidence_provenance,
 )
+from vdbench.lkg_phase2_readiness_ledger import Phase2ReadinessLedger
+from vdbench.lkg_phase3_authority import resolve_lkg_phase3_authority
+from vdbench.lkg_phase3_binding import (
+    LkgPhase3AuthorityPair,
+    bind_lkg_phase3_authority,
+)
+from vdbench.lkg_phase3_persistence import (
+    LkgPhase3AuthorityReferenceStore,
+)
+from vdbench.lkg_qualification_evaluation import (
+    LkgQualificationEvaluation,
+    LkgQualificationStatus,
+)
+from vdbench.lkg_qualification_evaluation_ledger import (
+    LkgQualificationEvaluationLedger,
+)
+from vdbench.lkg_qualification_ledger import LkgQualificationLedger
+from vdbench.lkg_run_binding import LkgRunBinding
 from vdbench.policy import (
     CanaryObservation,
     PolicyAction,
@@ -18,12 +40,115 @@ from vdbench.policy import (
     evaluate_tuning_policy,
     qualify_last_known_good,
 )
+from vdbench.search_configuration_digest import search_configuration_sha256
 
 CONFIG_ID = "config-v1"
 INDEX_ID = "hnsw-m16-efc200-v1"
 FLAT_INDEX_ID = "flat-v1"
 DATA_ID = "dataset-v1"
 AUDIT_ID = "audit-policy-001"
+_DEFAULT_AUTHORITY = object()
+_PHASE3_TEMPORARY = tempfile.TemporaryDirectory()
+_PHASE3_PAIR_CACHE: dict[tuple[str, int], LkgPhase3AuthorityPair] = {}
+
+
+def tearDownModule() -> None:
+    _PHASE3_TEMPORARY.cleanup()
+
+
+def phase3_pair(
+    *, threshold: str = "target-025", ef: int = 400
+) -> LkgPhase3AuthorityPair:
+    key = (threshold, ef)
+    cached = _PHASE3_PAIR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    identifier = len(_PHASE3_PAIR_CACHE) + 101
+    search_configuration = SearchConfiguration(
+        metric=Metric.L2,
+        threshold_label=threshold,
+        radius=0.25 if threshold == "target-025" else 0.75,
+        index_track=IndexTrack.HNSW,
+        ef=ef,
+        limit=100,
+        consistency_level="Strong",
+    )
+    run_binding = LkgRunBinding(
+        run_id=f"phase3-policy-run-{identifier:03d}",
+        producer_identity="checkpoint-a-producer-v1",
+        search_configuration=search_configuration,
+        collection_name=f"phase3-policy-hnsw-{identifier:03d}",
+        base_data_identity=DATA_ID,
+        index_identity=INDEX_ID,
+        qualification_dataset_id="DATASET-003",
+        qualification_dataset_version="DATASET-003-v1",
+        qualification_manifest_sha256="a" * 64,
+        qualification_query_role="lkg_qualification",
+        qualification_query_id_array_sha256="b" * 64,
+        qualification_ordered_query_ids_sha256="c" * 64,
+        qualification_query_array_sha256="d" * 64,
+        qualification_expected_query_count=2_400,
+        environment_identity="ENV-001-verified",
+        source_revision=f"{identifier:040x}",
+    )
+    evaluation_digest = f"{identifier:064x}"
+    evaluation = mock.create_autospec(LkgQualificationEvaluation, instance=True)
+    values = {
+        "canonical_evaluation_digest": evaluation_digest,
+        "source_run_id": run_binding.run_id,
+        "source_run_binding_sha256": run_binding.sha256,
+        "source_run_seal_digest": "1" * 64,
+        "source_sealed_phase1_chain_head_sha256": "2" * 64,
+        "phase2_source_binding_digest": "3" * 64,
+        "evaluated_ef": ef,
+        "search_configuration_digest": search_configuration_sha256(
+            search_configuration
+        ),
+        "qualification_dataset_id": run_binding.qualification_dataset_id,
+        "qualification_dataset_version": run_binding.qualification_dataset_version,
+        "qualification_manifest_sha256": run_binding.qualification_manifest_sha256,
+        "qualification_query_role": run_binding.qualification_query_role,
+        "qualification_ordered_query_ids_sha256": (
+            run_binding.qualification_ordered_query_ids_sha256
+        ),
+        "status": LkgQualificationStatus.PASSING,
+        "qualified": True,
+        "status_reason_codes": (),
+        "evaluator_identity": "checkpoint-c-evaluator-v1",
+        "evaluator_source_revision": "checkpoint-c-revision-v1",
+        "evaluated_at_utc": "2026-08-08T12:00:00.000000Z",
+    }
+    for field_name, value in values.items():
+        setattr(evaluation, field_name, value)
+    ledger = mock.create_autospec(LkgQualificationEvaluationLedger, instance=True)
+    ledger.get_final_evaluation.return_value = evaluation
+    ledger.evaluate_and_finalize.return_value = evaluation
+    resolution = resolve_lkg_phase3_authority(
+        evaluation_ledger=ledger,
+        phase1_ledger=mock.create_autospec(LkgQualificationLedger, instance=True),
+        phase2_readiness_ledger=mock.create_autospec(
+            Phase2ReadinessLedger, instance=True
+        ),
+        run_binding=run_binding,
+        expected_canonical_evaluation_digest=evaluation_digest,
+    )
+    if resolution.authority is None:
+        raise AssertionError(f"D1 fixture failed: {resolution.reason_codes}")
+    path = Path(_PHASE3_TEMPORARY.name) / f"{threshold}-{ef}.db"
+    with LkgPhase3AuthorityReferenceStore(path) as store:
+        store.append(
+            resolution.authority,
+            persisted_at_utc=f"2026-08-08T17:{identifier - 101:02d}:00.000000Z",
+        )
+        latest = store.load_verified_latest()
+    if latest is None:
+        raise AssertionError("D2 fixture failed to issue a verified latest head")
+    pair = bind_lkg_phase3_authority(
+        authority=resolution.authority,
+        verified_latest_reference=latest,
+    )
+    _PHASE3_PAIR_CACHE[key] = pair
+    return pair
 
 
 def provenance(
@@ -252,17 +377,36 @@ def decide(
     mode: PolicyMode = PolicyMode.CANARY_ENABLED,
     threshold: str = "target-025",
     audit_id: str = AUDIT_ID,
+    authority: object = _DEFAULT_AUTHORITY,
 ):
+    selected_windows = windows or qualification_pair(threshold=threshold)
+    if observation is not None:
+        qualification_windows = None
+        selected_authority = None if authority is _DEFAULT_AUTHORITY else authority
+    elif mode is PolicyMode.CANARY_ENABLED:
+        qualification_windows = None
+        selected_authority = (
+            phase3_pair(threshold=threshold, ef=selected_windows[0].ef)
+            if authority is _DEFAULT_AUTHORITY
+            else authority
+        )
+    elif authority is _DEFAULT_AUTHORITY:
+        qualification_windows = selected_windows
+        selected_authority = None
+    else:
+        qualification_windows = None
+        selected_authority = authority
     return evaluate_tuning_policy(
         drift or detector(threshold=threshold),
         current_ef=current_ef,
         response_estimates=estimates or quality_estimates(threshold=threshold),
         pre_action=safety or pre_action(threshold=threshold),
         canary_observation=observation,
-        qualification_windows=windows or qualification_pair(threshold=threshold),
+        qualification_windows=qualification_windows,
         mode=mode,
         threshold_stratum=threshold,
         audit_id=audit_id,
+        lkg_authority=selected_authority,
     )
 
 
@@ -395,6 +539,212 @@ class LastKnownGoodTests(unittest.TestCase):
         self.assertFalse(result.qualified)
         self.assertIn("QUALIFICATION_WINDOWS_NOT_CONSECUTIVE", result.reasons)
         self.assertIn("QUALIFICATION_DATA_IDENTITY_MISMATCH", result.reasons)
+
+
+class Phase3PolicyAuthorityTests(unittest.TestCase):
+    def _direct_evaluation(self, **changes: object):
+        values: dict[str, object] = {
+            "detector": detector(),
+            "current_ef": 400,
+            "response_estimates": quality_estimates(),
+            "pre_action": pre_action(),
+            "canary_observation": None,
+            "qualification_windows": None,
+            "mode": PolicyMode.CANARY_ENABLED,
+            "threshold_stratum": "target-025",
+            "audit_id": AUDIT_ID,
+            "last_known_good": None,
+            "lkg_authority": phase3_pair(),
+        }
+        values.update(changes)
+        return evaluate_tuning_policy(**values)
+
+    def test_valid_neutral_pair_satisfies_real_canary_lkg_prerequisite(self) -> None:
+        result = decide()
+
+        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        self.assertEqual(result.last_known_good_ef, 400)
+        self.assertEqual(result.reason, "SAFETY_GATES_PASSED")
+
+    def test_d1_only_and_d2_only_cannot_satisfy_canary_enabled(self) -> None:
+        pair = phase3_pair()
+        for value in (pair.authority, pair.verified_latest_reference):
+            with self.subTest(value_type=type(value).__name__):
+                result = decide(authority=value)
+                self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+                self.assertEqual(result.reason, "PHASE3_LKG_AUTHORITY_INVALID")
+
+    def test_mismatched_d1_d2_pair_is_rejected(self) -> None:
+        first = phase3_pair()
+        second = phase3_pair(threshold="target-075")
+        forged = object.__new__(LkgPhase3AuthorityPair)
+        object.__setattr__(forged, "_authority", first.authority)
+        object.__setattr__(
+            forged,
+            "_verified_latest_reference",
+            second.verified_latest_reference,
+        )
+
+        result = decide(authority=forged)
+
+        self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+        self.assertEqual(result.reason, "PHASE3_LKG_AUTHORITY_INVALID")
+
+    def test_forged_or_nonconcrete_pair_fails_closed(self) -> None:
+        forged = object.__new__(LkgPhase3AuthorityPair)
+        for value in (forged, object()):
+            with self.subTest(value_type=type(value).__name__):
+                result = decide(authority=value)
+                self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+                self.assertEqual(result.reason, "PHASE3_LKG_AUTHORITY_INVALID")
+
+    def test_legacy_qualification_remains_dry_run_only(self) -> None:
+        dry_run = decide(mode=PolicyMode.DRY_RUN)
+        canary_enabled = self._direct_evaluation(
+            qualification_windows=qualification_pair(),
+            lkg_authority=None,
+        )
+
+        self.assertEqual(dry_run.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(dry_run.reason, "DRY_RUN_RECOMMENDATION")
+        self.assertEqual(canary_enabled.action, PolicyAction.NO_CHANGE)
+        self.assertEqual(canary_enabled.reason, "PHASE3_LKG_AUTHORITY_REQUIRED")
+
+    def test_source_precedence_uses_stable_fail_closed_reasons(self) -> None:
+        legacy_result = qualify_last_known_good(
+            qualification_pair(), audit_id=AUDIT_ID
+        )
+        cases = (
+            (
+                self._direct_evaluation(lkg_authority=None),
+                "PHASE3_LKG_AUTHORITY_REQUIRED",
+            ),
+            (
+                self._direct_evaluation(
+                    lkg_authority=phase3_pair(),
+                    qualification_windows=qualification_pair(),
+                ),
+                "LKG_AUTHORITY_SOURCES_CONFLICT",
+            ),
+            (
+                decide(mode=PolicyMode.DRY_RUN, authority=None),
+                "LKG_AUTHORITY_SOURCE_REQUIRED",
+            ),
+            (
+                self._direct_evaluation(
+                    mode=PolicyMode.DRY_RUN,
+                    lkg_authority=None,
+                    qualification_windows=qualification_pair(),
+                    last_known_good=legacy_result,
+                ),
+                "LKG_AUTHORITY_SOURCES_CONFLICT",
+            ),
+            (
+                self._direct_evaluation(
+                    lkg_authority=phase3_pair(),
+                    qualification_windows=qualification_pair(),
+                    last_known_good=legacy_result,
+                ),
+                "LKG_AUTHORITY_SOURCES_CONFLICT",
+            ),
+        )
+        for result, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+                self.assertEqual(result.reason, reason)
+
+    def test_active_canary_rollback_precedes_all_lkg_authority_sources(self) -> None:
+        result = self._direct_evaluation(
+            canary_observation=canary(failed_query_count=1),
+            qualification_windows=qualification_pair(),
+            last_known_good=object(),
+            lkg_authority=object(),
+        )
+
+        self.assertEqual(result.action, PolicyAction.ROLLBACK)
+        self.assertEqual(result.reason, "QUERY_FAILURE")
+
+    def test_active_canary_safety_does_not_require_any_lkg_source(self) -> None:
+        result = self._direct_evaluation(
+            canary_observation=canary(),
+            lkg_authority=None,
+        )
+
+        self.assertEqual(result.action, PolicyAction.NO_CHANGE)
+        self.assertEqual(result.reason, "CANARY_PASSED")
+
+    def test_phase3_projection_does_not_fabricate_configuration_or_flat_identity(self) -> None:
+        pair = phase3_pair()
+        self.assertNotEqual(pair.authority.search_configuration_digest, CONFIG_ID)
+
+        result = decide(authority=pair)
+
+        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        assert result.evidence_provenance is not None
+        self.assertEqual(result.evidence_provenance.configuration_identity, CONFIG_ID)
+        self.assertEqual(result.evidence_provenance.flat_binding_id, FLAT_INDEX_ID)
+
+    def test_policy_uses_neutral_binder_without_acquisition_or_duplicate_binding(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "src" / "vdbench" / "policy.py"
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imported_modules = {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        }
+        self.assertIn("lkg_phase3_binding", imported_modules)
+        self.assertFalse(
+            any(
+                forbidden in module
+                for module in imported_modules
+                for forbidden in (
+                    "lkg_phase3_authority",
+                    "lkg_phase3_persistence",
+                    "lkg_qualification",
+                    "lkg_phase2",
+                    "canary_admission",
+                    "actuation",
+                    "milvus",
+                )
+            )
+        )
+        self.assertNotIn("PersistedLkgPhase3AuthorityReference", source)
+        self.assertNotIn("VerifiedLatestLkgPhase3AuthorityReference", source)
+        self.assertNotIn("_PERSISTED_D1_IDENTITY_FIELDS", source)
+        binder_calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "bind_lkg_phase3_authority"
+        )
+        self.assertEqual(binder_calls, 1)
+
+    def test_policy_decision_schema_is_unchanged(self) -> None:
+        self.assertEqual(
+            tuple(field.name for field in fields(type(decide()))),
+            (
+                "action",
+                "current_ef",
+                "candidate_ef",
+                "last_known_good_ef",
+                "expected_mean_recall",
+                "expected_recall_lower_bound_95",
+                "expected_p95_latency_ms",
+                "expected_latency_upper_bound_95_ms",
+                "predicted_recall_improvement",
+                "predicted_latency_reduction_fraction",
+                "reason",
+                "detector_confidence",
+                "detector_magnitude",
+                "safety_gate_results",
+                "mode",
+                "audit_id",
+                "alert_required",
+                "evidence_provenance",
+            ),
+        )
 
 
 class PreActionAndExceptionTests(unittest.TestCase):

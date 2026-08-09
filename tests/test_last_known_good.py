@@ -279,7 +279,7 @@ print(json.dumps(payload, sort_keys=True))
                 ["qualification-window-10", "qualification-window-11"],
             )
 
-    def test_loaded_result_is_accepted_as_policy_input_and_sources_are_exclusive(
+    def test_loaded_result_is_dry_run_only_and_sources_are_exclusive(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -326,12 +326,12 @@ print(json.dumps(payload, sort_keys=True))
                     current_audit_rank_digests=tuple(f"{value + 50:064x}" for value in range(50)),
                 ),
             )
-            keywords = {
+            dry_run_keywords = {
                 "current_ef": 400,
                 "response_estimates": estimates,
                 "pre_action": pre_action(),
                 "canary_observation": None,
-                "mode": PolicyMode.CANARY_ENABLED,
+                "mode": PolicyMode.DRY_RUN,
                 "threshold_stratum": THRESHOLD_STRATUM,
                 "audit_id": AUDIT_ID,
             }
@@ -339,18 +339,39 @@ print(json.dumps(payload, sort_keys=True))
             decision = evaluate_tuning_policy(
                 drift,
                 last_known_good=loaded,
-                **keywords,
+                **dry_run_keywords,
             )
 
-            self.assertEqual(decision.action, PolicyAction.START_CANARY)
+            self.assertEqual(decision.action, PolicyAction.RECOMMEND_EF)
             self.assertEqual(decision.last_known_good_ef, 400)
-            with self.assertRaisesRegex(ValueError, "mutually exclusive"):
-                evaluate_tuning_policy(
-                    drift,
-                    qualification_windows=qualification_windows(),
-                    last_known_good=loaded,
-                    **keywords,
-                )
+            conflict = evaluate_tuning_policy(
+                drift,
+                qualification_windows=qualification_windows(),
+                last_known_good=loaded,
+                **dry_run_keywords,
+            )
+            self.assertEqual(conflict.action, PolicyAction.NO_CHANGE)
+            self.assertEqual(
+                conflict.reason,
+                "LKG_AUTHORITY_SOURCES_CONFLICT",
+            )
+
+            canary_enabled = evaluate_tuning_policy(
+                drift,
+                current_ef=400,
+                response_estimates=estimates,
+                pre_action=pre_action(),
+                canary_observation=None,
+                last_known_good=loaded,
+                mode=PolicyMode.CANARY_ENABLED,
+                threshold_stratum=THRESHOLD_STRATUM,
+                audit_id=AUDIT_ID,
+            )
+            self.assertEqual(canary_enabled.action, PolicyAction.NO_CHANGE)
+            self.assertEqual(
+                canary_enabled.reason,
+                "PHASE3_LKG_AUTHORITY_REQUIRED",
+            )
 
     def test_store_module_has_no_pymilvus_import(self) -> None:
         tree = ast.parse(STORE_MODULE.read_text(encoding="utf-8"))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import unittest
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +18,6 @@ from vdbench.milvus_actuation import (
     MilvusActuationClient,
     ShadowAuditTrace,
     StackHealth,
-    select_canary_routes,
 )
 from vdbench.oracle import exact_range_search
 from vdbench.policy import QualificationResult
@@ -289,123 +288,31 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertEqual(result.audited_query_count, 50)
         self.assertEqual(len(client.search_calls), 150)
 
-    def test_start_canary_requires_a_complete_canary_batch_before_queries(self) -> None:
-        _, client, estimator, health, adapter = fixture_components(
-            include_canary_batch=False
-        )
+    def test_legacy_canary_serving_api_is_removed_with_zero_side_effects(self) -> None:
+        _, client, estimator, health, adapter = fixture_components()
+        default_before = adapter.default_ef
+        candidate_before = adapter.candidate_ef
 
-        with self.assertRaisesRegex(ValueError, "exactly 500"):
-            adapter.start_canary(
-                context=context(),
-                candidate_ef=800,
-                last_known_good_ef=400,
-                traffic_fraction=0.10,
-            )
+        with self.assertRaises(AttributeError):
+            getattr(adapter, "start_canary")
 
+        self.assertFalse(hasattr(adapter, "start_canary"))
+        self.assertEqual(adapter.default_ef, default_before)
+        self.assertEqual(adapter.candidate_ef, candidate_before)
         self.assertEqual(client.search_calls, [])
+        self.assertEqual(client.other_calls, [])
         self.assertEqual(estimator.calls, [])
         self.assertEqual(health.calls, 0)
 
-    def test_500_query_routing_selects_exactly_50_deterministically(self) -> None:
-        first = select_canary_routes(
-            tuple(range(500)),
-            routing_seed=ROUTING_SEED,
-            metric=Metric.L2,
-            threshold_stratum=THRESHOLD_STRATUM,
-            traffic_fraction=0.10,
-        )
-        second = select_canary_routes(
-            tuple(range(500)),
-            routing_seed=ROUTING_SEED,
-            metric=Metric.L2,
-            threshold_stratum=THRESHOLD_STRATUM,
-            traffic_fraction=0.10,
-        )
-
-        self.assertEqual(first, second)
-        self.assertEqual(
-            first.candidate_query_ids,
-            (
-                213,
-                313,
-                322,
-                392,
-                310,
-                433,
-                215,
-                14,
-                427,
-                3,
-                85,
-                73,
-                149,
-                190,
-                288,
-                87,
-                370,
-                472,
-                167,
-                35,
-                220,
-                131,
-                166,
-                158,
-                96,
-                372,
-                431,
-                211,
-                117,
-                182,
-                145,
-                325,
-                50,
-                238,
-                399,
-                383,
-                297,
-                56,
-                108,
-                307,
-                95,
-                321,
-                112,
-                48,
-                330,
-                227,
-                94,
-                200,
-                4,
-                187,
-            ),
-        )
-        self.assertEqual(len(first.candidate_query_ids), 50)
-        self.assertEqual(len(first.last_known_good_query_ids), 450)
-        self.assertEqual(
-            set(first.candidate_query_ids) | set(first.last_known_good_query_ids),
-            set(range(500)),
-        )
-        self.assertFalse(
-            set(first.candidate_query_ids) & set(first.last_known_good_query_ids)
-        )
-        self.assertEqual(len(set(first.candidate_digest_hex)), 50)
-
-    def test_routing_rejects_non_ten_percent_or_non_500_batch(self) -> None:
-        with self.assertRaisesRegex(ValueError, "exactly 0.10"):
-            select_canary_routes(
-                tuple(range(500)),
-                routing_seed=ROUTING_SEED,
-                metric=Metric.L2,
-                threshold_stratum=THRESHOLD_STRATUM,
-                traffic_fraction=0.05,
-            )
-        with self.assertRaisesRegex(ValueError, "exactly 500"):
-            select_canary_routes(
-                tuple(range(499)),
-                routing_seed=ROUTING_SEED,
-                metric=Metric.L2,
-                threshold_stratum=THRESHOLD_STRATUM,
-                traffic_fraction=0.10,
-            )
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn("start_canary", function_names)
+        self.assertNotIn("select_canary_routes", function_names)
 
     def test_shadow_runs_flat_candidate_and_lkg_for_all_50_audit_queries(self) -> None:
         _, client, estimator, health, adapter = fixture_components()
@@ -639,86 +546,11 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertEqual(sink.calls, 1)
         self.assertEqual(len(client.search_calls), 200)
 
-    def test_canary_routes_50_and_pairs_same_queries_at_lkg_ef(self) -> None:
-        workload, client, estimator, health, adapter = fixture_components()
-        expected_routes = select_canary_routes(
-            workload.canary_query_ids,
-            routing_seed=ROUTING_SEED,
-            metric=Metric.L2,
-            threshold_stratum=THRESHOLD_STRATUM,
-            traffic_fraction=0.10,
-        )
-
-        observation = adapter.start_canary(
-            context=context(),
-            candidate_ef=800,
-            last_known_good_ef=400,
-            traffic_fraction=0.10,
-        )
-
-        candidate_calls = [
-            call
-            for call in client.search_calls
-            if call["collection"] == HNSW_NAME and call["ef"] == 800
-        ]
-        last_known_good_calls = [
-            call
-            for call in client.search_calls
-            if call["collection"] == HNSW_NAME and call["ef"] == 400
-        ]
-        flat_calls = [
-            call for call in client.search_calls if call["collection"] == FLAT_NAME
-        ]
-        self.assertEqual(len(candidate_calls), 50)
-        self.assertEqual(len(last_known_good_calls), 500)
-        self.assertEqual(len(flat_calls), 50)
-        self.assertEqual(len(client.search_calls), 600)
-        self.assertEqual(
-            {call["query_id"] for call in candidate_calls},
-            set(expected_routes.candidate_query_ids),
-        )
-        for query_id in expected_routes.candidate_query_ids:
-            paired_efs = {
-                call["ef"]
-                for call in client.search_calls
-                if call["collection"] == HNSW_NAME and call["query_id"] == query_id
-            }
-            self.assertEqual(paired_efs, {400, 800})
-
-        self.assertEqual(observation.completed_query_count, 50)
-        self.assertEqual(observation.candidate_mean_recall, 1.0)
-        self.assertEqual(observation.last_known_good_mean_recall, 1.0)
-        self.assertEqual(observation.candidate_p95_latency_ms, 1.0)
-        self.assertEqual(observation.last_known_good_p95_latency_ms, 1.0)
-        self.assertEqual(observation.candidate_recall_lower_bound_95, 0.97)
-        self.assertEqual(observation.candidate_latency_upper_bound_95_ms, 1.25)
-        self.assertTrue(observation.flat_oracle_agreement)
-        self.assertEqual(observation.failed_query_count, 0)
-        self.assertEqual(len(estimator.calls), 1)
-        measurements = estimator.calls[0]
-        self.assertEqual(
-            set(measurements.query_ids), set(expected_routes.candidate_query_ids)
-        )
-        self.assertEqual(len(measurements.candidate_recalls), 50)
-        self.assertEqual(len(measurements.last_known_good_recalls), 50)
-        self.assertEqual(measurements.candidate_recalls, (1.0,) * 50)
-        self.assertEqual(measurements.last_known_good_recalls, (1.0,) * 50)
-        self.assertEqual(health.calls, 1)
-        self.assertEqual(adapter.candidate_ef, 800)
-        self.assertEqual(adapter.default_ef, 400)
-
     def test_stop_and_restore_are_adapter_state_only_with_zero_client_calls(
         self,
     ) -> None:
         _, client, _, _, adapter = fixture_components()
-        adapter.start_canary(
-            context=context(),
-            candidate_ef=800,
-            last_known_good_ef=400,
-            traffic_fraction=0.10,
-        )
-        client.search_calls.clear()
-        client.other_calls.clear()
+        adapter._candidate_ef = 800  # simulate containment of pre-migration state
 
         adapter.stop_candidate()
         adapter.restore_last_known_good(400)
@@ -769,6 +601,23 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertTrue(verification.health_passed)
         self.assertTrue(verification.audit_passed)
         self.assertIn("collection identities changed", verification.detail)
+
+    def test_declared_flat_identity_mismatch_fails_restoration_verification(
+        self,
+    ) -> None:
+        _, client, _, _, adapter = fixture_components()
+        adapter.stop_candidate()
+        adapter.restore_last_known_good(400)
+
+        verification = adapter.verify_restoration(
+            context=replace(context(), flat_index_identity="wrong-flat-identity"),
+            expected_ef=400,
+        )
+
+        self.assertFalse(verification.success)
+        self.assertTrue(verification.health_passed)
+        self.assertTrue(verification.audit_passed)
+        self.assertIn("configuration identity mismatch", verification.detail)
 
     def test_pymilvus_import_is_lazy_and_execute_live_is_never_referenced(self) -> None:
         source = MODULE_PATH.read_text(encoding="utf-8")

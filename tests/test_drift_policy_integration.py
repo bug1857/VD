@@ -20,6 +20,7 @@ from vdbench.policy import (
     ResponseEstimate,
     evaluate_tuning_policy,
 )
+from tests.test_policy import phase3_pair
 
 EFFECT_FLOORS = {
     Signal.QUERY_VECTOR: 0.01,
@@ -258,16 +259,22 @@ def policy_decision(
     mode: PolicyMode,
     response_estimates: dict[int, ResponseEstimate],
 ):
+    canary_enabled = mode is PolicyMode.CANARY_ENABLED
     return evaluate_tuning_policy(
         drift_decision,
         current_ef=400,
         response_estimates=response_estimates,
         pre_action=pre_action_safety(),
         canary_observation=None,
-        qualification_windows=(qualification_window(20), qualification_window(21)),
+        qualification_windows=(
+            None
+            if canary_enabled
+            else (qualification_window(20), qualification_window(21))
+        ),
         mode=mode,
         threshold_stratum=THRESHOLD_STRATUM,
         audit_id=AUDIT_ID,
+        lkg_authority=(phase3_pair() if canary_enabled else None),
     )
 
 

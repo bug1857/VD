@@ -35,7 +35,6 @@ from .canary_activation import (
 from .canary_admission import (
     Stage4AdmissionRequest,
     Stage4AdmissionResult,
-    Stage4LkgAuthorityPair,
     Stage4RepositoryEvidence,
     evaluate_stage4_admission,
 )
@@ -66,6 +65,7 @@ from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 from .canary_serial_runner import Dataset002ScheduleVectorSource
 from .canary_workload import CandidateSelectionRecord, EligibleWorkloadManifest
 from .host_observation import RangeQueryRequest, ServedQueryOutcome
+from .lkg_phase3_binding import LkgPhase3AuthorityPair
 from .policy import PolicyDecision
 from .shadow_event_types import MonitorStreamKey
 
@@ -110,7 +110,7 @@ class _RuntimeProbePort(Protocol):
 class Stage4LkgAuthorityProvider(Protocol):
     """Return one already-validated fresh D1/D2 pair per independent refresh."""
 
-    def refresh(self) -> Stage4LkgAuthorityPair: ...
+    def refresh(self) -> LkgPhase3AuthorityPair: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,7 +354,7 @@ class Stage4LiveRunner:
             if not isinstance(runtime, Stage4RuntimeReadiness):
                 return None
             pair = self._lkg_authority_provider.refresh()
-            if type(pair) is not Stage4LkgAuthorityPair:
+            if type(pair) is not LkgPhase3AuthorityPair:
                 return None
             value = self._admission_evaluator(
                 Stage4AdmissionRequest(

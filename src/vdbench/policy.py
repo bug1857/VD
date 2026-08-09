@@ -5,7 +5,8 @@ Purpose:
     canary-start decision, no-op, or mandatory rollback decision.
 Inputs:
     Precomputed response estimates and confidence bounds, pre-action checks,
-    optional actual canary observations, and two qualification windows.
+    optional actual canary observations, a neutral Phase-3 authority pair for
+    inactive candidate-capable evaluation, or legacy DRY_RUN qualification.
 Outputs:
     An immutable, auditable policy decision. This module never actuates Milvus.
 Dependencies:
@@ -19,8 +20,8 @@ Failure modes:
 Configuration:
     ADR-002 fixes the ef ladder, SLOs, transition bounds, and exception identity.
 Extension points:
-    A separate safe-actuation boundary may consume START_CANARY/ROLLBACK only
-    after ADR-002 is accepted and transition-specific evidence is authorized.
+    Stage4 admission/live composition may consume START_CANARY; the generic
+    safe-actuation boundary permanently refuses it and executes only ROLLBACK.
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ from .drift import (
     DriftDecision,
     EvidenceProvenance,
     evidence_provenance_valid,
+)
+from .lkg_phase3_binding import (
+    LkgPhase3AuthorityPair,
+    bind_lkg_phase3_authority,
 )
 
 ACTUATION_LADDER = (200, 400, 800, 1600)
@@ -185,6 +190,21 @@ class QualificationResult:
     index_identity: str | None = None
     data_identity: str | None = None
     qualifying_window_ids: tuple[str, str] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PolicyLkgEvidence:
+    """Policy-only projection; never a qualification authority or receipt."""
+
+    qualified: bool
+    ef: int | None
+    reasons: tuple[str, ...]
+    metric: Metric | None = None
+    threshold_stratum: str | None = None
+    configuration_identity: str | None = None
+    index_identity: str | None = None
+    data_identity: str | None = None
+    source: str = "NONE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +438,105 @@ def qualify_last_known_good(
     )
 
 
+def _legacy_policy_lkg_evidence(
+    qualification: QualificationResult,
+) -> _PolicyLkgEvidence:
+    return _PolicyLkgEvidence(
+        qualified=qualification.qualified,
+        ef=qualification.ef,
+        reasons=qualification.reasons,
+        metric=qualification.metric,
+        threshold_stratum=qualification.threshold_stratum,
+        configuration_identity=qualification.configuration_identity,
+        index_identity=qualification.index_identity,
+        data_identity=qualification.data_identity,
+        source="LEGACY_DRY_RUN",
+    )
+
+
+def _phase3_policy_lkg_evidence(
+    value: object,
+) -> _PolicyLkgEvidence | None:
+    """Revalidate through the sole neutral binder and project policy fields."""
+
+    if type(value) is not LkgPhase3AuthorityPair:
+        return None
+    try:
+        pair = bind_lkg_phase3_authority(
+            authority=value.authority,
+            verified_latest_reference=value.verified_latest_reference,
+        )
+        authority = pair.authority
+        metric = _coerce_metric(authority.metric)
+        evidence = _PolicyLkgEvidence(
+            qualified=True,
+            ef=authority.evaluated_ef,
+            reasons=(),
+            metric=metric,
+            threshold_stratum=authority.threshold_stratum,
+            index_identity=authority.index_identity,
+            data_identity=authority.data_identity,
+            source="PHASE3",
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if (
+        evidence.ef not in ACTUATION_LADDER
+        or not _valid_threshold_stratum(evidence.threshold_stratum)
+        or not _nonempty(evidence.index_identity)
+        or not _nonempty(evidence.data_identity)
+    ):
+        return None
+    return evidence
+
+
+def _inactive_lkg_source(
+    *,
+    mode: PolicyMode,
+    lkg_authority: object | None,
+    qualification_windows: Sequence[QualificationWindow] | None,
+    last_known_good: QualificationResult | None,
+    audit_id: str,
+) -> tuple[_PolicyLkgEvidence | None, str | None]:
+    """Apply accepted source precedence for an inactive policy evaluation."""
+
+    source_count = sum(
+        source is not None
+        for source in (lkg_authority, qualification_windows, last_known_good)
+    )
+    if source_count > 1:
+        return None, "LKG_AUTHORITY_SOURCES_CONFLICT"
+
+    if mode is PolicyMode.CANARY_ENABLED:
+        if lkg_authority is None:
+            return None, "PHASE3_LKG_AUTHORITY_REQUIRED"
+        evidence = _phase3_policy_lkg_evidence(lkg_authority)
+        return (
+            (evidence, None)
+            if evidence is not None
+            else (None, "PHASE3_LKG_AUTHORITY_INVALID")
+        )
+
+    if source_count == 0:
+        return None, "LKG_AUTHORITY_SOURCE_REQUIRED"
+    if lkg_authority is not None:
+        evidence = _phase3_policy_lkg_evidence(lkg_authority)
+        return (
+            (evidence, None)
+            if evidence is not None
+            else (None, "PHASE3_LKG_AUTHORITY_INVALID")
+        )
+    if last_known_good is not None:
+        if not isinstance(last_known_good, QualificationResult):
+            raise TypeError("last_known_good must be a QualificationResult")
+        return _legacy_policy_lkg_evidence(last_known_good), None
+    if qualification_windows is not None:
+        return _legacy_policy_lkg_evidence(
+            qualify_last_known_good(qualification_windows, audit_id=audit_id)
+        ), None
+    raise AssertionError("unreachable inactive LKG source state")
+
+
 def _gate(name: str, passed: bool, detail: str) -> SafetyGateResult:
     return SafetyGateResult(name=name, passed=bool(passed), detail=detail)
 
@@ -542,7 +661,6 @@ def _canary_hard_failure_gates(
     current_ef: int,
     threshold_stratum: str,
     pre_action: PreActionSafety,
-    last_known_good: QualificationResult,
 ) -> tuple[SafetyGateResult, ...]:
     counts_valid = all(
         _valid_count(value)
@@ -561,24 +679,14 @@ def _canary_hard_failure_gates(
     except (TypeError, ValueError):
         pass
     identity_matches = bool(
-        last_known_good.qualified
-        and last_known_good.metric is pre_action_metric
-        and last_known_good.threshold_stratum == pre_action.threshold_stratum
-        and observation.configuration_identity
-        == pre_action.configuration_identity
-        == last_known_good.configuration_identity
-        and observation.index_identity
-        == pre_action.index_identity
-        == last_known_good.index_identity
-        and observation.data_identity
-        == pre_action.data_identity
-        == last_known_good.data_identity
+        observation.configuration_identity == pre_action.configuration_identity
+        and observation.index_identity == pre_action.index_identity
+        and observation.data_identity == pre_action.data_identity
     )
     transition_valid = bool(
         current_ef == observation.last_known_good_ef
         and observation.candidate_ef in ACTUATION_LADDER
         and observation.last_known_good_ef in ACTUATION_LADDER
-        and last_known_good.ef == observation.last_known_good_ef
         and abs(
             ACTUATION_LADDER.index(observation.candidate_ef)
             - ACTUATION_LADDER.index(observation.last_known_good_ef)
@@ -708,7 +816,6 @@ def _evaluate_active_canary(
     current_ef: int,
     observation: CanaryObservation,
     pre_action: PreActionSafety,
-    last_known_good: QualificationResult,
     response_estimates: Mapping[int, ResponseEstimate],
     mode: PolicyMode,
     threshold_stratum: str,
@@ -726,7 +833,7 @@ def _evaluate_active_canary(
             action=PolicyAction.ROLLBACK,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason="AUDIT_ID_MISSING",
@@ -743,7 +850,6 @@ def _evaluate_active_canary(
         current_ef=current_ef,
         threshold_stratum=threshold_stratum,
         pre_action=pre_action,
-        last_known_good=last_known_good,
     )
     hard_reason = _rollback_reason(hard_gates)
     if hard_reason is not None:
@@ -751,7 +857,7 @@ def _evaluate_active_canary(
             action=PolicyAction.ROLLBACK,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason=hard_reason,
@@ -794,7 +900,7 @@ def _evaluate_active_canary(
             action=PolicyAction.ROLLBACK,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason="CONFIGURATION_VALIDATION_FAILURE",
@@ -810,7 +916,7 @@ def _evaluate_active_canary(
             action=PolicyAction.NO_CHANGE,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason="CANARY_IN_PROGRESS",
@@ -829,7 +935,7 @@ def _evaluate_active_canary(
             action=PolicyAction.ROLLBACK,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason="CONFIGURATION_VALIDATION_FAILURE",
@@ -851,7 +957,8 @@ def _evaluate_active_canary(
         candidate_ef=observation.candidate_ef,
         classification=detector.classification,
         exception_authorized=(
-            pre_action.exception_authorized is True and last_known_good.ef == current_ef
+            pre_action.exception_authorized is True
+            and observation.last_known_good_ef == current_ef
         ),
     )
     relative_ceiling = (
@@ -921,7 +1028,7 @@ def _evaluate_active_canary(
             action=PolicyAction.ROLLBACK,
             current_ef=current_ef,
             candidate_ef=observation.candidate_ef,
-            last_known_good_ef=last_known_good.ef,
+            last_known_good_ef=observation.last_known_good_ef,
             estimate=estimate,
             current_estimate=current_estimate,
             reason=rollback_reason,
@@ -935,7 +1042,7 @@ def _evaluate_active_canary(
         action=PolicyAction.NO_CHANGE,
         current_ef=current_ef,
         candidate_ef=observation.candidate_ef,
-        last_known_good_ef=last_known_good.ef,
+        last_known_good_ef=observation.last_known_good_ef,
         estimate=estimate,
         current_estimate=current_estimate,
         reason="CANARY_PASSED",
@@ -957,7 +1064,7 @@ def _pre_action_gates(
     candidate_estimate: ResponseEstimate,
     last_known_good_estimate: ResponseEstimate,
     pre_action: PreActionSafety,
-    last_known_good: QualificationResult,
+    last_known_good: _PolicyLkgEvidence,
 ) -> tuple[SafetyGateResult, ...]:
     exception = _exception_applies(
         metric=metric,
@@ -974,14 +1081,18 @@ def _pre_action_gates(
         if exception
         else DEFAULT_RELATIVE_LATENCY_CEILING
     )
-    identity_matches = bool(
+    authority_identity_matches = bool(
         last_known_good.qualified
         and last_known_good.metric is metric
         and last_known_good.threshold_stratum == threshold_stratum
-        and pre_action.configuration_identity == last_known_good.configuration_identity
         and pre_action.index_identity == last_known_good.index_identity
         and pre_action.data_identity == last_known_good.data_identity
     )
+    configuration_identity_matches = bool(
+        last_known_good.source == "PHASE3"
+        or pre_action.configuration_identity == last_known_good.configuration_identity
+    )
+    identity_matches = authority_identity_matches and configuration_identity_matches
     estimate_identity_matches = all(
         _coerce_metric(estimate.metric) is metric
         and estimate.threshold_stratum == threshold_stratum
@@ -1178,6 +1289,7 @@ def evaluate_tuning_policy(
     threshold_stratum: str,
     audit_id: str,
     last_known_good: QualificationResult | None = None,
+    lkg_authority: LkgPhase3AuthorityPair | None = None,
 ) -> PolicyDecision:
     """Evaluate ADR-002 policy evidence without database or actuation access."""
 
@@ -1186,37 +1298,18 @@ def evaluate_tuning_policy(
     if not isinstance(detector, DriftDecision):
         raise TypeError("detector must be a DriftDecision")
 
-    if qualification_windows is not None and last_known_good is not None:
-        raise ValueError(
-            "qualification_windows and last_known_good are mutually exclusive"
-        )
-    if last_known_good is not None and not isinstance(
-        last_known_good, QualificationResult
-    ):
-        raise TypeError("last_known_good must be a QualificationResult")
-
     estimates, estimate_reasons = _validate_response_estimates(response_estimates)
-    if last_known_good is not None:
-        qualification = last_known_good
-    elif qualification_windows is not None:
-        qualification = qualify_last_known_good(
-            qualification_windows, audit_id=audit_id
-        )
-    else:
-        qualification = QualificationResult(
-            qualified=False,
-            ef=None,
-            reasons=("LAST_KNOWN_GOOD_SOURCE_MISSING",),
-        )
     current_estimate = estimates.get(current_ef)
 
+    # Active-canary safety has precedence over all qualification sources.  A
+    # mandatory rollback must remain available even when no D1/D2 or legacy
+    # LKG evidence is supplied.
     if canary_observation is not None:
         return _evaluate_active_canary(
             detector=detector,
             current_ef=current_ef,
             observation=canary_observation,
             pre_action=pre_action,
-            last_known_good=qualification,
             response_estimates=estimates,
             mode=mode,
             threshold_stratum=threshold_stratum,
@@ -1238,6 +1331,36 @@ def evaluate_tuning_policy(
                     "AUDIT_ID_PRESENT",
                     False,
                     "inactive policy evaluation requires an immutable audit ID",
+                ),
+            ),
+            mode=mode,
+            audit_id=audit_id,
+            alert_required=True,
+        )
+
+    qualification, source_reason = _inactive_lkg_source(
+        mode=mode,
+        lkg_authority=lkg_authority,
+        qualification_windows=qualification_windows,
+        last_known_good=last_known_good,
+        audit_id=audit_id,
+    )
+    if source_reason is not None or qualification is None:
+        reason = source_reason or "PHASE3_LKG_AUTHORITY_INVALID"
+        return _decision(
+            action=PolicyAction.NO_CHANGE,
+            current_ef=current_ef,
+            candidate_ef=None,
+            last_known_good_ef=None,
+            estimate=None,
+            current_estimate=current_estimate,
+            reason=reason,
+            detector=detector,
+            gates=(
+                _gate(
+                    "LKG_AUTHORITY_SOURCE_VALID",
+                    False,
+                    "inactive policy evaluation requires exactly one permitted LKG authority source",
                 ),
             ),
             mode=mode,
