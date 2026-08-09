@@ -2003,6 +2003,358 @@ Research references:
 - Finite-population randomization identity for an upper 5% tail of 30 outcomes: `P(sample maximum exceeds the tail threshold) = 1 - C(600 - 30, 60) / C(600, 60)`.
 - [Hoeffding (1963)](https://doi.org/10.1080/01621459.1963.10500830) for bounded-sum concentration and sampling-without-replacement context.
 
+#### Phase-3 downstream authority closure — policy and generic actuation
+
+Status: Accepted — implementation pending
+Date: 2026-08-09
+Risk level: CRITICAL
+Scope: Close the remaining legacy LKG authority paths in policy and generic
+actuation without changing the separately governed signed activation chain.
+
+**Context.** Phase-3 D1 makes a freshly replay-verified, terminal `PASSING`
+Checkpoint-C evaluation the sole new LKG qualification authority. D2 persists
+that authority's identity and lineage without creating a verdict, and the D3
+Stage-4 admission boundary now requires a fresh D1 authority paired with the
+verified latest D2 chain head. Three older paths remain outside that closure:
+
+1. `evaluate_tuning_policy(...)` can still derive a candidate-capable decision
+   from legacy `QualificationWindow` or `QualificationResult` values; and
+2. `SafeActuationBoundary` can still execute `START_CANARY` from a legacy
+   `QualificationResult`, independently of Stage-4 admission and its fresh
+   Checkpoint-C/D2 lineage; and
+3. the legacy `MilvusActuationClient.start_canary(...)` API still contains a
+   candidate-capable deterministic 50-of-500 routing path that can be called
+   outside `Stage4LiveRunner`'s one-search serving boundary.
+
+Read-only shadow acquisition also constructs deliberately unqualified legacy
+results solely because identity, shadow, and rollback inputs share the old
+`ActuationContext`. This is accidental coupling, not qualification evidence.
+Historical LKG and actuation-audit records must remain reviewable, but must not
+be upgraded or reinterpreted into Phase-3 authority.
+
+**Options considered.**
+
+| Option | Correctness and dependency direction | Compatibility and operational cost | Decision |
+|---|---|---|---|
+| A — duplicate D1/D2 pair validation in policy and admission | Avoids moving an existing type, but creates two security-critical validators that can drift and disagree | Low initial cost; high review and maintenance risk | Rejected |
+| B — make policy import `Stage4LkgAuthorityPair` from `canary_admission.py` | Reuses validation, but reverses the dependency direction because admission already imports policy | Low code volume; creates a policy↔admission cycle and couples general policy to Stage 4 | Rejected |
+| C — generalize the pair into a neutral lower-level Phase-3 authority-binding module consumed by policy and admission | One fail-closed validator, acyclic dependencies, and no statistical recomputation | Moderate migration cost with explicit compatibility seams | Chosen |
+
+**Neutral Phase-3 authority pair.** A neutral lower-level module owns one
+immutable, private-construction Phase-3 authority-pair value and its sole pure
+binder. The value contains exactly one concrete D1 `LkgPhase3Authority` and one
+concrete D2 `VerifiedLatestLkgPhase3AuthorityReference`. The neutral module may
+import D1/D2 identity contracts, but must not import policy, admission,
+actuation, Milvus, or any A/B/C evaluator or ledger.
+
+Pair construction compares every D2-persisted identity field against D1:
+Checkpoint-C evaluation digest; source run ID, run-binding digest, source-run
+seal, sealed Phase-1 chain head, and Phase-2 source-binding digest; evaluated
+`ef` and search-configuration digest; metric and threshold stratum; collection,
+HNSW-index, and base-data identities; qualification dataset ID/version/manifest,
+query role, ordered-ID digest, ID-array digest, query-array digest, and expected
+query count; environment identity; and source revision. D2 record metadata
+(schema version, sequence number, persistence timestamp, previous-record
+digest, and canonical record digest) remains store-issued metadata and is not
+compared to D1.
+
+A plain `PersistedLkgPhase3AuthorityReference`, a verified-latest D2 wrapper by
+itself, a D1 authority by itself, or an object-forged/nonconcrete value never
+forms a usable pair. Private construction is API discipline, not cryptographic
+authenticity. The pure binder proves exact D1/D2 identity equality only. It
+cannot and must not claim to distinguish two refreshes that observed identical
+D1 authority and verified D2 head values; those observations are equivalent at
+this boundary.
+
+The injected provider/composition root owns refresh atomicity: one refresh
+acquires both components, invokes the binder, and exposes only the completed
+pair. Consumers accept neither separate D1/D2 arguments nor a field-level
+reassembly API, and never cache or split the pair. A changed latest head,
+mismatched identity, partial refresh, or refresh failure fails closed. The pair
+is a verified snapshot at one refresh instant and does not claim to remain the
+latest head forever. No pair operation inspects or recomputes Phase-1 attempts,
+Phase-2 readiness, windows, epochs, recall, latency, confidence bounds, or any
+other A/B/C statistic.
+
+**Policy authority contract and source precedence.** Policy remains pure: it
+performs no D1 replay, D2 I/O, freshness query, or upstream-ledger access. The
+following order is normative:
+
+1. **Active-canary safety first.** When an active `CanaryObservation` is
+   present, hard-failure, recall, latency, and completion evaluation runs before
+   any qualification-source validation. A required `ROLLBACK` depends on
+   neither the neutral pair nor legacy qualification and remains available in
+   both policy modes.
+2. **Candidate-enabled evaluation.** `CANARY_ENABLED` with no active canary
+   requires exactly one fresh neutral Phase-3 pair supplied by one provider
+   refresh immediately for that evaluation. Legacy `QualificationWindow` or
+   `QualificationResult` values cannot substitute. A missing pair returns
+   `NO_CHANGE` with `PHASE3_LKG_AUTHORITY_REQUIRED`; a malformed, nonconcrete,
+   mismatched, changed-head, or provider-rejected pair returns `NO_CHANGE` with
+   `PHASE3_LKG_AUTHORITY_INVALID`. Supplying legacy and Phase-3 sources together
+   returns `NO_CHANGE` with `LKG_AUTHORITY_SOURCES_CONFLICT`.
+3. **DRY_RUN compatibility.** Exactly one LKG source is permitted: either one
+   neutral pair or one explicitly selected legacy compatibility source.
+   Supplying neither returns `NO_CHANGE` with `LKG_AUTHORITY_SOURCE_REQUIRED`;
+   mixed sources return `NO_CHANGE` with `LKG_AUTHORITY_SOURCES_CONFLICT`.
+   Legacy input may support `NO_CHANGE` or `RECOMMEND_EF`, but never
+   `START_CANARY` or any other candidate authorization.
+
+The neutral Phase-3 authority maps into policy only as LKG `ef`, metric,
+threshold stratum, HNSW/index identity, and data identity. It has no Stage-4
+`configuration_identity` and no FLAT identity. Policy must never equate
+`search_configuration_digest` with `configuration_identity`, and must never
+fabricate a FLAT identity from D1. Existing independently validated detector
+provenance and `PreActionSafety` bindings continue to govern configuration and
+FLAT identities and must match each other under their existing contract.
+
+Policy must not reconstruct legacy qualification windows from Checkpoint-C
+epochs. `PolicyDecision` remains schema-compatible in this checkpoint;
+Phase-3 authority is independently revalidated and bound by the Stage-4
+admission receipt. Any future requirement to persist authority lineage inside
+`PolicyDecision` itself belongs to the deferred signed-chain amendment.
+
+**Generic and adapter actuation bypass closure.** `SafeActuationBoundary`
+permanently refuses `START_CANARY`. After this migration, that action must
+produce a stable, audited, non-executed refusal and must make zero client calls,
+regardless of legacy qualification, policy gates, traffic fraction, or any
+supplied Phase-3 value. The boundary must expose no configuration switch,
+compatibility mode, or alternate method that restores generic candidate
+activation.
+
+The generic `ActuationClientLike` protocol no longer contains
+`start_canary(...)`. The public production
+`MilvusActuationClient.start_canary(...)` candidate path is removed. If a
+temporary compatibility symbol is required solely to make migration failures
+explicit, it must raise a stable retirement error before route selection,
+keyed-hash ranking, search, adapter-state change, or any client call. Its legacy
+500-query/50-candidate routing implementation and measurements are historical
+evidence only and are not a callable candidate-serving path. Read-only
+`shadow_candidate(...)` remains permitted.
+
+`Stage4LiveRunner`, guarded by fresh dual admission, immutable schedule,
+human-signed activation, route authority, rollback composition, and its injected
+one-search serving port, is the sole candidate-serving composition root.
+Generic `NO_CHANGE` and `RECOMMEND_EF` remain audited zero-call no-ops. Generic
+`ROLLBACK` remains available and fail-closed even when fresh qualification
+authority is unavailable; rollback validation uses the explicit expected LKG
+`ef`, runtime identity, active-route evidence available to that boundary, and
+restoration audit rather than a legacy qualification verdict.
+
+**Qualification-free context separation.** Identity and execution context is
+separated from qualification authority. A common immutable identity projection
+contains canonical metric, threshold stratum, collection name, opaque
+configuration identity, HNSW/index identity, FLAT identity, data identity, and
+observation timestamp. Read-only shadow context composes that projection with
+the exactly 50 audited query IDs required by `shadow_candidate(...)`. Rollback
+context composes it with the expected LKG `ef` and exactly 50 restoration-audit
+query IDs required to verify containment. Neither context contains
+`QualificationResult`, qualification windows, a neutral Phase-3 pair, D1/D2
+ledger handles, or a fabricated qualification value.
+
+The Milvus adapter remains dependency-injected and query-time `ef` remains
+stateless. Read-only EXP-005/EXP-008 and host-shadow paths migrate mechanically
+to the qualification-free shadow context without changing trace payloads,
+collection identities, query ordering, results, or historical experiment
+claims. Existing artifacts and recorded evidence are never rewritten or
+relabeled as Phase-3 evidence.
+
+**Persistence and schema compatibility.** The file-based last-known-good schema
+v1 is frozen as legacy historical evidence. It remains readable under its
+existing strict decoder but is non-authorizing and must never be converted into
+a D1 authority, neutral pair, D2 reference, Stage-4 receipt, or candidate token.
+No migration rewrites existing v1 files.
+
+Actuation-audit schema v2 remains readable, immutable historical evidence. A v2
+record's embedded legacy `QualificationResult` describes the old invocation
+only and never establishes Phase-3 authority. New appends use only an
+actuation-audit v3 envelope with the exact top-level fields
+`{"schema_version", "record"}` and integer `schema_version = 3`. The v3
+`record` retains the existing exact audit fields—`audit_id`, `action`, `outcome`,
+`attempted`, `success`, `reason`, `context`, `current_ef`, `candidate_ef`,
+`last_known_good_ef`, `traffic_fraction`, `policy_reason`,
+`safety_gate_results`, `shadow_result`, `canary_observation`,
+`rollback_verification`, `automatic_actions_disabled`, and
+`evidence_provenance`—so record-level meaning is not silently renamed. Because
+generic candidate start is retired, v3 `shadow_result` and
+`canary_observation` must always be `null`.
+
+The v3 `context` is a strict tagged union. Both kinds contain exactly the common
+fields `context_schema_version`, `context_kind`, `metric`,
+`threshold_stratum`, `collection_name`, `configuration_identity`,
+`index_identity`, `flat_index_identity`, `data_identity`, and
+`occurred_at_utc`, with `context_schema_version = "actuation-context-v3"`.
+
+- `context_kind = "POLICY"` is required for `NO_CHANGE`, `RECOMMEND_EF`, and
+  refused `START_CANARY`; it has no additional fields.
+- `context_kind = "ROLLBACK"` is required for `ROLLBACK`; it adds exactly
+  `expected_last_known_good_ef` and `audited_query_ids`. The `ef` must be an
+  eligible non-sentinel actuation value and equal the decision's
+  `last_known_good_ef`; `audited_query_ids` must contain exactly 50 canonical,
+  distinct restoration-audit IDs.
+
+Read-only shadow context is not serialized into this generic actuation audit;
+its existing trace/evidence codecs remain the durable shadow record. The v3
+decoder validates the exact field set for the selected context kind and all
+canonical value contracts. Reader dispatch is exclusively by the explicit
+envelope version and never by field-shape inference. Mixed-version duplicate
+audit IDs, malformed records, unsupported versions, context-kind/action
+mismatches, extra/missing fields, and downgrade/substitution attempts fail
+closed. V2 bytes are never normalized or rewritten, and no v2 field is used to
+construct a Phase-3 authority, pair, receipt, or candidate token.
+
+**Dependency direction.** The required direction is:
+
+```text
+Checkpoint A/B/C ledgers -> D1 authority -> D2 identity reference
+                                      \-> neutral Phase-3 pair
+neutral Phase-3 pair -> policy
+neutral Phase-3 pair -> Stage-4 admission -> receipt
+policy decision + Stage-4 receipt -> existing live composition
+identity/rollback contexts -> generic rollback and read-only shadow adapters
+```
+
+Policy must not import admission. Admission and policy must not import D1/D2
+ledgers. The neutral pair module must not perform I/O. Generic actuation must not
+accept the neutral pair as a replacement route to `START_CANARY`.
+`MilvusActuationClient` may depend on qualification-free shadow/rollback
+contexts but exposes no generic candidate-routing method. Candidate serving
+flows only from `Stage4LiveRunner` to its narrow one-search serving port.
+
+**Fail-closed invariants.** Implementation and adversarial tests must prove:
+
+- only the neutral binder can produce the supported pair value, and it compares
+  every persisted D1/D2 identity without recomputation while making no
+  unobservable same-refresh claim;
+- providers expose one atomically acquired completed pair, consumers accept no
+  separate components, and changed/mismatched heads or identities fail closed;
+- D2 alone, a historical reference, legacy qualification, source conflicts, and
+  object-forged values cannot authorize candidate policy output;
+- active-canary rollback evaluation precedes and is independent of LKG source
+  validation;
+- `CANARY_ENABLED` without exactly one fresh valid pair emits `NO_CHANGE` with
+  the pinned stable reason, and DRY_RUN accepts exactly one source;
+- policy maps D1 only to LKG `ef`, metric, stratum, HNSW/index identity, and data
+  identity; it neither equates search/configuration identities nor fabricates a
+  FLAT identity;
+- DRY_RUN legacy compatibility cannot escape into `START_CANARY`;
+- `SafeActuationBoundary` makes zero client calls for every `START_CANARY`
+  input, including otherwise-valid legacy inputs;
+- `ActuationClientLike` has no `start_canary(...)`, and any retained
+  `MilvusActuationClient` compatibility stub fails before routing, search, state
+  change, or client access;
+- legacy 50-of-500 routing is unreachable from production candidate-serving
+  APIs, while `shadow_candidate(...)` remains read-only;
+- generic rollback no longer requires legacy qualification and is never refused
+  solely because qualification authority is missing;
+- read-only shadow capture requires no qualification object and remains
+  byte-compatible at the trace/evidence boundary;
+- v3 audit records use only the pinned `POLICY`/`ROLLBACK` tagged context
+  projections; v1 LKG and v2 audit records remain historical-only; and
+- malformed, mixed-version, duplicate-ID, wrong-kind/action, downgrade, schema
+  substitution, and replay attempts fail closed; and
+- no new direct Milvus, network, A/B/C statistical, or ledger dependency enters
+  policy, admission, neutral pairing, generic actuation, or audit decoding.
+
+**Ordered implementation checkpoints.** Each checkpoint receives focused
+adversarial tests and review before the next begins:
+
+**A. Neutral authority pair.** Add the neutral pair/binder, migrate Stage-4
+admission and its fresh-authority provider to consume it, preserve receipt
+semantics, and remove the admission-owned duplicate validator.
+
+**B. Policy migration.** Add the fresh neutral-pair input for
+`CANARY_ENABLED`, confine legacy qualification to DRY_RUN, preserve
+`PolicyDecision` schema, enforce the exact source precedence and stable reason
+codes above, and prove active-canary rollback remains source-independent.
+
+**C. Generic `START_CANARY` retirement and rollback decoupling.** Remove
+`start_canary(...)` from `ActuationClientLike`, remove or fail-closed-stub the
+legacy Milvus method before any side effect, make every generic start request an
+audited zero-client-call refusal, and remove legacy qualification as a
+prerequisite for generic `ROLLBACK`. Preserve no-op and rollback behavior.
+
+**D. Qualification-free context split.** Introduce the shadow and rollback
+identity contexts, structurally remove the obsolete qualification field, and
+migrate the Milvus adapter, host shadow executor, generic rollback, and
+read-only acquisition/composition callers without changing trace artifacts.
+
+**E. Actuation audit v3 and compatibility hardening.** Write only v3 records,
+using the pinned envelope and `POLICY`/`ROLLBACK` context projections above;
+read strict v2/v3 evidence, freeze LKG v1, and add restart, corruption,
+duplicate, wrong-kind/action, downgrade, schema-confusion, and
+historical-non-authorization tests. Checkpoint E is not authorized to begin
+unless its implementation contract reproduces those exact v3 field sets and
+cross-field invariants.
+
+**Impact set.** Expected implementation files are limited to:
+
+- new neutral authority-binding module, expected as
+  `src/vdbench/lkg_phase3_binding.py`;
+- `lkg_phase3_authority.py` and `lkg_phase3_persistence.py` only if a narrow
+  public identity projection is required by the neutral binder—no ledger or
+  schema change is authorized;
+- `canary_admission.py` and `canary_live_runner.py` for the neutral pair type and
+  provider migration, with receipt and stable-lineage semantics unchanged;
+- `policy.py` and `workload_monitor.py` for candidate-capable authority input and
+  explicit DRY_RUN compatibility;
+- `actuation.py` and `actuation_persistence.py` for permanent generic-start
+  refusal, removal of `ActuationClientLike.start_canary`, source-independent
+  rollback, qualification-free contexts, and the pinned audit v3 schema;
+- `milvus_actuation.py`, `milvus_host_executor.py`, `exp005_acquisition.py`, and
+  `exp008_acquisition.py` only for removal/retirement of the legacy candidate
+  method and qualification-free read-only context wiring;
+- `experiments/exp005_evaluate.py`, `experiments/exp006_validate.py`, and
+  `experiments/exp007_validate.py` only where explicit DRY_RUN compatibility or
+  qualification-free no-op context construction must follow the new API; their
+  stored artifacts, seeds, outputs, and historical conclusions are unchanged;
+- the corresponding focused tests:
+  `test_lkg_phase3_binding.py`, `test_canary_admission.py`,
+  `test_canary_live_runner.py`, `test_policy.py`, `test_workload_monitor.py`,
+  `test_actuation.py`, `test_actuation_persistence.py`,
+  `test_milvus_actuation.py`, `test_milvus_host_executor.py`,
+  `test_exp005_acquisition.py`, `test_exp008_acquisition.py`,
+  `test_last_known_good.py`, `test_drift_policy_integration.py`,
+  `test_exp005_provenance_pipeline.py`, `test_shadow_event_source.py`,
+  `test_exp008_offline_composition.py`, and existing Phase-3
+  authority/persistence regression suites. These tests must include exact
+  policy-source precedence and reason codes, active-canary rollback precedence,
+  protocol/API removal, compatibility-stub zero-side-effect behavior,
+  unreachable legacy 50-of-500 routing, qualification-free context shape, and
+  exact v3 envelope/context-field regressions; and
+- legacy persistence and historical experiment tests only to prove continued
+  readability and non-authorization; original evidence artifacts remain
+  untouched.
+
+Checkpoint A must not alter D1/D2 storage or replay semantics. Checkpoint B must
+not alter drift detection or statistical finalization. Checkpoints C–E must not
+create a second candidate-capable composition root.
+
+**Explicit deferrals.** This amendment does not authorize or design:
+
+- signed approval-grant schema v2;
+- admission-receipt lineage in activation or `ActiveCanaryContext`;
+- route-state schema v2;
+- lifecycle-audit or rollback signed-receipt correlation; or
+- execution-ledger schema v2 receipt binding.
+
+Those changes form one separate CRITICAL Phase-3 signed-activation-lineage
+amendment and must be reviewed atomically before implementation. No field from
+this amendment may be silently added to the signed chain in advance.
+
+**Consequences.** Candidate activation has one composition root and one new LKG
+authority source. Policy and admission share one validator without dependency
+cycles; read-only shadow code no longer fabricates qualification; rollback
+remains available during authority outages; and historical evidence stays
+reviewable without gaining authority. The costs are an explicit compatibility
+surface for old DRY_RUN callers, a versioned actuation-audit reader, and a
+multi-checkpoint migration whose signed-chain completion remains separately
+pending.
+
+Related decisions: ADR-002 (policy and rollback safety), ADR-004 (provenance),
+ADR-005 through ADR-007 (monitor and shadow path), ADR-008 (candidate-routing
+research contract), and the accepted Phase-3 D3 Stage-4 admission amendment.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX
