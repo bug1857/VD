@@ -2867,6 +2867,69 @@ attestation requires a separate decision. R1 remains unchanged, and R2 creates
 no freshness, policy, Milvus producer, Phase-3, admission, grant, route,
 execution, rollback, or actuation authority.
 
+##### R2-G.1 schedule and population identifier clarification (2026-08-09)
+
+This append-only clarification removes ambiguity from the identifier fields in
+R2's accepted schedule seed. It changes no R1 field or behavior and changes no
+statistic, sample count, role, schedule operation, freshness rule, or authority
+boundary.
+
+`cell_id` is the detached domain-separated SHA-256 of exactly:
+
+```json
+{
+  "schema_version": "response-profile-cell-v1",
+  "metric": "<exact Metric value>",
+  "threshold_stratum": "<canonical stratum>"
+}
+```
+
+Its digest domain is exactly
+`b"VD::RESPONSE_PROFILE_CELL::V1\x00"`.
+
+`role_or_segment_id` is the detached domain-separated SHA-256 of exactly the
+governed role descriptor:
+
+```json
+{
+  "schema_version": "response-profile-role-v1",
+  "kind": "<closed role kind>",
+  "prospective_segment_index": null
+}
+```
+
+`prospective_segment_index` is `null` for every non-prospective role and is an
+exact integer in `0..19` for a prospective segment. Its digest domain is
+exactly `b"VD::RESPONSE_PROFILE_ROLE::V1\x00"`.
+
+For R2 response-profile calibration, `workload_manifest_sha256` is exactly the
+detached digest of the canonical
+`response-profile-calibration-population-v1` payload under domain
+`b"VD::RESPONSE_PROFILE_CALIBRATION_POPULATION::V1\x00"`. The same digest is
+used both as the schedule seed's `workload_manifest_sha256` and as R1
+`ResponseProfileIdentity.workload_manifest_sha256`; no alternate workload
+digest or alias may substitute for it.
+
+`ordered_query_payload_sha256` is the detached domain-separated SHA-256 of
+exactly:
+
+```json
+{
+  "schema_version": "response-profile-ordered-query-payloads-v1",
+  "query_payload_sha256": ["<exactly 1200 digests in frozen canonical order>"]
+}
+```
+
+Its digest domain is exactly
+`b"VD::RESPONSE_PROFILE_ORDERED_QUERY_PAYLOADS::V1\x00"`.
+
+These four canonical payloads contain no response result, timing observation,
+runtime epoch, retry, authorization, routing, or execution evidence. Generic
+closed-role manifests have role-specific cardinality: warm-up has exactly 200
+members, calibration has exactly 1,200 members, and each prospective segment
+has exactly 1,200 members. No generic manifest rule invents 1,200-member
+semantics for any unrelated governed role.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX

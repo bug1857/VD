@@ -2059,3 +2059,56 @@ external roles, and producer-controlled root pins remain explicit limitations.
 R1 remains unchanged, and no freshness, candidate policy, Milvus producer,
 Phase-3, admission, grant, route, execution, rollback, or actuation authority is
 created by this clarification or by EXP-010.
+
+##### R2-G.1 schedule and population identifier clarification (pre-registered 2026-08-09)
+
+Before R2 implementation or replay, EXP-010 fixes each schedule identifier to
+one canonical detached digest. `cell_id` hashes exactly this payload under
+`b"VD::RESPONSE_PROFILE_CELL::V1\x00"`:
+
+```json
+{
+  "schema_version": "response-profile-cell-v1",
+  "metric": "<exact Metric value>",
+  "threshold_stratum": "<canonical stratum>"
+}
+```
+
+`role_or_segment_id` hashes exactly this governed descriptor under
+`b"VD::RESPONSE_PROFILE_ROLE::V1\x00"`:
+
+```json
+{
+  "schema_version": "response-profile-role-v1",
+  "kind": "<closed role kind>",
+  "prospective_segment_index": null
+}
+```
+
+The segment index is `null` except for prospective segments, where it is an
+exact integer in `0..19`.
+
+For response-profile calibration, `workload_manifest_sha256` is exactly the
+detached digest of the canonical
+`response-profile-calibration-population-v1` payload under
+`b"VD::RESPONSE_PROFILE_CALIBRATION_POPULATION::V1\x00"`. This one digest is
+both the schedule seed's workload-manifest identity and R1
+`ResponseProfileIdentity.workload_manifest_sha256`.
+
+`ordered_query_payload_sha256` hashes exactly this payload under
+`b"VD::RESPONSE_PROFILE_ORDERED_QUERY_PAYLOADS::V1\x00"`:
+
+```json
+{
+  "schema_version": "response-profile-ordered-query-payloads-v1",
+  "query_payload_sha256": ["<exactly 1200 digests in frozen canonical order>"]
+}
+```
+
+None of these payloads contains response results, timing, runtime epochs,
+retries, authorization, routing, or execution evidence. Role-manifest counts
+remain role-specific: exactly 200 members for warm-up, exactly 1,200 for
+calibration, and exactly 1,200 for each prospective segment. The generic
+closed-role manifest assigns no 1,200-member rule to unrelated roles. This
+clarification changes no existing EXP-010 formula, schedule mechanic, role,
+sample count, acceptance rule, freshness status, or authority boundary.
