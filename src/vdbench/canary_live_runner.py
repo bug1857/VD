@@ -21,7 +21,7 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 import unicodedata
@@ -35,6 +35,8 @@ from .canary_activation import (
 from .canary_admission import (
     Stage4AdmissionRequest,
     Stage4AdmissionResult,
+    Stage4LkgAuthorityPair,
+    Stage4RepositoryEvidence,
     evaluate_stage4_admission,
 )
 from .canary_execution_ledger import (
@@ -52,18 +54,24 @@ from .canary_rollback import (
     RollbackTrigger,
 )
 from .canary_route_authority import RouteClaim
+from .canary_route_state import RouteStateBinding
 from .canary_runtime_types import Stage4RuntimeReadiness, Stage4SlotSafety
+from .canary_routing import CanaryRoutePlan
 from .canary_schedule import (
     Stage4ExecutionSchedule,
     Stage4ScheduleStep,
     Stage4ScheduleStepKind,
 )
+from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 from .canary_serial_runner import Dataset002ScheduleVectorSource
+from .canary_workload import CandidateSelectionRecord, EligibleWorkloadManifest
 from .host_observation import RangeQueryRequest, ServedQueryOutcome
+from .policy import PolicyDecision
 from .shadow_event_types import MonitorStreamKey
 
 
 __all__ = [
+    "Stage4LkgAuthorityProvider",
     "Stage4LiveRunRequest",
     "Stage4LiveRunResult",
     "Stage4LiveRunner",
@@ -99,12 +107,24 @@ class _RuntimeProbePort(Protocol):
     def slot_safety(self, *, binding: object) -> "Stage4SlotSafety": ...
 
 
+class Stage4LkgAuthorityProvider(Protocol):
+    """Return one already-validated fresh D1/D2 pair per independent refresh."""
+
+    def refresh(self) -> Stage4LkgAuthorityPair: ...
+
+
 @dataclass(frozen=True, slots=True)
 class Stage4LiveRunRequest:
-    """Exact human-gated activation inputs plus immutable admission evidence."""
+    """Static human-gated inputs; no long-lived D1/D2 authority is retained."""
 
-    admission_request: Stage4AdmissionRequest
+    manifest: EligibleWorkloadManifest
+    selection: CandidateSelectionRecord
+    plan: CanaryRoutePlan
     schedule: Stage4ExecutionSchedule
+    policy_decision: PolicyDecision
+    evidence_binding: Stage4EvidenceBinding
+    repository: Stage4RepositoryEvidence
+    runtime_binding: RouteStateBinding
     grant: object
     trust_store: object
     approval_context: object
@@ -112,8 +132,17 @@ class Stage4LiveRunRequest:
     run_id: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.admission_request, Stage4AdmissionRequest):
-            raise TypeError("admission_request must be a Stage4AdmissionRequest")
+        for value, expected, field in (
+            (self.manifest, EligibleWorkloadManifest, "manifest"),
+            (self.selection, CandidateSelectionRecord, "selection"),
+            (self.plan, CanaryRoutePlan, "plan"),
+            (self.policy_decision, PolicyDecision, "policy_decision"),
+            (self.evidence_binding, Stage4EvidenceBinding, "evidence_binding"),
+            (self.repository, Stage4RepositoryEvidence, "repository"),
+            (self.runtime_binding, RouteStateBinding, "runtime_binding"),
+        ):
+            if not isinstance(value, expected):
+                raise TypeError(f"{field} must be a {expected.__name__}")
         if not isinstance(self.schedule, Stage4ExecutionSchedule):
             raise TypeError("schedule must be a Stage4ExecutionSchedule")
         if not isinstance(self.activation_timestamps, ActivationTimestamps):
@@ -175,6 +204,7 @@ class Stage4LiveRunner:
         vector_source: Dataset002ScheduleVectorSource,
         ledger: Stage4ExecutionLedger,
         rollback: _RollbackPort,
+        lkg_authority_provider: Stage4LkgAuthorityProvider,
         admission_evaluator: Callable[[object], Stage4AdmissionResult] = evaluate_stage4_admission,
         monotonic_ns: Callable[[], int],
         utc_now: Callable[[], str],
@@ -192,6 +222,7 @@ class Stage4LiveRunner:
             (runtime_probe, "slot_safety"),
             (serving, "execute"),
             (rollback, "rollback"),
+            (lkg_authority_provider, "refresh"),
         ):
             if not callable(getattr(port, method, None)):
                 raise TypeError(f"dependency must provide {method}")
@@ -205,6 +236,7 @@ class Stage4LiveRunner:
         self._source = vector_source
         self._ledger = ledger
         self._rollback = rollback
+        self._lkg_authority_provider = lkg_authority_provider
         self._admission_evaluator = admission_evaluator
         self._monotonic_ns = monotonic_ns
         self._utc_now = utc_now
@@ -222,7 +254,7 @@ class Stage4LiveRunner:
             return self._result(0, None, None, None, None, ("LEDGER_NOT_FRESH",))
 
         first = self._admit()
-        if first is None or not first.admitted or first.plan_sha256 != self._request.schedule.plan_sha256:
+        if not self._admission_matches_schedule(first):
             return self._result(0, None, first, None, None, ("INITIAL_ADMISSION_REFUSED",))
 
         activation = self._activate()
@@ -241,7 +273,7 @@ class Stage4LiveRunner:
             )
 
         second = self._admit()
-        if second is None or not second.admitted or second.plan_sha256 != self._request.schedule.plan_sha256:
+        if not self._admission_matches_schedule(second):
             rollback = self._contain(context, RollbackTrigger.RUNTIME_PREFLIGHT_FAILURE)
             return self._result(
                 0,
@@ -250,6 +282,18 @@ class Stage4LiveRunner:
                 second,
                 rollback,
                 ("POST_ACTIVATION_ADMISSION_REFUSED",),
+            )
+        assert first is not None and first.receipt is not None
+        assert second is not None and second.receipt is not None
+        if not first.receipt.stable_lineage_matches(second.receipt):
+            rollback = self._contain(context, RollbackTrigger.RUNTIME_PREFLIGHT_FAILURE)
+            return self._result(
+                0,
+                activation,
+                first,
+                second,
+                rollback,
+                ("POST_ACTIVATION_STABLE_LINEAGE_MISMATCH",),
             )
 
         dispatched = 0
@@ -305,26 +349,38 @@ class Stage4LiveRunner:
     def _admit(self) -> Stage4AdmissionResult | None:
         try:
             runtime = self._runtime_probe.preflight(
-                binding=self._request.admission_request.runtime.binding
+                binding=self._request.runtime_binding
             )
             if not isinstance(runtime, Stage4RuntimeReadiness):
                 return None
+            pair = self._lkg_authority_provider.refresh()
+            if type(pair) is not Stage4LkgAuthorityPair:
+                return None
             value = self._admission_evaluator(
-                replace(self._request.admission_request, runtime=runtime)
+                Stage4AdmissionRequest(
+                    manifest=self._request.manifest,
+                    selection=self._request.selection,
+                    plan=self._request.plan,
+                    schedule=self._request.schedule,
+                    policy_decision=self._request.policy_decision,
+                    lkg_authority=pair,
+                    evidence_binding=self._request.evidence_binding,
+                    repository=self._request.repository,
+                    runtime=runtime,
+                )
             )
         except Exception:
             return None
         return value if isinstance(value, Stage4AdmissionResult) else None
 
     def _activate(self) -> ActivationAttempt | None:
-        source = self._request.admission_request
         try:
             value = self._activation.activate(
                 grant=self._request.grant,
                 trust_store=self._request.trust_store,
                 approval_context=self._request.approval_context,
-                plan=source.plan,
-                binding=source.runtime.binding,
+                plan=self._request.plan,
+                binding=self._request.runtime_binding,
                 timestamps=self._request.activation_timestamps,
             )
         except Exception:
@@ -458,8 +514,8 @@ class Stage4LiveRunner:
     def _range_request(
         self, step: Stage4ScheduleStep, vector: tuple[float, ...]
     ) -> RangeQueryRequest:
-        manifest = self._request.admission_request.manifest
-        plan = self._request.admission_request.plan
+        manifest = self._request.manifest
+        plan = self._request.plan
         stream = MonitorStreamKey(
             f"exp009:{self._request.run_id}",
             plan.metric,
@@ -482,7 +538,7 @@ class Stage4LiveRunner:
     def _safety(self) -> Stage4SlotSafety | None:
         try:
             value = self._runtime_probe.slot_safety(
-                binding=self._request.admission_request.runtime.binding
+                binding=self._request.runtime_binding
             )
         except Exception:
             return None
@@ -579,11 +635,23 @@ class Stage4LiveRunner:
     def _active_context_matches(
         self, context: ActiveCanaryContext, admission: Stage4AdmissionResult
     ) -> bool:
-        source = self._request.admission_request
         return bool(
             context.plan_sha256 == self._request.schedule.plan_sha256
-            and context.binding == source.runtime.binding
+            and context.binding == self._request.runtime_binding
             and context.policy_audit_id == admission.policy_audit_id
+        )
+
+    def _admission_matches_schedule(
+        self, admission: Stage4AdmissionResult | None
+    ) -> bool:
+        if type(admission) is not Stage4AdmissionResult or admission.receipt is None:
+            return False
+        receipt = admission.receipt
+        return bool(
+            receipt.matches_canonical_digest()
+            and receipt.route_plan_sha256 == self._request.schedule.plan_sha256
+            and receipt.execution_schedule_sha256
+            == self._request.schedule.schedule_sha256
         )
 
     def _result(

@@ -21,32 +21,51 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
+import hashlib
 import math
 import re
 import unicodedata
 
+from .artifacts import canonical_json_bytes
 from .canary_route_state import RouteStateBinding
 from .canary_runtime_types import Stage4RuntimeReadiness
 from .canary_routing import CanaryRoutePlan, build_canary_route_plan
-from .canary_workload import CandidateSelectionRecord, EligibleWorkloadManifest
-from .config import Metric
+from .canary_schedule import (
+    Stage4ExecutionSchedule,
+    build_stage4_execution_schedule,
+)
+from .canary_stage4_evidence_binding import Stage4EvidenceBinding
+from .canary_workload import (
+    CandidateSelectionRecord,
+    EligibleWorkloadManifest,
+    WorkloadIdentityBinding,
+)
+from .config import IndexTrack, Metric, SearchConfiguration
 from .drift import evidence_provenance_valid
+from .lkg_phase3_authority import LkgPhase3Authority
+from .lkg_phase3_persistence import (
+    PersistedLkgPhase3AuthorityReference,
+    VerifiedLatestLkgPhase3AuthorityReference,
+)
 from .policy import (
     PolicyAction,
     PolicyDecision,
     PolicyMode,
-    QualificationResult,
     SafetyGateResult,
 )
+from .search_configuration_digest import search_configuration_sha256
 
 
 __all__ = [
+    "Stage4AdmissionReceipt",
     "Stage4AdmissionRequest",
     "Stage4AdmissionResult",
+    "Stage4LkgAuthorityPair",
     "Stage4RepositoryEvidence",
     "Stage4RuntimeReadiness",
+    "bind_stage4_lkg_authority",
     "evaluate_stage4_admission",
 ]
 
@@ -63,6 +82,37 @@ _EXPERIMENT_CANDIDATE_EF = 800
 _RECALL_FLOOR = 0.95
 _MAX_LATENCY_MS = 10.0
 _EXCEPTION_MINIMUM_RECALL_IMPROVEMENT = 0.005
+_RECEIPT_SCHEMA_VERSION = "stage4-admission-receipt-v1"
+_RECEIPT_HASH_DOMAIN = b"vdbench.stage4-admission-receipt.v1\0"
+_PAIR_CONSTRUCTION_TOKEN = object()
+_RECEIPT_CONSTRUCTION_TOKEN = object()
+
+
+_PERSISTED_IDENTITY_FIELDS = (
+    "canonical_evaluation_digest",
+    "source_run_id",
+    "source_run_binding_sha256",
+    "source_run_seal_digest",
+    "source_sealed_phase1_chain_head_sha256",
+    "phase2_source_binding_digest",
+    "evaluated_ef",
+    "search_configuration_digest",
+    "metric",
+    "threshold_stratum",
+    "collection_name",
+    "index_identity",
+    "data_identity",
+    "qualification_dataset_id",
+    "qualification_dataset_version",
+    "qualification_manifest_sha256",
+    "qualification_query_role",
+    "qualification_ordered_query_ids_sha256",
+    "qualification_query_id_array_sha256",
+    "qualification_query_array_sha256",
+    "qualification_expected_query_count",
+    "environment_identity",
+    "source_revision",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +124,90 @@ class Stage4RepositoryEvidence:
     observed_at_utc: str
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class Stage4LkgAuthorityPair:
+    """One validated D1 authority and its exact D2 verified-head snapshot.
+
+    Private construction is API discipline, not cryptographic authenticity.
+    This value performs no replay or persistence I/O and is usable only after
+    :func:`bind_stage4_lkg_authority` has compared every D2-persisted identity
+    and lineage field with the concrete D1 authority.
+    """
+
+    _authority: LkgPhase3Authority
+    _verified_latest_reference: VerifiedLatestLkgPhase3AuthorityReference
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "Stage4LkgAuthorityPair can only be created by "
+            "bind_stage4_lkg_authority()"
+        )
+
+    @classmethod
+    def _from_validated(
+        cls,
+        *,
+        authority: LkgPhase3Authority,
+        verified_latest_reference: VerifiedLatestLkgPhase3AuthorityReference,
+        construction_token: object,
+    ) -> Stage4LkgAuthorityPair:
+        if construction_token is not _PAIR_CONSTRUCTION_TOKEN:
+            raise TypeError("Stage4 LKG pair construction token is invalid")
+        value = object.__new__(cls)
+        object.__setattr__(value, "_authority", authority)
+        object.__setattr__(
+            value, "_verified_latest_reference", verified_latest_reference
+        )
+        return value
+
+    @property
+    def authority(self) -> LkgPhase3Authority:
+        return self._authority
+
+    @property
+    def verified_latest_reference(
+        self,
+    ) -> VerifiedLatestLkgPhase3AuthorityReference:
+        return self._verified_latest_reference
+
+
+def bind_stage4_lkg_authority(
+    *,
+    authority: object,
+    verified_latest_reference: object,
+) -> Stage4LkgAuthorityPair:
+    """Bind an exact D1 authority to one store-issued D2 head snapshot.
+
+    D2 record metadata is intentionally excluded: sequence, persistence time,
+    previous digest, canonical record digest, and schema version describe the
+    append-only record rather than the persisted D1 identity.
+    """
+
+    if type(authority) is not LkgPhase3Authority:
+        raise TypeError("authority must be a concrete LkgPhase3Authority")
+    if type(verified_latest_reference) is not VerifiedLatestLkgPhase3AuthorityReference:
+        raise TypeError(
+            "verified_latest_reference must be a concrete store-issued "
+            "VerifiedLatestLkgPhase3AuthorityReference"
+        )
+    try:
+        reference = verified_latest_reference.reference
+        if type(reference) is not PersistedLkgPhase3AuthorityReference:
+            raise TypeError("verified latest reference contains an invalid record")
+        mismatches = _lkg_pair_identity_mismatches(authority, reference)
+    except AttributeError as exc:
+        raise TypeError("Phase-3 authority pair is structurally malformed") from exc
+    if mismatches:
+        raise ValueError(
+            "D1/D2 Phase-3 authority identity mismatch: " + ",".join(mismatches)
+        )
+    return Stage4LkgAuthorityPair._from_validated(
+        authority=authority,
+        verified_latest_reference=verified_latest_reference,
+        construction_token=_PAIR_CONSTRUCTION_TOKEN,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Stage4AdmissionRequest:
     """All immutable prerequisites for one exact Stage-4 admission decision."""
@@ -81,21 +215,163 @@ class Stage4AdmissionRequest:
     manifest: EligibleWorkloadManifest
     selection: CandidateSelectionRecord
     plan: CanaryRoutePlan
+    schedule: Stage4ExecutionSchedule
     policy_decision: PolicyDecision
-    qualification: QualificationResult
+    lkg_authority: Stage4LkgAuthorityPair
+    evidence_binding: Stage4EvidenceBinding
     repository: Stage4RepositoryEvidence
     runtime: Stage4RuntimeReadiness
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class Stage4AdmissionReceipt:
+    """Canonical passing receipt; private construction is API discipline only."""
+
+    receipt_schema_version: str
+    checkpoint_c_evaluation_digest: str
+    d2_canonical_record_digest: str
+    d2_sequence_number: int
+    d2_persisted_at_utc: str
+    source_run_id: str
+    source_run_binding_sha256: str
+    source_run_seal_digest: str
+    source_sealed_phase1_chain_head_sha256: str
+    phase2_source_binding_digest: str
+    evaluated_lkg_ef: int
+    lkg_search_configuration_digest: str
+    stage4_evidence_binding_sha256: str
+    route_plan_sha256: str
+    execution_schedule_sha256: str
+    policy_audit_id: str
+    repository_commit_sha: str
+    configuration_identity: str
+    data_identity: str
+    hnsw_identity: str
+    lkg_source_revision: str
+    runtime_observed_at_utc: str
+    canonical_receipt_digest: str
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "Stage4AdmissionReceipt can only be created by successful "
+            "evaluate_stage4_admission()"
+        )
+
+    @classmethod
+    def _from_validated(
+        cls,
+        *,
+        payload: dict[str, object],
+        construction_token: object,
+    ) -> Stage4AdmissionReceipt:
+        if construction_token is not _RECEIPT_CONSTRUCTION_TOKEN:
+            raise TypeError("Stage-4 admission receipt construction token is invalid")
+        value = object.__new__(cls)
+        for field, field_value in payload.items():
+            object.__setattr__(value, field, field_value)
+        object.__setattr__(
+            value,
+            "canonical_receipt_digest",
+            hashlib.sha256(
+                _RECEIPT_HASH_DOMAIN + canonical_json_bytes(payload)
+            ).hexdigest(),
+        )
+        return value
+
+    def to_document(self) -> dict[str, object]:
+        document = self._payload()
+        document["canonical_receipt_digest"] = self.canonical_receipt_digest
+        return document
+
+    def matches_canonical_digest(self) -> bool:
+        """Verify the schema-pinned digest before a later consumer trusts it."""
+
+        try:
+            return (
+                self.receipt_schema_version == _RECEIPT_SCHEMA_VERSION
+                and self.canonical_receipt_digest
+                == hashlib.sha256(
+                    _RECEIPT_HASH_DOMAIN + canonical_json_bytes(self._payload())
+                ).hexdigest()
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError, UnicodeError):
+            return False
+
+    def stable_lineage_matches(self, other: object) -> bool:
+        """Compare only the accepted D3 stable lineage of canonical receipts."""
+
+        return bool(
+            type(other) is Stage4AdmissionReceipt
+            and self.matches_canonical_digest()
+            and other.matches_canonical_digest()
+            and self._stable_lineage() == other._stable_lineage()
+        )
+
+    def _stable_lineage(self) -> tuple[object, ...]:
+        return (
+            self.checkpoint_c_evaluation_digest,
+            self.d2_canonical_record_digest,
+            self.d2_sequence_number,
+            self.stage4_evidence_binding_sha256,
+            self.execution_schedule_sha256,
+            self.route_plan_sha256,
+            self.policy_audit_id,
+            self.configuration_identity,
+            self.data_identity,
+            self.hnsw_identity,
+            self.evaluated_lkg_ef,
+            self.lkg_search_configuration_digest,
+        )
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+            if field != "canonical_receipt_digest"
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class Stage4AdmissionResult:
-    """Non-sensitive result that cannot authorize, install, or claim a route."""
+    """Non-authorizing envelope: only a private receipt represents success."""
 
-    admitted: bool
+    receipt: Stage4AdmissionReceipt | None
     reason_codes: tuple[str, ...]
-    plan_sha256: str | None
-    policy_audit_id: str | None
-    repository_commit_sha: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason_codes, tuple):
+            raise TypeError("reason_codes must be a tuple")
+        if any(_REASON.fullmatch(code) is None for code in self.reason_codes):
+            raise ValueError("reason_codes must contain canonical stable codes")
+        if self.reason_codes != tuple(dict.fromkeys(self.reason_codes)):
+            raise ValueError("reason_codes must be unique and ordered")
+        if self.receipt is None:
+            if not self.reason_codes:
+                raise ValueError("a refusal requires at least one reason code")
+        elif (
+            type(self.receipt) is not Stage4AdmissionReceipt
+            or self.reason_codes
+            or not self.receipt.matches_canonical_digest()
+        ):
+            raise ValueError(
+                "a passing result requires one canonical receipt and no reasons"
+            )
+
+    @property
+    def admitted(self) -> bool:
+        return self.receipt is not None
+
+    @property
+    def plan_sha256(self) -> str | None:
+        return None if self.receipt is None else self.receipt.route_plan_sha256
+
+    @property
+    def policy_audit_id(self) -> str | None:
+        return None if self.receipt is None else self.receipt.policy_audit_id
+
+    @property
+    def repository_commit_sha(self) -> str | None:
+        return None if self.receipt is None else self.receipt.repository_commit_sha
 
 
 def evaluate_stage4_admission(request: object) -> Stage4AdmissionResult:
@@ -113,29 +389,50 @@ def evaluate_stage4_admission(request: object) -> Stage4AdmissionResult:
 
     reasons: list[str] = []
     plan = _validate_artifact_binding(request, reasons)
+    validated_binding = _revalidate_evidence_binding(
+        request.evidence_binding, reasons
+    )
     _validate_repository(request.repository, reasons)
     if plan is not None:
         _validate_frozen_transition(plan, reasons)
+        schedule = _validate_schedule(request, plan, reasons)
         _validate_policy(request.policy_decision, plan, reasons)
-        _validate_qualification(request.qualification, plan, reasons)
+        pair = _validate_lkg_pair(request.lkg_authority, reasons)
+        if pair is not None and validated_binding is not None:
+            _validate_configuration_bridge(
+                pair=pair,
+                binding=validated_binding,
+                manifest=request.manifest,
+                plan=plan,
+                schedule=schedule,
+                reasons=reasons,
+            )
         _validate_runtime(request.runtime, plan, reasons)
     else:
+        schedule = None
+        pair = None
         _append_once(reasons, "ARTIFACT_BINDING_INVALID")
 
+    if reasons:
+        return Stage4AdmissionResult(receipt=None, reason_codes=tuple(reasons))
+    assert plan is not None
+    assert schedule is not None
+    assert pair is not None
+    assert validated_binding is not None
+    assert isinstance(request.policy_decision, PolicyDecision)
+    assert isinstance(request.repository, Stage4RepositoryEvidence)
+    assert isinstance(request.runtime, Stage4RuntimeReadiness)
     return Stage4AdmissionResult(
-        admitted=not reasons,
-        reason_codes=tuple(reasons),
-        plan_sha256=plan.plan_sha256 if plan is not None else None,
-        policy_audit_id=(
-            request.policy_decision.audit_id
-            if isinstance(request.policy_decision, PolicyDecision)
-            else None
+        receipt=_build_receipt(
+            pair=pair,
+            binding=validated_binding,
+            plan=plan,
+            schedule=schedule,
+            policy=request.policy_decision,
+            repository=request.repository,
+            runtime=request.runtime,
         ),
-        repository_commit_sha=(
-            request.repository.commit_sha
-            if isinstance(request.repository, Stage4RepositoryEvidence)
-            else None
-        ),
+        reason_codes=(),
     )
 
 
@@ -176,6 +473,28 @@ def _validate_frozen_transition(plan: CanaryRoutePlan, reasons: list[str]) -> No
         or plan.candidate_count != 60
     ):
         _append_once(reasons, "FROZEN_TRANSITION_MISMATCH")
+
+
+def _validate_schedule(
+    request: Stage4AdmissionRequest,
+    plan: CanaryRoutePlan,
+    reasons: list[str],
+) -> Stage4ExecutionSchedule | None:
+    if type(request.schedule) is not Stage4ExecutionSchedule:
+        _append_once(reasons, "EXECUTION_SCHEDULE_INVALID")
+        return None
+    try:
+        rebuilt = build_stage4_execution_schedule(request.manifest, plan)
+    except (TypeError, ValueError):
+        _append_once(reasons, "EXECUTION_SCHEDULE_REBUILD_FAILED")
+        return None
+    if request.schedule != rebuilt:
+        _append_once(reasons, "EXECUTION_SCHEDULE_REBUILD_MISMATCH")
+        return None
+    if request.schedule.plan_sha256 != plan.plan_sha256:
+        _append_once(reasons, "EXECUTION_SCHEDULE_PLAN_MISMATCH")
+        return None
+    return rebuilt
 
 
 def _validate_repository(
@@ -263,31 +582,119 @@ def _validate_policy_bounds(decision: PolicyDecision, reasons: list[str]) -> Non
         _append_once(reasons, "POLICY_EXCEPTION_IMPROVEMENT_UNMET")
 
 
-def _validate_qualification(
-    value: object, plan: CanaryRoutePlan, reasons: list[str]
+def _validate_lkg_pair(
+    value: object,
+    reasons: list[str],
+) -> Stage4LkgAuthorityPair | None:
+    if type(value) is not Stage4LkgAuthorityPair:
+        _append_once(reasons, "PHASE3_LKG_AUTHORITY_PAIR_INVALID")
+        return None
+    try:
+        rebound = bind_stage4_lkg_authority(
+            authority=value.authority,
+            verified_latest_reference=value.verified_latest_reference,
+        )
+    except (TypeError, ValueError):
+        _append_once(reasons, "PHASE3_LKG_AUTHORITY_PAIR_INVALID")
+        return None
+    return rebound
+
+
+def _revalidate_evidence_binding(
+    value: object,
+    reasons: list[str],
+) -> Stage4EvidenceBinding | None:
+    """Replay the complete public constructor contract on every declared field."""
+
+    if type(value) is not Stage4EvidenceBinding:
+        _append_once(reasons, "STAGE4_EVIDENCE_BINDING_INVALID")
+        return None
+    try:
+        reconstructed = Stage4EvidenceBinding(
+            **{
+                field.name: getattr(value, field.name)
+                for field in fields(Stage4EvidenceBinding)
+            }
+        )
+    except (AttributeError, TypeError, ValueError):
+        _append_once(reasons, "STAGE4_EVIDENCE_BINDING_INVALID")
+        return None
+    if reconstructed != value:
+        _append_once(reasons, "STAGE4_EVIDENCE_BINDING_INVALID")
+        return None
+    return reconstructed
+
+
+def _validate_configuration_bridge(
+    *,
+    pair: Stage4LkgAuthorityPair,
+    binding: Stage4EvidenceBinding,
+    manifest: EligibleWorkloadManifest,
+    plan: CanaryRoutePlan,
+    schedule: Stage4ExecutionSchedule | None,
+    reasons: list[str],
 ) -> None:
-    if not isinstance(value, QualificationResult) or value.qualified is not True:
-        _append_once(reasons, "LAST_KNOWN_GOOD_NOT_QUALIFIED")
+    expected_identity = WorkloadIdentityBinding(
+        configuration_identity=plan.configuration_identity,
+        data_identity=plan.data_identity,
+        flat_binding_id=plan.flat_binding_id,
+        hnsw_binding_id=plan.hnsw_binding_id,
+    )
+    if (
+        binding.metric is not plan.metric
+        or binding.threshold_stratum != plan.threshold_stratum
+        or binding.current_ef != plan.last_known_good_ef
+        or binding.last_known_good_ef != plan.last_known_good_ef
+        or binding.candidate_ef != plan.candidate_ef
+        or binding.eligible_workload_sha256 != plan.eligible_workload_sha256
+        or binding.candidate_selection_sha256 != plan.candidate_selection_sha256
+        or binding.identity != expected_identity
+        or binding.dataset002_manifest_sha256 != manifest.dataset002_manifest_sha256
+    ):
+        _append_once(reasons, "STAGE4_EVIDENCE_BINDING_MISMATCH")
+    if schedule is None or binding.execution_schedule_sha256 != schedule.schedule_sha256:
+        _append_once(reasons, "STAGE4_EVIDENCE_SCHEDULE_MISMATCH")
+
+    authority = pair.authority
+    configuration = authority.search_configuration
+    try:
+        if type(configuration) is not SearchConfiguration:
+            raise TypeError("LKG search configuration is not concrete")
+        configuration.validate()
+        if search_configuration_sha256(configuration) != authority.search_configuration_digest:
+            raise ValueError("LKG search configuration digest mismatch")
+        if authority.run_binding.sha256 != authority.source_run_binding_sha256:
+            raise ValueError("LKG source run-binding digest mismatch")
+    except (TypeError, ValueError):
+        _append_once(reasons, "PHASE3_LKG_SEARCH_CONFIGURATION_INVALID")
         return
-    if not isinstance(value.reasons, tuple) or value.reasons:
-        _append_once(reasons, "LAST_KNOWN_GOOD_REASONS_PRESENT")
     if (
-        value.ef != plan.last_known_good_ef
-        or value.metric is not plan.metric
-        or value.threshold_stratum != plan.threshold_stratum
-        or value.configuration_identity != plan.configuration_identity
-        or value.index_identity != plan.hnsw_binding_id
-        or value.data_identity != plan.data_identity
+        configuration.index_track is not IndexTrack.HNSW
+        or configuration.ef != plan.last_known_good_ef
+        or configuration.metric is not plan.metric
+        or configuration.threshold_label != plan.threshold_stratum
+        or authority.evaluated_ef != plan.last_known_good_ef
+        or authority.metric is not plan.metric
+        or authority.threshold_stratum != plan.threshold_stratum
+        or authority.data_identity != plan.data_identity
+        or authority.index_identity != plan.hnsw_binding_id
     ):
-        _append_once(reasons, "LAST_KNOWN_GOOD_BINDING_MISMATCH")
-    identifiers = value.qualifying_window_ids
-    if (
-        not isinstance(identifiers, tuple)
-        or len(identifiers) != 2
-        or identifiers[0] == identifiers[1]
-        or any(not _canonical_text(item) for item in identifiers)
+        _append_once(reasons, "PHASE3_LKG_PLAN_BINDING_MISMATCH")
+    try:
+        candidate_configuration = replace(configuration, ef=plan.candidate_ef)
+        candidate_configuration.validate()
+    except (TypeError, ValueError):
+        _append_once(reasons, "CANDIDATE_SEARCH_CONFIGURATION_INVALID")
+        return
+    if binding.candidate_search_configuration != candidate_configuration:
+        _append_once(reasons, "CANDIDATE_SEARCH_CONFIGURATION_MISMATCH")
+    if any(
+        occurrence.threshold_radius != configuration.radius
+        or occurrence.range_filter != configuration.range_filter
+        or occurrence.limit != configuration.limit
+        for occurrence in plan.occurrences
     ):
-        _append_once(reasons, "LAST_KNOWN_GOOD_WINDOW_IDS_INVALID")
+        _append_once(reasons, "ROUTING_SEARCH_CONTRACT_MISMATCH")
 
 
 def _validate_runtime(
@@ -320,8 +727,66 @@ def _validate_runtime(
         _append_once(reasons, "RUNTIME_BINDING_MISMATCH")
 
 
+def _lkg_pair_identity_mismatches(
+    authority: LkgPhase3Authority,
+    reference: PersistedLkgPhase3AuthorityReference,
+) -> tuple[str, ...]:
+    mismatches: list[str] = []
+    for field in _PERSISTED_IDENTITY_FIELDS:
+        authority_value = getattr(authority, field)
+        if field == "metric":
+            authority_value = authority_value.value
+        if getattr(reference, field) != authority_value:
+            mismatches.append(field)
+    return tuple(mismatches)
+
+
+def _build_receipt(
+    *,
+    pair: Stage4LkgAuthorityPair,
+    binding: Stage4EvidenceBinding,
+    plan: CanaryRoutePlan,
+    schedule: Stage4ExecutionSchedule,
+    policy: PolicyDecision,
+    repository: Stage4RepositoryEvidence,
+    runtime: Stage4RuntimeReadiness,
+) -> Stage4AdmissionReceipt:
+    authority = pair.authority
+    reference = pair.verified_latest_reference.reference
+    payload: dict[str, object] = {
+        "receipt_schema_version": _RECEIPT_SCHEMA_VERSION,
+        "checkpoint_c_evaluation_digest": authority.canonical_evaluation_digest,
+        "d2_canonical_record_digest": reference.canonical_record_digest,
+        "d2_sequence_number": reference.sequence_number,
+        "d2_persisted_at_utc": reference.persisted_at_utc,
+        "source_run_id": authority.source_run_id,
+        "source_run_binding_sha256": authority.source_run_binding_sha256,
+        "source_run_seal_digest": authority.source_run_seal_digest,
+        "source_sealed_phase1_chain_head_sha256": (
+            authority.source_sealed_phase1_chain_head_sha256
+        ),
+        "phase2_source_binding_digest": authority.phase2_source_binding_digest,
+        "evaluated_lkg_ef": authority.evaluated_ef,
+        "lkg_search_configuration_digest": authority.search_configuration_digest,
+        "stage4_evidence_binding_sha256": binding.sha256,
+        "route_plan_sha256": plan.plan_sha256,
+        "execution_schedule_sha256": schedule.schedule_sha256,
+        "policy_audit_id": policy.audit_id,
+        "repository_commit_sha": repository.commit_sha,
+        "configuration_identity": plan.configuration_identity,
+        "data_identity": plan.data_identity,
+        "hnsw_identity": plan.hnsw_binding_id,
+        "lkg_source_revision": authority.source_revision,
+        "runtime_observed_at_utc": runtime.observed_at_utc,
+    }
+    return Stage4AdmissionReceipt._from_validated(
+        payload=payload,
+        construction_token=_RECEIPT_CONSTRUCTION_TOKEN,
+    )
+
+
 def _result(reason: str) -> Stage4AdmissionResult:
-    return Stage4AdmissionResult(False, (reason,), None, None, None)
+    return Stage4AdmissionResult(receipt=None, reason_codes=(reason,))
 
 
 def _append_once(reasons: list[str], code: str) -> None:

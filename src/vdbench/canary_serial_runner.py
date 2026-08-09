@@ -31,7 +31,7 @@ from math import isfinite
 import re
 from typing import Callable, Protocol
 
-from .canary_admission import Stage4AdmissionResult
+from .canary_admission import Stage4AdmissionReceipt
 from .canary_execution_ledger import (
     Stage4ExecutionLedger,
     Stage4LedgerError,
@@ -56,8 +56,6 @@ __all__ = [
 ]
 
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 _REASON_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
 
 
@@ -159,7 +157,7 @@ class Stage4SerialRunner:
     def __init__(
         self,
         *,
-        admission: Stage4AdmissionResult,
+        admission_receipt: Stage4AdmissionReceipt,
         schedule: Stage4ExecutionSchedule,
         vector_source: Dataset002ScheduleVectorSource,
         executor: Stage4SlotExecutorLike,
@@ -167,8 +165,8 @@ class Stage4SerialRunner:
         monotonic_ns: Callable[[], int],
         utc_now: Callable[[], str],
     ) -> None:
-        if not isinstance(admission, Stage4AdmissionResult):
-            raise TypeError("admission must be a Stage4AdmissionResult")
+        if type(admission_receipt) is not Stage4AdmissionReceipt:
+            raise TypeError("admission_receipt must be a Stage4AdmissionReceipt")
         if not isinstance(schedule, Stage4ExecutionSchedule):
             raise TypeError("schedule must be a Stage4ExecutionSchedule")
         if not isinstance(vector_source, Dataset002ScheduleVectorSource):
@@ -179,7 +177,7 @@ class Stage4SerialRunner:
             raise TypeError("executor must satisfy Stage4SlotExecutorLike")
         if not callable(monotonic_ns) or not callable(utc_now):
             raise TypeError("clocks must be callable")
-        self._admission = admission
+        self._admission_receipt = admission_receipt
         self._schedule = schedule
         self._vector_source = vector_source
         self._executor = executor
@@ -191,7 +189,9 @@ class Stage4SerialRunner:
         """Run a bounded suffix once, returning fail-closed durable evidence."""
 
         limit = len(self._schedule.steps) if max_slots is None else _slot_limit(max_slots)
-        admission_reason = _admission_refusal(self._admission, self._schedule)
+        admission_reason = _admission_refusal(
+            self._admission_receipt, self._schedule
+        )
         if admission_reason is not None:
             return self._result(0, (admission_reason,))
         if self._ledger.schedule_sha256 != self._schedule.schedule_sha256:
@@ -319,23 +319,14 @@ class Stage4SerialRunner:
 
 
 def _admission_refusal(
-    admission: Stage4AdmissionResult, schedule: Stage4ExecutionSchedule
+    receipt: Stage4AdmissionReceipt, schedule: Stage4ExecutionSchedule
 ) -> str | None:
-    if admission.admitted is not True:
-        return "ADMISSION_NOT_ACCEPTED"
-    if (
-        not isinstance(admission.plan_sha256, str)
-        or _SHA256_RE.fullmatch(admission.plan_sha256) is None
-        or admission.plan_sha256 != schedule.plan_sha256
-    ):
+    if type(receipt) is not Stage4AdmissionReceipt or not receipt.matches_canonical_digest():
+        return "ADMISSION_RECEIPT_INVALID"
+    if receipt.route_plan_sha256 != schedule.plan_sha256:
         return "ADMISSION_SCHEDULE_BINDING_MISMATCH"
-    if not isinstance(admission.policy_audit_id, str) or not admission.policy_audit_id:
-        return "ADMISSION_AUDIT_ID_INVALID"
-    if (
-        not isinstance(admission.repository_commit_sha, str)
-        or _COMMIT_SHA_RE.fullmatch(admission.repository_commit_sha) is None
-    ):
-        return "ADMISSION_REPOSITORY_REVISION_INVALID"
+    if receipt.execution_schedule_sha256 != schedule.schedule_sha256:
+        return "ADMISSION_EXECUTION_SCHEDULE_MISMATCH"
     return None
 
 

@@ -8,6 +8,7 @@ routing active after a failed or completed serial schedule.
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 import tempfile
@@ -20,10 +21,14 @@ from vdbench.canary_activation import (
     ActiveCanaryContext,
 )
 from vdbench.canary_admission import (
+    Stage4AdmissionReceipt,
     Stage4AdmissionRequest,
     Stage4AdmissionResult,
+    Stage4LkgAuthorityPair,
     Stage4RepositoryEvidence,
     Stage4RuntimeReadiness,
+    bind_stage4_lkg_authority,
+    evaluate_stage4_admission,
 )
 from vdbench.canary_execution_ledger import (
     Stage4ExecutionLedger,
@@ -40,6 +45,7 @@ from vdbench.canary_route_authority import RouteClaim
 from vdbench.canary_route_state import RouteStateBinding
 from vdbench.canary_routing import build_canary_route_plan
 from vdbench.canary_schedule import build_stage4_execution_schedule
+from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_serial_runner import Dataset002ScheduleVectorSource
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
@@ -61,15 +67,17 @@ from vdbench.canary_workload import (
     WorkloadIdentityBinding,
 )
 from vdbench.config import Metric, RESULT_LIMIT
+from vdbench.drift import build_evidence_provenance
 from vdbench.host_observation import ServedQueryOutcome
+from vdbench.lkg_phase3_persistence import LkgPhase3AuthorityReferenceStore
 from vdbench.policy import (
     PolicyAction,
     PolicyDecision,
     PolicyMode,
-    QualificationResult,
     SafetyGateResult,
 )
 from vdbench.canary_rollback import RollbackResult, RollbackTrigger
+from tests.test_canary_admission import _phase3_authority
 
 
 def _sha(value: str) -> str:
@@ -255,21 +263,74 @@ class _InvalidRollback:
         return object()
 
 
+class _FreshAuthorityProvider:
+    def __init__(
+        self,
+        pairs: tuple[Stage4LkgAuthorityPair, ...],
+        *,
+        fail_at_call: int | None = None,
+    ) -> None:
+        self._pairs = pairs
+        self._fail_at_call = fail_at_call
+        self.calls = 0
+        self.returned: list[Stage4LkgAuthorityPair] = []
+
+    def refresh(self) -> Stage4LkgAuthorityPair:
+        self.calls += 1
+        if self.calls == self._fail_at_call:
+            raise RuntimeError("fresh Phase-3 authority unavailable")
+        pair = self._pairs[min(self.calls - 1, len(self._pairs) - 1)]
+        self.returned.append(pair)
+        return pair
+
+
+def _forge_canonical_receipt(
+    receipt: Stage4AdmissionReceipt,
+    **changes: object,
+) -> Stage4AdmissionReceipt:
+    payload = receipt.to_document()
+    payload.pop("canonical_receipt_digest")
+    payload.update(changes)
+    forged = object.__new__(Stage4AdmissionReceipt)
+    for field, value in payload.items():
+        object.__setattr__(forged, field, value)
+    object.__setattr__(
+        forged,
+        "canonical_receipt_digest",
+        hashlib.sha256(
+            b"vdbench.stage4-admission-receipt.v1\0"
+            + canonical_json_bytes(payload)
+        ).hexdigest(),
+    )
+    return forged
+
+
 class _AdmissionEvaluator:
-    def __init__(self, plan_sha256: str) -> None:
-        self._plan_sha256 = plan_sha256
+    def __init__(
+        self,
+        *,
+        mutate_second: tuple[str, object] | None = None,
+        corrupt_first: bool = False,
+    ) -> None:
         self.calls = []
+        self._mutate_second = mutate_second
+        self._corrupt_first = corrupt_first
 
     def __call__(self, request: object) -> Stage4AdmissionResult:
         self.calls.append(request)
-        complete = getattr(getattr(request, "runtime", None), "serving_preflight_complete", False)
-        return Stage4AdmissionResult(
-            admitted=complete is True,
-            reason_codes=() if complete is True else ("RUNTIME_PREFLIGHT_INCOMPLETE",),
-            plan_sha256=self._plan_sha256,
-            policy_audit_id="policy-audit-live-runner-001",
-            repository_commit_sha="a" * 40,
-        )
+        result = evaluate_stage4_admission(request)
+        if result.receipt is None:
+            return result
+        if self._corrupt_first and len(self.calls) == 1:
+            object.__setattr__(result.receipt, "canonical_receipt_digest", "0" * 64)
+            return result
+        if self._mutate_second is not None and len(self.calls) == 2:
+            field, value = self._mutate_second
+            return Stage4AdmissionResult(
+                receipt=_forge_canonical_receipt(result.receipt, **{field: value}),
+                reason_codes=(),
+            )
+        return result
 
 
 class _FailingAppendLedger(Stage4ExecutionLedger):
@@ -343,21 +404,110 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         cls.plan = build_canary_route_plan(cls.manifest, cls.selection)
         cls.schedule = build_stage4_execution_schedule(cls.manifest, cls.plan)
         cls.binding = RouteStateBinding(Metric.L2, "target-075", 400, "config", "data", "flat", "hnsw")
+        cls._phase3_temporary = tempfile.TemporaryDirectory()
+        phase3_root = Path(cls._phase3_temporary.name)
+        cls.authority = _phase3_authority(
+            plan=cls.plan,
+            radius=cls.manifest.radius,
+            identifier=201,
+        )
+        cls.other_authority = _phase3_authority(
+            plan=cls.plan,
+            radius=cls.manifest.radius,
+            identifier=202,
+        )
+        cls.lkg_pair = cls._persisted_pair(
+            cls.authority, phase3_root / "first.db", "2026-08-08T14:00:00.000000Z"
+        )
+        cls.other_lkg_pair = cls._persisted_pair(
+            cls.other_authority,
+            phase3_root / "second.db",
+            "2026-08-08T14:01:00.000000Z",
+        )
 
-    def _admission_request(self) -> Stage4AdmissionRequest:
-        return Stage4AdmissionRequest(
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._phase3_temporary.cleanup()
+
+    @staticmethod
+    def _persisted_pair(authority, path: Path, timestamp: str) -> Stage4LkgAuthorityPair:
+        with LkgPhase3AuthorityReferenceStore(path) as store:
+            store.append(authority, persisted_at_utc=timestamp)
+            latest = store.load_verified_latest()
+        assert latest is not None
+        return bind_stage4_lkg_authority(
+            authority=authority, verified_latest_reference=latest
+        )
+
+    def _policy_decision(self) -> PolicyDecision:
+        provenance = build_evidence_provenance(
+            metric=self.plan.metric,
+            threshold_stratum=self.plan.threshold_stratum,
+            reference_window_id="reference-window-live-001",
+            current_window_id="current-window-live-001",
+            reference_manifest_sha256=_sha("reference-manifest"),
+            current_manifest_sha256=_sha("current-manifest"),
+            configuration_identity=self.plan.configuration_identity,
+            data_identity=self.plan.data_identity,
+            flat_binding_id=self.plan.flat_binding_id,
+            hnsw_binding_id=self.plan.hnsw_binding_id,
+            reference_audit_ids=tuple(f"reference-{index:02d}" for index in range(50)),
+            reference_audit_rank_digests=tuple(_sha(f"rr-{index}") for index in range(50)),
+            current_audit_ids=tuple(f"current-{index:02d}" for index in range(50)),
+            current_audit_rank_digests=tuple(_sha(f"cr-{index}") for index in range(50)),
+        )
+        return PolicyDecision(
+            PolicyAction.START_CANARY, 400, 800, 400, 0.99, 0.98, 4.0, 5.0,
+            0.02, None, "QUALITY_DRIFT_RECOVERY", 0.999, 2.0,
+            (SafetyGateResult("PRE_ACTION", True, "passed"),),
+            PolicyMode.CANARY_ENABLED, "policy-audit-live-runner-001",
+            evidence_provenance=provenance,
+        )
+
+    def _evidence_binding(self) -> Stage4EvidenceBinding:
+        return Stage4EvidenceBinding(
+            run_id="exp009-live-runner-test",
+            source_revision="a" * 40,
+            metric=self.plan.metric,
+            threshold_stratum=self.plan.threshold_stratum,
+            current_ef=self.plan.last_known_good_ef,
+            candidate_ef=self.plan.candidate_ef,
+            last_known_good_ef=self.plan.last_known_good_ef,
+            candidate_search_configuration=replace(
+                self.authority.search_configuration, ef=self.plan.candidate_ef
+            ),
+            identity=self.manifest.identity,
+            dataset002_manifest_sha256=self.manifest.dataset002_manifest_sha256,
+            frozen_recall_audit_ids_sha256=_sha("frozen-recall-audit"),
+            eligible_workload_sha256=self.plan.eligible_workload_sha256,
+            candidate_selection_sha256=self.plan.candidate_selection_sha256,
+            execution_schedule_sha256=self.schedule.schedule_sha256,
+            recall_evidence_schema_version="recall-audit-hoeffding-1200-v1",
+            latency_evidence_schema_version="stage4-schedule-evaluation-v1",
+        )
+
+    def _live_request(self) -> Stage4LiveRunRequest:
+        return Stage4LiveRunRequest(
             manifest=self.manifest,
             selection=self.selection,
             plan=self.plan,
-            policy_decision=PolicyDecision(
-                PolicyAction.START_CANARY, 400, 800, 400, 0.99, 0.98, 4.0, 5.0,
-                0.02, None, "QUALITY_DRIFT_RECOVERY", 0.999, 2.0,
-                (SafetyGateResult("PRE_ACTION", True, "passed"),),
-                PolicyMode.CANARY_ENABLED, "policy-audit-live-runner-001",
+            schedule=self.schedule,
+            policy_decision=self._policy_decision(),
+            evidence_binding=self._evidence_binding(),
+            repository=Stage4RepositoryEvidence(
+                "a" * 40, True, "2026-08-04T20:00:00Z"
             ),
-            qualification=QualificationResult(True, 400, ()),
-            repository=Stage4RepositoryEvidence("a" * 40, True, "2026-08-04T20:00:00Z"),
-            runtime=Stage4RuntimeReadiness(self.binding, True, "2026-08-04T20:00:00Z"),
+            runtime_binding=self.binding,
+            grant=object(),
+            trust_store=object(),
+            approval_context=object(),
+            activation_timestamps=ActivationTimestamps(
+                "2026-08-04T20:00:00Z",
+                "2026-08-04T20:00:01Z",
+                "2026-08-04T20:00:02Z",
+                "2026-08-04T20:00:03Z",
+            ),
+            run_id="exp009-live-runner-test",
         )
 
     def _ledger(self, root: Path) -> Stage4ExecutionLedger:
@@ -381,6 +531,8 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         rollback_port: object | None = None,
         clock: _Clock | None = None,
         ledger: Stage4ExecutionLedger | None = None,
+        provider: _FreshAuthorityProvider | None = None,
+        evaluator: _AdmissionEvaluator | None = None,
     ):
         actual_ledger = ledger or self._ledger(root)
         activation = _Activation(binding=self.binding, plan_sha256=self.plan.plan_sha256, mismatch=activation_mismatch)
@@ -397,22 +549,20 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             timed_out=serving_timed_out,
         )
         rollback = _Rollback() if rollback_port is None else rollback_port
-        evaluator = _AdmissionEvaluator(self.plan.plan_sha256)
-        request = Stage4LiveRunRequest(
-            admission_request=self._admission_request(),
-            schedule=self.schedule,
-            grant=object(), trust_store=object(), approval_context=object(),
-            activation_timestamps=ActivationTimestamps(
-                "2026-08-04T20:00:00Z", "2026-08-04T20:00:01Z", "2026-08-04T20:00:02Z", "2026-08-04T20:00:03Z"
-            ),
-            run_id="exp009-live-runner-test",
+        actual_evaluator = evaluator or _AdmissionEvaluator()
+        actual_provider = provider or _FreshAuthorityProvider(
+            (self.lkg_pair, self.lkg_pair)
         )
+        request = self._live_request()
         runner = Stage4LiveRunner(
             request=request, activation=activation, authority=authority, runtime_probe=runtime,
             serving=serving, vector_source=Dataset002ScheduleVectorSource(
                 _Source(fail_on_first_call=source_failure)
             ),
-            ledger=actual_ledger, rollback=rollback, admission_evaluator=evaluator,
+            ledger=actual_ledger,
+            rollback=rollback,
+            lkg_authority_provider=actual_provider,
+            admission_evaluator=actual_evaluator,
             monotonic_ns=clock or _Clock(), utc_now=lambda: "2026-08-04T20:00:04Z",
         )
         return runner, activation, authority, runtime, serving, rollback, actual_ledger
@@ -444,7 +594,11 @@ class CanaryLiveRunnerTests(unittest.TestCase):
 
     def test_complete_schedule_is_exactly_serial_and_always_finally_rolls_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(Path(directory))
+            provider = _FreshAuthorityProvider((self.lkg_pair, self.lkg_pair))
+            evaluator = _AdmissionEvaluator()
+            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                Path(directory), provider=provider, evaluator=evaluator
+            )
             result = runner.run()
             self.assertEqual(result.dispatched_slot_count, 1200)
             self.assertEqual(ledger.progress().status, Stage4LedgerStatus.COMPLETE)
@@ -457,6 +611,131 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             self.assertEqual(len(rollback.calls), 1)
             self.assertIs(rollback.calls[0].trigger, RollbackTrigger.COMPLETED_CANARY)
             self.assertEqual(result.reason_codes, ())
+            self.assertEqual(provider.calls, 2)
+            self.assertEqual(len(evaluator.calls), 2)
+            self.assertIs(evaluator.calls[0].lkg_authority, provider.returned[0])
+            self.assertIs(evaluator.calls[1].lkg_authority, provider.returned[1])
+            self.assertIsNot(evaluator.calls[0], evaluator.calls[1])
+            first_receipt = result.first_admission.receipt
+            second_receipt = result.post_activation_admission.receipt
+            assert first_receipt is not None and second_receipt is not None
+            self.assertEqual(
+                first_receipt.checkpoint_c_evaluation_digest,
+                self.authority.canonical_evaluation_digest,
+            )
+            self.assertEqual(
+                first_receipt.d2_canonical_record_digest,
+                self.lkg_pair.verified_latest_reference.canonical_record_digest,
+            )
+            self.assertNotEqual(
+                first_receipt.runtime_observed_at_utc,
+                second_receipt.runtime_observed_at_utc,
+            )
+            self.assertNotEqual(
+                first_receipt.canonical_receipt_digest,
+                second_receipt.canonical_receipt_digest,
+            )
+            self.assertTrue(first_receipt.stable_lineage_matches(second_receipt))
+
+    def test_first_authority_refresh_failure_prevents_activation_and_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            provider = _FreshAuthorityProvider((self.lkg_pair,), fail_at_call=1)
+            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                Path(directory), provider=provider
+            )
+            result = runner.run()
+            records = ledger.records()
+        self.assertEqual(result.reason_codes, ("INITIAL_ADMISSION_REFUSED",))
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(activation.calls, [])
+        self.assertEqual(serving.calls, [])
+        self.assertEqual(rollback.calls, [])
+        self.assertEqual(records, ())
+
+    def test_second_authority_refresh_failure_rolls_back_without_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            provider = _FreshAuthorityProvider(
+                (self.lkg_pair, self.lkg_pair), fail_at_call=2
+            )
+            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                Path(directory), provider=provider
+            )
+            result = runner.run()
+            records = ledger.records()
+        self.assertEqual(result.reason_codes, ("POST_ACTIVATION_ADMISSION_REFUSED",))
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(len(activation.calls), 1)
+        self.assertEqual(serving.calls, [])
+        self.assertEqual(len(rollback.calls), 1)
+        self.assertEqual(records, ())
+
+    def test_changed_verified_d2_head_after_activation_rolls_back_without_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            provider = _FreshAuthorityProvider((self.lkg_pair, self.other_lkg_pair))
+            evaluator = _AdmissionEvaluator()
+            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                Path(directory), provider=provider, evaluator=evaluator
+            )
+            result = runner.run()
+            records = ledger.records()
+        self.assertEqual(
+            result.reason_codes, ("POST_ACTIVATION_STABLE_LINEAGE_MISMATCH",)
+        )
+        self.assertEqual(provider.calls, 2)
+        self.assertIs(evaluator.calls[0].lkg_authority, self.lkg_pair)
+        self.assertIs(evaluator.calls[1].lkg_authority, self.other_lkg_pair)
+        self.assertEqual(serving.calls, [])
+        self.assertEqual(len(rollback.calls), 1)
+        self.assertEqual(records, ())
+
+    def test_every_changed_stable_receipt_lineage_rolls_back_without_dispatch(self) -> None:
+        changes = {
+            "checkpoint_c_evaluation_digest": _sha("changed-c"),
+            "d2_canonical_record_digest": _sha("changed-d2"),
+            "d2_sequence_number": 99,
+            "stage4_evidence_binding_sha256": _sha("changed-evidence"),
+            "execution_schedule_sha256": _sha("changed-schedule"),
+            "route_plan_sha256": _sha("changed-plan"),
+            "policy_audit_id": "changed-policy-audit",
+            "configuration_identity": "changed-configuration",
+            "data_identity": "changed-data",
+            "hnsw_identity": "changed-hnsw",
+            "evaluated_lkg_ef": 200,
+            "lkg_search_configuration_digest": _sha("changed-lkg-config"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, (field, value) in enumerate(changes.items()):
+                with self.subTest(field=field):
+                    case_root = root / str(index)
+                    case_root.mkdir()
+                    evaluator = _AdmissionEvaluator(mutate_second=(field, value))
+                    runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                        case_root, evaluator=evaluator
+                    )
+                    result = runner.run()
+                    self.assertIn(
+                        result.reason_codes,
+                        (
+                            ("POST_ACTIVATION_STABLE_LINEAGE_MISMATCH",),
+                            ("POST_ACTIVATION_ADMISSION_REFUSED",),
+                        ),
+                    )
+                    self.assertEqual(serving.calls, [])
+                    self.assertEqual(len(rollback.calls), 1)
+                    self.assertEqual(ledger.records(), ())
+
+    def test_noncanonical_admission_receipt_refuses_before_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evaluator = _AdmissionEvaluator(corrupt_first=True)
+            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                Path(directory), evaluator=evaluator
+            )
+            result = runner.run()
+        self.assertEqual(result.reason_codes, ("INITIAL_ADMISSION_REFUSED",))
+        self.assertEqual(activation.calls, [])
+        self.assertEqual(serving.calls, [])
+        self.assertEqual(rollback.calls, [])
 
     def test_claim_refusal_and_slot_failure_each_contain_once_without_later_search(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -592,20 +871,13 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             self.assertEqual(len(invalid_rollback.calls), 1)
 
     def test_request_rejects_noncanonical_run_id_and_invalid_failure_timestamp(self) -> None:
+        request = self._live_request()
         values = {
-            "admission_request": self._admission_request(),
-            "schedule": self.schedule,
-            "grant": object(),
-            "trust_store": object(),
-            "approval_context": object(),
-            "activation_timestamps": ActivationTimestamps(
-                "2026-08-04T20:00:00Z",
-                "2026-08-04T20:00:01Z",
-                "2026-08-04T20:00:02Z",
-                "2026-08-04T20:00:03Z",
-            ),
-            "run_id": "exp009-live-runner-test",
+            field: getattr(request, field)
+            for field in Stage4LiveRunRequest.__dataclass_fields__
         }
+        self.assertNotIn("admission_request", values)
+        self.assertNotIn("lkg_authority", values)
         with self.assertRaises(ValueError):
             Stage4LiveRunRequest(**(values | {"run_id": " exp009"}))
         with self.assertRaises(ValueError):
@@ -645,7 +917,14 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             if isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
-        forbidden = {"pymilvus", "vdbench.milvus", "vdbench.milvus_serving", "vdbench.canary_approval"}
+        forbidden = {
+            "pymilvus",
+            "vdbench.milvus",
+            "vdbench.milvus_serving",
+            "vdbench.canary_approval",
+            "vdbench.lkg_phase3_persistence",
+            "vdbench.lkg_qualification_evaluation_ledger",
+        }
         self.assertTrue(forbidden.isdisjoint(imported), imported)
 
 
