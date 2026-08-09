@@ -1665,3 +1665,290 @@ permit any candidate query.
 - This remains evidence-integrity work only: it establishes no
   `QualificationResult`, authorizes no grant, installs no route, and permits
   no candidate query. ADR-008's overall acceptance status is unchanged.
+
+### EXP-010: Calibrated empirical response-profile contract and prospective replay validation
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+Risk level: CRITICAL
+Registration date: 2026-08-09
+Governing decision: ADR-009 (Accepted; implementation and execution remain pending)
+
+#### Objective
+
+Validate the pure statistics, canonical identity/lineage, fail-closed behavior,
+restart/replay determinism, and prospective empirical applicability of
+ADR-009's `CalibratedResponseProfile` before any profile may be supplied to a
+candidate-capable policy evaluation.
+
+This experiment collects predictive evidence only. It does not qualify a
+last-known-good value, satisfy admission, authorize or sign a grant, install a
+route, execute a candidate canary, mutate Milvus, or prove a universal
+freshness interval.
+
+#### Pre-registered hypotheses
+
+- **H1 — Statistical conformance:** The implementation reproduces ADR-009's
+  exact sixteen-claim family, Hoeffding recall bounds, nearest-rank p95, and
+  exact binomial/order-statistic latency ranks for hand-computable and
+  independently generated fixtures.
+- **H2 — Atomic lineage:** Only one complete canonical profile whose four `ef`
+  points share exact workload/search/index/data/control/environment/evidence
+  lineage is accepted; mixed or tampered points fail closed.
+- **H3 — Prospective empirical applicability:** Under an unchanged declared
+  stationary workload and control/environment profile, a profile calibrated
+  from the frozen post-trigger segment contains the later untouched aggregate
+  empirical recall means and p95 latencies for its exact cell. This is a
+  transportability diagnostic, not proof of nominal confidence coverage or a
+  universal TTL.
+- **H4 — Unsupported-domain refusal:** Missing, stale, incompatible,
+  insufficient, interpolated, extrapolated, substituted, malformed, or
+  unverified evidence cannot produce an applicable profile.
+- **H5 — Authority separation:** No result or artifact from EXP-010 can be
+  consumed as Phase-3 qualification, Stage-4 admission, approval, routing, or
+  execution authority, and no candidate-capable policy path is enabled.
+
+#### Validation cells and supported `ef` family
+
+The first registered validation matrix contains two independent cells:
+
+1. `L2 / target-075`, matching the project's frozen reference transition; and
+2. `COSINE / target-025`, providing a separately calibrated cross-metric cell.
+
+Each cell is evaluated independently at the exact ordered family
+`(200, 400, 800, 1600)`. Evidence is never pooled across cells. Other metric /
+threshold-stratum combinations remain unsupported until separately registered
+and measured. `ef=100` remains sentinel-only and is not a profile point.
+
+#### Population construction and disjointness
+
+For each cell, one detector trigger freezes an immutable trigger-evidence
+boundary. All profile inputs occur strictly after that boundary. Calibration
+membership, role assignment, canonical order, and payload bindings are frozen
+before any response-profile replay result at a supported `ef` is inspected or
+used for selection. Existing foreground served results may exist but may not
+influence inclusion, exclusion, ordering, replacement, or role assignment.
+
+1. The first subsequent complete 200-query window is the warm-up population.
+   All 200 queries are replayed once at each supported `ef`; none contributes
+   to a point estimate or bound.
+2. The next six globally consecutive complete 200-query windows form exactly
+   1,200 measured calibration observations.
+3. Prospective validation uses the next twenty disjoint six-window segments,
+   each containing exactly 1,200 observations. For each segment, membership,
+   role assignment, canonical order, and payload bindings are frozen before any
+   response-profile replay result at a supported `ef` is inspected or used for
+   selection. Existing foreground served results may exist but may not
+   influence inclusion, exclusion, ordering, replacement, or role assignment.
+   Their combined 24,000 observations form one separately reported later
+   aggregate in addition to the twenty segment-level diagnostics.
+4. Detector evidence, warm-up evidence, measured calibration evidence,
+   prospective validation evidence, Phase-3 qualification evidence, Stage-4
+   evidence, and historical EXP-001 evidence are pairwise disjoint by canonical
+   observation/query ID and query-payload digest.
+5. Every measured/validation population requires distinct canonical query IDs
+   and distinct query-payload digests. Repeated vectors or threshold/search
+   payloads under invented IDs are not treated as independent and invalidate
+   that population.
+6. No observation may be dropped, replaced, retried as a new observation, or
+   moved between roles after a response-profile replay result at a supported
+   `ef` is inspected or used for selection.
+
+If a live workload cannot supply these populations honestly, the corresponding
+stage is `INCOMPLETE`; synthetic duplication is prohibited.
+
+#### Frozen replay and measurement protocol
+
+- Master deterministic seed: NumPy `Generator(PCG64(20260810))`.
+- Schedule derivation binds the master seed, cell identifier, role/segment ID,
+  workload-manifest digest, and source revision through the project's canonical
+  length-prefixed tuple serialization and SHA-256-derived unsigned 64-bit seed.
+- In v1 one query is exactly one block. Deterministically permute the canonical
+  query order; then, independently for each query, deterministically permute
+  `(200, 400, 800, 1600)` and execute all four values exactly once before
+  proceeding to the next query. The realized ordered sequence of
+  `(query_id, ef)` pairs and all seed-derivation inputs are persisted and bound
+  by `replay_schedule_sha256` and `control_profile_sha256`.
+- Execution is synchronous and serial with one client and concurrency `1`.
+  No retry is permitted. The exact Milvus consistency level, timeout, result
+  limit, radius/range filter, client/server versions, Docker/resource controls,
+  timing clock, and background-workload disclosure are frozen in the control
+  and environment manifests.
+- Recall-bound applicability requires independent bounded query observations;
+  latency order-statistic applicability requires IID/exchangeable latencies
+  from one unchanged distribution at each `ef`. Randomized blocking, split-half
+  summaries, lag diagnostics, and pre/post resource snapshots are recorded as
+  assumption diagnostics but cannot prove those assumptions. Unsupported
+  independence, exchangeability, stationarity, or no-interference makes the
+  profile `INCOMPLETE`.
+- Oracle computation, artifact serialization, health checks, and identity
+  capture occur outside the measured client-search timing interval. Client
+  latency begins immediately before the search API invocation and ends
+  immediately after the complete response has returned and been materialized
+  into the adapter's immutable hit representation.
+- Recall uses the independent float64 exact oracle and the contract's capped
+  range-query recall semantics. FLAT/oracle disagreement, threshold violation,
+  result-cap inconsistency, load/identity change, timeout, exception, or missing
+  observation invalidates the complete cell profile.
+- A process restart requires fresh schema/evidence verification and replay of
+  the complete warm-up role before measurement resumes. Partial in-memory
+  statistics are never trusted or merged with a restarted run.
+
+The live/read-only stage, if later authorized, must use a newly captured
+post-trigger population. DATASET-001, DATASET-002, DATASET-003, detector,
+Phase-3, Stage-4, and EXP-001 records may verify identities or provide
+historical context but are not predictive observations for EXP-010.
+
+#### Frozen statistical evaluation
+
+For every cell and every exact `ef`, the profile evaluator consumes exactly
+1,200 capped-recall values and 1,200 client latencies.
+
+The family contains exactly sixteen one-sided claims with
+`alpha_family=0.05` and `alpha_cell=0.05/16=0.003125`.
+
+Recall:
+
+```
+mean = math.fsum(values_in_canonical_workload_order) / 1200
+epsilon = sqrt(log(320) / 2400) = 0.04902516783837398
+LCB = max(0.0, mean - epsilon)
+UCB = min(1.0, mean + epsilon)
+```
+
+Every recall observation is a finite IEEE-754 binary64 value in canonical
+workload order. Point estimates and bounds are recomputed from raw observations;
+caller-supplied numeric constants are never trusted. Computed binary64 values
+are persisted through the repository's canonical serialization contract, and
+reader verification must reject any disagreement.
+
+Latency uses nondecreasing one-based order statistics with ties retained:
+
+```
+point p95 = x_(1140)
+LCB p95   = x_(1118)
+UCB p95   = x_(1161)
+```
+
+The lower and upper ranks must be independently reproduced by exact binomial
+inversion for `B~Binomial(1200,0.95)` under ADR-009's largest-lower-rank and
+smallest-upper-rank conventions. Approximate normal ranks, bootstrap intervals,
+interpolated quantiles, different alpha allocation, silent clipping of latency,
+or a non-1,200 sample are contract failures.
+
+The prospective stage evaluates the frozen calibration profile without refit:
+
+- report, for each of twenty later segments, whether its exact realized recall
+  mean and nearest-rank p95 lie within the corresponding calibration bounds for
+  all four `ef` values;
+- report per-claim and all-sixteen simultaneous empirical coverage counts;
+- report the exact one-sided 95% Clopper-Pearson bounds for those descriptive
+  counts; and
+- compare the calibration profile against the exact empirical mean/p95 of the
+  combined 24,000-observation later aggregate.
+
+These prospective checks are empirical transportability diagnostics. They do
+not convert confidence intervals for distribution parameters into prediction
+intervals for future sample statistics, do not prove stationarity, and do not
+establish a universal expiry interval.
+
+#### Required adversarial cases
+
+Each case must fail closed with a stable reason before policy candidate action:
+
+1. stale/expired-under-test-policy profile;
+2. metric or threshold-stratum mismatch;
+3. HNSW/index or data identity mismatch;
+4. search-configuration/radius/range-filter/limit/consistency mismatch;
+5. workload, ordered-ID, query-payload, control-profile, or environment mismatch;
+6. estimator-contract/source-revision/evidence-digest mismatch;
+7. missing, additional, duplicate, or unsupported `ef`;
+8. interpolation, extrapolation, or nearest-`ef` substitution attempt;
+9. fewer or more than 1,200 observations for any claim;
+10. duplicate IDs/payloads, missing observations, retries, or post-result role
+    changes;
+11. non-finite, boolean, negative-latency, or out-of-range recall values;
+12. point/bound/rank inconsistency;
+13. malformed timestamps, schema version, canonical JSON, or profile digest;
+14. mixed points from two otherwise valid profiles;
+15. raw evidence/profile tamper and restart-chain tamper;
+16. object-forged/non-concrete verified-profile values;
+17. caller-supplied `validated_model=True` or free-form provenance presented as
+    authority; and
+18. attempts to use profile evidence as Phase-3, admission, grant, route, or
+    execution authority.
+
+Profile-digest adversarial coverage must specifically verify that
+`profile_sha256` is stored outside the strict `profile_payload`, equals
+`SHA256(b"VD::CALIBRATED_RESPONSE_PROFILE::V1\x00" +
+vdbench.artifacts.canonical_json_bytes(profile_payload)).hexdigest()`, and fails
+closed when either payload or detached digest is altered. A digest included in
+its own payload is an invalid schema.
+
+#### Acceptance and failure criteria
+
+EXP-010 may report **CONTRACT IMPLEMENTATION VERIFIED** only if:
+
+- every hand-computable formula/rank fixture matches ADR-009 exactly;
+- every complete profile contains exactly 4,800 measured searches over 1,200
+  distinct queries and the exact four-`ef` family;
+- all identity, evidence, schedule, canonical-digest, and restart checks pass;
+- every required adversarial case fails closed with no candidate action;
+- independent replay of the same immutable evidence produces byte-identical
+  canonical profile output and digest; and
+- raw commands, environment/control manifests, evidence manifests, profile,
+  checksums, and test output are preserved for review.
+
+EXP-010 may additionally report **PROSPECTIVE TRANSPORTABILITY SUPPORTED FOR THE
+MEASURED CELL AND CONTROL PROFILE** only if all sixteen calibration intervals
+contain the corresponding combined later-aggregate empirical values and all
+twenty segment-level results, coverage counts, misses, and Clopper-Pearson
+bounds are reported unchanged. A miss does not permit post-result refitting,
+changing alpha/ranks, dropping a segment, or redefining the target; it produces
+`INCONCLUSIVE` or `NOT SUPPORTED` for transportability under the pre-registered
+rule.
+
+Even if both statuses are achieved, candidate-capable policy consumption
+remains disabled until an explicit governed freshness/invalidation rule and
+mechanical policy-chain profile-digest binding are separately accepted and
+verified. EXP-010 cannot by itself establish either.
+
+Immediate failure/incomplete conditions include any population overlap,
+identity/control/environment drift, query failure, incomplete evidence,
+statistical mismatch, tamper, non-canonical artifact, missing checksum, dirty or
+unrecorded source revision, or unreviewed protocol deviation.
+
+No interval, rank, sample size, validation target, acceptance threshold, or
+freshness rule may be tuned after results are observed. A change requires a new
+estimator-contract version and a newly pre-registered experiment/result.
+
+#### Optional non-authorizing comparators
+
+The following may be recorded only as explicitly non-authorizing comparator or
+reviewer evidence in EXP-010. They cannot replace, repair, or override v1:
+
+- empirical-Bernstein recall bounds;
+- paired adjacent-transition recall/latency uncertainty;
+- `ef` monotonicity diagnostics without monotonic repair;
+- canonical-digest cache and human reviewer tooling; and
+- learned response models evaluated later against the empirical replay
+  baseline.
+
+Comparator output must use separate artifact names and status fields and must
+never populate a v1 policy profile.
+
+#### Required evidence bundle
+
+Each executed stage must record:
+
+- source revision and clean/dirty state;
+- exact invocation and complete stdout/stderr;
+- dataset/workload roles and disjointness proof;
+- raw observation and schedule/control/environment manifests;
+- all file and canonical-record SHA-256 digests;
+- exact point/bound/rank outputs for every cell and `ef`;
+- prospective segment and aggregate results without omission;
+- adversarial-case outputs;
+- restart/replay result and canonical profile digest comparison;
+- explicit no-candidate/no-admission/no-grant/no-route/no-mutation flags; and
+- limitations and all deviations, including an `INCOMPLETE` result when the
+  contract cannot be met.

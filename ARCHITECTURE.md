@@ -2357,6 +2357,315 @@ research contract), and the accepted Phase-3 D3 Stage-4 admission amendment.
 
 ---
 
+### ADR-009: Define a calibrated empirical response profile for predictive `ef` evidence
+
+Status: Accepted
+Date: 2026-08-09
+Risk level: CRITICAL
+Evidence status: CONTRACT DRAFT ONLY — NOT IMPLEMENTED — NOT RUN
+Acceptance note (2026-08-09): The reviewed R0 contract is architecture-approved,
+including its detached profile digest, result-independent population freeze,
+deterministic binary64 recall arithmetic, and exact one-query blocking schedule.
+
+Problem:
+
+ADR-002 defines `ResponseEstimate` as policy input for prospective HNSW `ef`
+choices, including fields named `recall_lower_bound_95` and
+`latency_upper_bound_95_ms`. The committed implementation validates numeric
+shape and ordering, but no production component computes those values and no
+accepted contract binds them to a sampling population, estimator, workload,
+index, environment, source revision, or freshness interval. A caller-supplied
+`validated_model=True` boolean and non-empty free-form provenance string cannot
+establish statistical validity.
+
+This gap is separate from Phase-3 last-known-good qualification. Phase-3 is
+observed qualification evidence over its own governed workload. It must never
+be reused, reinterpreted, or relabelled as predictive response evidence.
+Likewise, Stage-4 recall/latency evidence, EXP-001 measurements, detector input,
+admission receipts, grants, and execution ledgers have their own populations
+and authorities; none may silently become a response profile.
+
+Decision drivers:
+
+- Make every nominal 95% bound falsifiable and reproducible.
+- Keep predictive evidence atomic so entries from different runs cannot be
+  mixed into one policy evaluation.
+- Make workload, search, index, data, environment, and source compatibility
+  mechanically checkable.
+- Preserve deterministic adjacent-step policy selection; a response estimator
+  evaluates a candidate but does not invent a new action space.
+- Fail closed when evidence is missing, stale, incompatible, unsupported, or
+  statistically incomplete.
+- Keep prediction informational: it may inform policy but never becomes LKG
+  qualification, admission, grant, route, or execution authority.
+
+Alternatives considered:
+
+| Option | Statistical integrity | Operational cost | Main risk | Decision |
+|---|---|---|---|---|
+| A — Keep `Mapping[int, ResponseEstimate]` plus caller-supplied `validated_model` and provenance | No evidence lineage or enforceable confidence construction | Low | Fabricated or mixed estimates can look valid | Rejected |
+| B — Populate a deterministic table from EXP-001 | Reproducible only for the historical EXP-001 workload/environment | Low | Stale, non-transportable predictive claims | Rejected |
+| C — Fit a learned/parametric model immediately | Potentially efficient after substantial calibration | Medium/high | Misspecification, extrapolation, and uncalibrated tail risk | Deferred comparator only |
+| D — Build one exact-cell empirical profile from a disjoint post-trigger replay | Directly measurable, auditable, and requires no interpolation | Higher read-only query cost | Conditional stationarity and environment transportability remain explicit assumptions | Chosen for v1 |
+
+Decision:
+
+#### Atomic profile and supported domain
+
+1. The v1 policy input is one immutable, canonical
+   `CalibratedResponseProfile`, not `Mapping[int, ResponseEstimate]`. It contains
+   one shared evidence/identity envelope and exactly one response point for each
+   `ef` in the ordered supported family `(200, 400, 800, 1600)`.
+2. The supported family is exact. v1 performs no interpolation, extrapolation,
+   nearest-value substitution, monotonic repair, cross-metric transfer, or
+   cross-stratum transfer. A missing or additional `ef` invalidates the profile.
+3. `validated_model` is removed as an authority signal. No free-form provenance
+   string can make a profile usable. Validity follows only from strict schema,
+   evidence, estimator, identity, digest, and freshness verification.
+4. Changing the supported `ef` family, number of confidence claims, confidence
+   allocation, estimands, formulas, sample population, or rank convention
+   requires a new estimator-contract version. Existing profiles retain their
+   historical meaning and are never silently recomputed under new semantics.
+
+#### Calibration population and replay protocol
+
+1. One profile uses exactly 1,200 distinct post-trigger measured query
+   observations. They are collected only after the detector evidence that
+   triggered calibration and are disjoint by canonical observation/query ID and
+   query-payload digest from all detector evidence and all Phase-3 qualification
+   evidence. Evidence already consumed by Stage-4 or historical EXP-001 is not
+   eligible.
+2. Calibration membership, role assignment, canonical order, and payload
+   bindings are frozen before any response-profile replay result at a supported
+   `ef` is inspected or used for selection. Existing foreground served results
+   may already exist, but they may not influence inclusion, exclusion,
+   ordering, replacement, or role assignment. The frozen population binds the
+   ordered IDs, vectors, threshold radii, range filters, limits, and
+   metric/stratum. Duplicate IDs, duplicate payloads represented as independent
+   observations, omissions, replacements, retries-as-new-observations, or
+   post-result selection invalidate the profile.
+3. Warm-up observations are disjoint from the 1,200 measured observations and
+   are never included in a point estimate or confidence bound. Their count,
+   source, ordering, and exclusion are part of the control profile.
+4. Each measured query is one replay block against the same immutable
+   data/index state. First deterministically permute the 1,200-query canonical
+   workload order. Then, independently for each query, deterministically
+   permute `(200, 400, 800, 1600)` and execute all four values exactly once
+   before proceeding to the next query. The complete realized ordered sequence
+   of `(query_id, ef)` pairs and its seed-derivation inputs are bound by the
+   replay-schedule/control-profile digest. The schedule is frozen before any
+   response-profile replay result is inspected or used for selection.
+   Concurrency, consistency level, timeout, timing boundaries, retry
+   prohibition, warm-up, and schedule algorithm/seed lineage are bound by the
+   same control profile.
+5. Recall is capped range-query recall computed against the independent exact
+   oracle. Latency is client-observed elapsed time under the bound execution and
+   environment profile. Neither value may be generalized to another workload,
+   concurrency level, client/runtime, host, Milvus state, or environment without
+   new compatible evidence.
+6. A failed/timed-out query, threshold violation, FLAT/oracle disagreement,
+   identity change, service/load failure, non-finite observation, incomplete
+   schedule, or result-count mismatch invalidates the complete profile; v1 does
+   not impute or drop observations.
+
+#### Statistical contract
+
+Let `E = (200, 400, 800, 1600)`, `n = 1200`, family alpha
+`alpha_family = 0.05`, and
+`alpha_cell = alpha_family / (4 * |E|) = 0.05 / 16 = 0.003125`.
+The v1 profile makes exactly sixteen one-sided claims:
+
+```
+4 ef values *
+  {recall LCB, recall UCB, p95-latency LCB, p95-latency UCB}
+```
+
+Bonferroni allocation therefore gives simultaneous family-wise confidence of
+at least 95% without assuming independence among `ef` values or among the
+sixteen claims. The confidence target is conditional on the declared sampling,
+stationarity, identity, and control-profile assumptions.
+
+The recall construction requires the 1,200 query observations to be
+independent bounded draws from the declared workload regime. The exact latency
+order-statistic construction requires the 1,200 latency observations at each
+`ef` to be IID/exchangeable draws from one unchanged latency distribution under
+the bound control/environment profile. Block randomization mitigates temporal
+confounding but does not prove either assumption. If independence,
+exchangeability, stationarity, or no-interference is unsupported, the affected
+confidence claim and therefore the complete profile are unavailable.
+
+For each `ef=e`, let capped recalls in the frozen canonical workload order be
+the finite IEEE-754 binary64 values `r[e,1], ..., r[e,n]` in `[0,1]`. The recall
+point estimate and one-sided Hoeffding bounds are computed, never accepted as
+caller-supplied constants:
+
+```
+mean_recall[e] = math.fsum((r[e,1], ..., r[e,1200])) / 1200
+epsilon = sqrt(log(1 / alpha_cell) / (2 * n))
+        = sqrt(log(320) / 2400)
+        = 0.04902516783837398
+recall_lcb[e] = max(0.0, mean_recall[e] - epsilon)
+recall_ucb[e] = min(1.0, mean_recall[e] + epsilon)
+```
+
+Inputs are evaluated as finite float64 values; booleans are not numeric input.
+Clipping occurs only at the mathematical recall support `[0,1]`. Exactly 1,200
+valid observations are required for every `ef`; another count is
+`INSUFFICIENT_EVIDENCE`, not a profile with a modified margin. The computed
+binary64 point and formula-derived bounds are bound using the repository's
+canonical serialization contract; verification recomputes them from canonical
+ordered observations and rejects any stored-value disagreement.
+
+For latency, let non-negative finite client latencies sorted in nondecreasing
+order be `x[e,(1)] <= ... <= x[e,(n)]`, using one-based order-statistic ranks.
+Equal values remain separate observations, are not jittered, and may make two
+bounds equal. The point estimate uses the nearest-rank quantile convention:
+
+```
+p95_latency[e] = x[e,(ceil(0.95 * n))] = x[e,(1140)]
+```
+
+For the exact distribution-free order-statistic bounds, let
+`B ~ Binomial(n=1200, p=0.95)`. Define:
+
+```
+k_lower = max{k in 1..n : P(B >= k) >= 1 - alpha_cell} = 1118
+k_upper = min{k in 1..n : P(B <= k - 1) >= 1 - alpha_cell} = 1161
+p95_latency_lcb[e] = x[e,(1118)]
+p95_latency_ucb[e] = x[e,(1161)]
+```
+
+These ranks use the left quantile `q(p) = inf{x : F(x) >= p}`. The lower bound
+uses the largest qualifying rank and the upper bound uses the smallest
+qualifying rank; implementations must not round an approximate normal
+quantile. Exact binomial tail/CDF inversion determines the rank. If a future
+contract's sample size/confidence allocation yields no rank in `1..n`, the
+bound is unavailable and evaluation fails closed. Latency values are not
+clipped; negative, non-finite, missing, or non-numeric values invalidate the
+profile.
+
+The formulas above provide confidence statements for the declared workload
+distribution and execution profile under their assumptions. They do not prove
+that a workload remains stationary, that replay latency transports to arbitrary
+production traffic, or that any universal freshness interval exists.
+
+#### Identity and lineage contract
+
+The strict canonical `profile_payload` contains exactly:
+
+- `schema_version` and `estimator_contract_version`;
+- `metric`, `threshold_stratum`, and exact ordered `supported_efs`;
+- `search_configurations`, containing one complete validated HNSW
+  `SearchConfiguration` per `ef`, including radius, derived range filter,
+  limit, consistency level, and index track;
+- `hnsw_index_identity` and `data_identity`;
+- `workload_manifest_sha256` and `ordered_query_payload_sha256`;
+- `replay_schedule_sha256`, binding the realized `(query_id, ef)` order and
+  seed derivation, and `control_profile_sha256`;
+- `environment_manifest_sha256`, including server/client/runtime and resource
+  controls material to the latency claim;
+- `raw_evidence_sha256`, identifying the verified raw-evidence manifest or
+  ledger chain head;
+- `source_revision`;
+- `calibration_started_at_utc`, `calibration_completed_at_utc`, and
+  `generated_at_utc`; and
+- `estimates`, an `ef`-ordered array whose entries contain exactly `ef`,
+  `observation_count`, `mean_recall`, `recall_lcb`, `recall_ucb`,
+  `p95_latency_ms`, `p95_latency_lcb_ms`, and `p95_latency_ucb_ms`.
+
+`profile_sha256` is not a member of `profile_payload`. It is stored alongside
+that payload and is exactly:
+
+```
+SHA256(
+  b"VD::CALIBRATED_RESPONSE_PROFILE::V1\x00"
+  + canonical_json_bytes(profile_payload)
+).hexdigest()
+```
+
+`canonical_json_bytes` is exactly `vdbench.artifacts.canonical_json_bytes`, the
+repository's shared canonical JSON serialization contract. Verification
+reconstructs the exact payload, recomputes the domain-separated digest, and
+compares it to the stored `profile_sha256`.
+Caller-supplied, fixed-point, self-referential, or digest-included payload
+semantics are invalid.
+
+A mutable collection name may be retained as operational metadata but never
+substitutes for HNSW/index and data identity. `search_configuration_digest` is
+not equated with any opaque Stage-4 `configuration_identity`. No FLAT identity,
+Phase-3 authority, admission receipt, approval grant, or execution receipt is
+fabricated from this profile.
+
+#### Freshness and invalidation
+
+Identity, search-configuration, workload, control-profile, environment, source-
+revision, or estimator-version incompatibility invalidates a profile
+immediately. A later detected regime change also invalidates a profile for the
+new regime.
+
+EXP-010 may measure prospective stability and inform a future governed
+freshness policy, but it cannot statistically prove a universal time-to-live.
+Until an explicit expiry/invalidation rule is separately reviewed and accepted,
+no profile is candidate-capable. A timestamp or caller-selected `expires_at`
+value cannot create freshness by itself.
+
+#### Policy consumption
+
+1. Actual active-canary safety and mandatory rollback evaluation has precedence
+   and does not depend on a response profile.
+2. For inactive drift evaluation, predictive point estimates support only the
+   existing deterministic direction and utility calculations. A profile does
+   not rank arbitrary `ef` values or broaden the adjacent-step action space.
+3. Safety uses conservative bounds: candidate recall floor uses candidate LCB;
+   paired recall degradation and the L2 exception use candidate LCB against LKG
+   UCB; absolute latency uses candidate p95 UCB; relative latency uses candidate
+   p95 UCB against LKG p95 LCB.
+4. Missing, incomplete, stale, identity-mismatched, unsupported, malformed, or
+   non-canonical profile evidence never yields `START_CANARY`. When deterministic
+   direction is known, policy may emit a non-actuating recommendation with a
+   stable refusal reason; otherwise it emits `NO_CHANGE`.
+5. Before candidate-capable policy consumption is enabled, the canonical
+   profile digest must be mechanically bound into the canonical policy evidence
+   chain. Free-form safety-gate detail or audit prose is insufficient. The exact
+   downstream schema mechanism requires separate review; no Phase-3,
+   admission, grant, route, or execution schema is changed by this ADR draft.
+6. A response profile is predictive evidence only. It cannot qualify LKG,
+   satisfy Stage-4 admission, authorize or sign a grant, install a route, or
+   prove execution/rollback success.
+
+Consequences:
+
+- The current `ResponseEstimate` mapping and its `validated_model`/free-form
+  provenance convention are superseded for future production use once ADR-009
+  is accepted and implemented. Existing deterministic fixtures remain test-only
+  and cannot become candidate authority.
+- v1 is intentionally conservative and may refuse every transition. That is a
+  valid safety outcome, not permission to tune intervals after observing data.
+- Collection and replay cost increases to at least 4,800 measured HNSW searches
+  plus disjoint warm-up work per profile, but produces exact per-`ef` evidence
+  without interpolation.
+- Empirical-Bernstein recall bounds, paired transition-specific uncertainty,
+  monotonicity diagnostics, digest caches/reviewer tools, and learned response
+  models may be evaluated as non-authorizing comparators. None may silently
+  replace the v1 estimator.
+
+Implementation and verification gate:
+
+ADR-009 must be accepted and EXP-010 must be pre-registered before code. Pure
+statistics/schema verification precedes durable evidence storage, policy
+migration, any read-only live producer, and any candidate-capable integration.
+Candidate-capable policy remains disabled until EXP-010 evidence is reviewed,
+an explicit freshness rule is accepted, and profile-digest propagation is
+mechanically designed and verified.
+
+Related decisions: ADR-002 (detector/policy), ADR-003 (statistical naming and
+exchangeability), ADR-004 (provenance), ADR-005 through ADR-007 (monitor and
+shadow observation), ADR-008 (human-gated candidate routing), and the accepted
+Phase-3 authority amendments. ADR-009 changes none of their authority
+boundaries.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
