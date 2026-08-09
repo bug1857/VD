@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from vdbench.actuation import ShadowResult
+from vdbench.actuation import ShadowActuationContext, ShadowResult
 from vdbench.config import IndexTrack, Metric
 from vdbench.exp005_acquisition import (
     Exp005AcquisitionError,
@@ -56,10 +56,13 @@ class _CaptureAdapter:
         self.baseline = baseline
         self.shadow_trace_sink = None
         self.calls: list[tuple[int, ...]] = []
+        self.contexts: list[ShadowActuationContext] = []
         self.forbidden_calls: list[str] = []
         self.fail_on_call: int | None = None
 
     def shadow_candidate(self, *, context, candidate_ef: int, last_known_good_ef: int):
+        self.assert_shadow_context(context)
+        self.contexts.append(context)
         self.calls.append(context.audited_query_ids)
         assert self.shadow_trace_sink is not None
         flat = ShadowIdentityEvidence(
@@ -121,6 +124,13 @@ class _CaptureAdapter:
         )
         succeeded = self.fail_on_call != len(self.calls)
         return ShadowResult(succeeded, 50, 0 if succeeded else 1, 0, 0, succeeded, succeeded)
+
+    @staticmethod
+    def assert_shadow_context(context: object) -> None:
+        if type(context) is not ShadowActuationContext:
+            raise AssertionError("capture requires a ShadowActuationContext")
+        if hasattr(context, "last_known_good"):
+            raise AssertionError("shadow context must not carry qualification")
 
     def start_canary(self, *args, **kwargs):
         self.forbidden_calls.append("start_canary")
@@ -214,6 +224,13 @@ class Exp005AcquisitionTests(unittest.TestCase):
                 capture_id="capture-001",
             )
             self.assertEqual(len(adapter.calls), 12)
+            self.assertEqual(len(adapter.contexts), 12)
+            self.assertTrue(
+                all(
+                    not hasattr(context, "last_known_good")
+                    for context in adapter.contexts
+                )
+            )
             self.assertEqual(adapter.forbidden_calls, [])
             self.assertEqual(len(result.trace_paths), 12)
             self.assertTrue(all(path.is_file() for path in result.trace_paths))

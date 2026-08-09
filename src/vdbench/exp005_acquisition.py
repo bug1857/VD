@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .actuation import ActuationContext, QueryId, ShadowResult
+from .actuation import QueryId, ShadowActuationContext, ShadowResult
 from .artifacts import canonical_json_bytes, sha256_file, verify_dataset_artifacts, write_immutable_json
 from .config import ENV001_PINS, IndexTrack, Metric, THRESHOLD_LABELS
 from .milvus import CollectionIdentity, INDEX_NAME, MilvusHarness
@@ -37,7 +37,6 @@ from .milvus_actuation import (
     StackHealth,
     StackHealthProbeLike,
 )
-from .policy import QualificationResult
 from .runner import load_dataset
 from .shadow_artifacts import load_persisted_shadow_trace_envelope, persist_shadow_trace_envelope
 from .shadow_window import PersistedShadowTraceEnvelope, assemble_shadow_window, hash_shadow_audit_trace
@@ -90,7 +89,7 @@ class _ShadowAdapterLike(Protocol):
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult: ...
@@ -344,8 +343,12 @@ def _partition_query_ids(values: Sequence[QueryId]) -> tuple[tuple[QueryId, ...]
     )
 
 
-def _context(baseline: IdentityBaseline, query_ids: tuple[QueryId, ...], timestamp: str) -> ActuationContext:
-    return ActuationContext(
+def _context(
+    baseline: IdentityBaseline,
+    query_ids: tuple[QueryId, ...],
+    timestamp: str,
+) -> ShadowActuationContext:
+    return ShadowActuationContext(
         metric=baseline.metric,
         threshold_stratum=baseline.threshold_stratum,
         collection_name=baseline.hnsw_binding.expected.collection_name,
@@ -354,9 +357,6 @@ def _context(baseline: IdentityBaseline, query_ids: tuple[QueryId, ...], timesta
         flat_index_identity=baseline.flat_binding.identity_id,
         data_identity=baseline.data_identity,
         audited_query_ids=query_ids,
-        # Shadow acquisition has no policy-qualified LKG. The explicit ef is
-        # passed directly to the read-only adapter and never used for actuation.
-        last_known_good=QualificationResult(qualified=False, ef=None, reasons=("EXP005_SHADOW_ONLY",)),
         occurred_at_utc=timestamp,
     )
 

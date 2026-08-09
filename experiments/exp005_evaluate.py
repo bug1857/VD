@@ -14,7 +14,7 @@ from pathlib import Path
 import tempfile
 from typing import NoReturn
 
-from vdbench.actuation import ActuationContext, SafeActuationBoundary
+from vdbench.actuation import ActuationIdentityContext, SafeActuationBoundary
 from vdbench.actuation_persistence import JsonlAuditSink
 from vdbench.config import Metric
 from vdbench.drift import evaluate_drift_decision
@@ -107,16 +107,14 @@ def _live_capture_no_actuation(completion: object) -> dict[str, object]:
 
 def _context_from_current(
     current: AssembledShadowWindow,
-    qualification: QualificationResult,
-    audit_ids: tuple[int | str, ...],
-) -> ActuationContext:
+) -> ActuationIdentityContext:
     trace = current.envelopes[0].trace
     if trace is None or trace.flat_identity is None or trace.hnsw_identity is None:
         raise EvaluationError("CURRENT_TRACE_IDENTITY_MISSING")
     hnsw_snapshot = trace.hnsw_identity.pre_snapshot
     if hnsw_snapshot is None:
         raise EvaluationError("CURRENT_HNSW_SNAPSHOT_MISSING")
-    return ActuationContext(
+    return ActuationIdentityContext(
         metric=current.metric,
         threshold_stratum=current.threshold_stratum,
         collection_name=hnsw_snapshot.collection_name,
@@ -124,8 +122,6 @@ def _context_from_current(
         index_identity=trace.hnsw_identity.expected_binding_id,
         flat_index_identity=trace.flat_identity.expected_binding_id,
         data_identity=trace.data_identity,
-        audited_query_ids=audit_ids,
-        last_known_good=qualification,
         occurred_at_utc="2026-08-03T08:04:38.860624Z",
     )
 
@@ -209,8 +205,7 @@ def evaluate(capture_dir: Path) -> None:
     provenance = current.provenance
     if provenance is None:
         raise EvaluationError("CURRENT_EVIDENCE_PROVENANCE_MISSING")
-    audit_ids = tuple(provenance.current_audit_ids)
-    context = _context_from_current(current_two, qualification, audit_ids)
+    context = _context_from_current(current_two)
     client = _NoActuationClient()
     controller = _NoOpController()
     with tempfile.TemporaryDirectory(prefix="vdbench-exp005-audit-") as directory:

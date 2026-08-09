@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from vdbench.actuation import ActuationContext
-from vdbench.config import IndexTrack, Metric
+from vdbench.actuation import RollbackActuationContext, ShadowActuationContext
+from vdbench.config import ContractViolation, IndexTrack, Metric
 from vdbench.milvus import CollectionIdentity
 from vdbench.milvus_actuation import (
     ActuationWorkload,
@@ -20,7 +20,6 @@ from vdbench.milvus_actuation import (
     StackHealth,
 )
 from vdbench.oracle import exact_range_search
-from vdbench.policy import QualificationResult
 
 REPOSITORY = Path(__file__).parents[1]
 MODULE_PATH = REPOSITORY / "src" / "vdbench" / "milvus_actuation.py"
@@ -245,19 +244,8 @@ def fixture_components(
     return workload, client, estimator, health, adapter
 
 
-def context() -> ActuationContext:
-    qualification = QualificationResult(
-        qualified=True,
-        ef=400,
-        reasons=(),
-        metric=Metric.L2,
-        threshold_stratum=THRESHOLD_STRATUM,
-        configuration_identity=CONFIGURATION_ID,
-        index_identity=INDEX_ID,
-        data_identity=DATA_ID,
-        qualifying_window_ids=("window-10", "window-11"),
-    )
-    return ActuationContext(
+def shadow_context() -> ShadowActuationContext:
+    return ShadowActuationContext(
         metric=Metric.L2,
         threshold_stratum=THRESHOLD_STRATUM,
         collection_name=HNSW_NAME,
@@ -265,9 +253,25 @@ def context() -> ActuationContext:
         index_identity=INDEX_ID,
         flat_index_identity="flat-identity-v1",
         data_identity=DATA_ID,
-        audited_query_ids=tuple(range(50)),
-        last_known_good=qualification,
         occurred_at_utc="2026-08-04T10:00:00Z",
+        audited_query_ids=tuple(range(50)),
+    )
+
+
+def rollback_context(
+    *, expected_last_known_good_ef: int = 400
+) -> RollbackActuationContext:
+    return RollbackActuationContext(
+        metric=Metric.L2,
+        threshold_stratum=THRESHOLD_STRATUM,
+        collection_name=HNSW_NAME,
+        configuration_identity=CONFIGURATION_ID,
+        index_identity=INDEX_ID,
+        flat_index_identity="flat-identity-v1",
+        data_identity=DATA_ID,
+        occurred_at_utc="2026-08-04T10:00:00Z",
+        expected_last_known_good_ef=expected_last_known_good_ef,
+        audited_query_ids=tuple(range(50)),
     )
 
 
@@ -279,7 +283,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
 
         self.assertEqual(workload.canary_query_ids, ())
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -287,6 +291,54 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.audited_query_count, 50)
         self.assertEqual(len(client.search_calls), 150)
+
+    def test_shadow_requires_exactly_50_canonical_distinct_ids_before_io(
+        self,
+    ) -> None:
+        invalid_sets = (
+            tuple(range(49)),
+            tuple(range(49)) + (0,),
+            tuple(range(49)) + ("e\u0301",),
+        )
+        for values in invalid_sets:
+            with self.subTest(values=values[-2:]):
+                _, client, estimator, health, adapter = fixture_components()
+
+                with self.assertRaisesRegex(
+                    ContractViolation,
+                    "SHADOW_AUDIT_QUERY_IDS_INVALID",
+                ):
+                    adapter.shadow_candidate(
+                        context=replace(
+                            shadow_context(), audited_query_ids=values
+                        ),
+                        candidate_ef=800,
+                        last_known_good_ef=400,
+                    )
+
+                self.assertEqual(client.search_calls, [])
+                self.assertEqual(client.other_calls, [])
+                self.assertEqual(estimator.calls, [])
+                self.assertEqual(health.calls, 0)
+
+    def test_object_forged_shadow_context_fails_closed_before_io(self) -> None:
+        _, client, estimator, health, adapter = fixture_components()
+        forged = object.__new__(ShadowActuationContext)
+
+        with self.assertRaisesRegex(
+            ContractViolation,
+            "ACTUATION_IDENTITY_CONTEXT_INVALID",
+        ):
+            adapter.shadow_candidate(
+                context=forged,
+                candidate_ef=800,
+                last_known_good_ef=400,
+            )
+
+        self.assertEqual(client.search_calls, [])
+        self.assertEqual(client.other_calls, [])
+        self.assertEqual(estimator.calls, [])
+        self.assertEqual(health.calls, 0)
 
     def test_legacy_canary_serving_api_is_removed_with_zero_side_effects(self) -> None:
         _, client, estimator, health, adapter = fixture_components()
@@ -318,7 +370,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         _, client, estimator, health, adapter = fixture_components()
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -351,7 +403,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         client.failures.add(("hnsw", 800, 0))
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -369,7 +421,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         )
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -464,7 +516,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         client.failures.add(("hnsw", 100, 0))
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -492,7 +544,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         client.hnsw_build_id = 999
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -517,7 +569,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         client.identity_capture_failures.add(HNSW_NAME)
 
         result = adapter.shadow_candidate(
-            context=context(),
+            context=shadow_context(),
             candidate_ef=800,
             last_known_good_ef=400,
         )
@@ -538,7 +590,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "injected trace sink failure"):
             adapter.shadow_candidate(
-                context=context(),
+                context=shadow_context(),
                 candidate_ef=800,
                 last_known_good_ef=400,
             )
@@ -566,7 +618,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         adapter.restore_last_known_good(400)
 
         verification = adapter.verify_restoration(
-            context=context(),
+            context=rollback_context(),
             expected_ef=400,
         )
 
@@ -593,7 +645,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         adapter.restore_last_known_good(400)
 
         verification = adapter.verify_restoration(
-            context=context(),
+            context=rollback_context(),
             expected_ef=400,
         )
 
@@ -610,7 +662,9 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         adapter.restore_last_known_good(400)
 
         verification = adapter.verify_restoration(
-            context=replace(context(), flat_index_identity="wrong-flat-identity"),
+            context=replace(
+                rollback_context(), flat_index_identity="wrong-flat-identity"
+            ),
             expected_ef=400,
         )
 
@@ -618,6 +672,40 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         self.assertTrue(verification.health_passed)
         self.assertTrue(verification.audit_passed)
         self.assertIn("configuration identity mismatch", verification.detail)
+
+    def test_restoration_context_ef_mismatch_fails_before_io(self) -> None:
+        _, client, estimator, health, adapter = fixture_components()
+
+        with self.assertRaisesRegex(
+            ContractViolation,
+            "ROLLBACK_LAST_KNOWN_GOOD_EF_MISMATCH",
+        ):
+            adapter.verify_restoration(
+                context=rollback_context(expected_last_known_good_ef=800),
+                expected_ef=400,
+            )
+
+        self.assertEqual(client.search_calls, [])
+        self.assertEqual(client.other_calls, [])
+        self.assertEqual(estimator.calls, [])
+        self.assertEqual(health.calls, 0)
+
+    def test_invalid_restoration_context_ef_fails_before_io(self) -> None:
+        _, client, estimator, health, adapter = fixture_components()
+
+        with self.assertRaisesRegex(
+            ContractViolation,
+            "ROLLBACK_CONTEXT_LAST_KNOWN_GOOD_EF_INVALID",
+        ):
+            adapter.verify_restoration(
+                context=rollback_context(expected_last_known_good_ef=100),
+                expected_ef=400,
+            )
+
+        self.assertEqual(client.search_calls, [])
+        self.assertEqual(client.other_calls, [])
+        self.assertEqual(estimator.calls, [])
+        self.assertEqual(health.calls, 0)
 
     def test_pymilvus_import_is_lazy_and_execute_live_is_never_referenced(self) -> None:
         source = MODULE_PATH.read_text(encoding="utf-8")

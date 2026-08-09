@@ -26,7 +26,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .actuation import ShadowResult
+from .actuation import ShadowActuationContext, ShadowResult
 from .artifacts import canonical_json_bytes, git_state, sha256_file, write_immutable_json
 from .config import ENV001_PINS, RESULT_LIMIT, IndexTrack, Metric
 from .exp005_acquisition import (
@@ -227,12 +227,12 @@ class _ReadOnlyShadowAdapter:
     def shadow_candidate(
         self,
         *,
-        context: object,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult:
         return self._adapter.shadow_candidate(
-            context=context,  # type: ignore[arg-type]
+            context=context,
             candidate_ef=candidate_ef,
             last_known_good_ef=last_known_good_ef,
         )

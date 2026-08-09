@@ -11,7 +11,11 @@ import unittest
 from unittest.mock import patch
 
 from vdbench.config import IndexTrack, Metric
-from vdbench.actuation import ActuationContext, ActuationOutcome, SafeActuationBoundary
+from vdbench.actuation import (
+    ActuationIdentityContext,
+    ActuationOutcome,
+    SafeActuationBoundary,
+)
 from vdbench.drift import (
     EvidenceProvenance,
     Signal,
@@ -693,7 +697,7 @@ class WorkloadMonitorTests(unittest.TestCase):
             controller = Controller()
             result = SafeActuationBoundary(client, sink, controller).execute(
                 policy,
-                ActuationContext(
+                ActuationIdentityContext(
                     metric=Metric.L2,
                     threshold_stratum="target-075",
                     collection_name="monitor_l2_hnsw",
@@ -701,8 +705,6 @@ class WorkloadMonitorTests(unittest.TestCase):
                     index_identity="l2-hnsw-binding-v1",
                     flat_index_identity="l2-flat-binding-v1",
                     data_identity="dataset-v1",
-                    audited_query_ids=tuple(range(50)),
-                    last_known_good=QualificationResult(False, None, ("EXP006",)),
                     occurred_at_utc="2026-08-03T12:00:00Z",
                 ),
             )

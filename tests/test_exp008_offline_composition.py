@@ -17,7 +17,7 @@ import unittest
 
 import numpy as np
 
-from vdbench.actuation import ActuationContext, ShadowResult
+from vdbench.actuation import ShadowActuationContext, ShadowResult
 from vdbench.config import IndexTrack, Metric
 from vdbench.drift import DetectorState, EvidenceProvenance
 from vdbench.host_observation import (
@@ -179,13 +179,13 @@ class _TraceAdapter:
         self.harness = _FakeHarness()
         self.stack_health_probe = _FakeHealth()
         self.shadow_trace_sink = None
-        self.shadow_calls: list[tuple[ActuationContext, int, int]] = []
+        self.shadow_calls: list[tuple[ShadowActuationContext, int, int]] = []
         self.action_calls: list[str] = []
 
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult:
@@ -375,6 +375,13 @@ class Exp008OfflineCompositionTests(unittest.TestCase):
 
             self.assertEqual(serving.calls, 1200)
             self.assertEqual(len(adapter.shadow_calls), 24)
+            self.assertTrue(
+                all(
+                    type(context) is ShadowActuationContext
+                    and not hasattr(context, "last_known_good")
+                    for context, _, _ in adapter.shadow_calls
+                )
+            )
             self.assertEqual(len(tuple((source_root / "traces").glob("*.json"))), 24)
             self.assertEqual(len(source.poll(limit=32)), 24)
 

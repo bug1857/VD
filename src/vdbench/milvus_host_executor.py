@@ -30,7 +30,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .actuation import ActuationContext, ShadowResult
+from .actuation import ShadowActuationContext, ShadowResult
 from .config import IndexTrack, Metric, SearchConfiguration
 from .drift import AUDIT_QUERY_COUNT, SENTINEL_EF
 from .host_observation import CompletedRangeQueryObservation
@@ -42,7 +42,6 @@ from .milvus_actuation import (
     StackHealth,
     StackHealthProbeLike,
 )
-from .policy import QualificationResult
 from .shadow_event_types import MonitorStreamKey
 
 
@@ -93,7 +92,7 @@ class _MilvusShadowAdapterLike(Protocol):
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult: ...
@@ -333,11 +332,11 @@ class MilvusHostShadowExecutor:
         self,
         observations: Sequence[CompletedRangeQueryObservation],
         stream_key: MonitorStreamKey,
-    ) -> ActuationContext:
+    ) -> ShadowActuationContext:
         occurred_at_utc = self._clock()
         self._validate_utc_timestamp(occurred_at_utc)
         hnsw_name = self._adapter.workload.collection_names[(stream_key.metric, IndexTrack.HNSW)]
-        return ActuationContext(
+        return ShadowActuationContext(
             metric=stream_key.metric,
             threshold_stratum=stream_key.threshold_stratum,
             collection_name=hnsw_name,
@@ -346,11 +345,6 @@ class MilvusHostShadowExecutor:
             flat_index_identity=stream_key.flat_binding_id,
             data_identity=stream_key.data_identity,
             audited_query_ids=tuple(value.request_id for value in observations),
-            last_known_good=QualificationResult(
-                qualified=False,
-                ef=None,
-                reasons=("HOST_SHADOW_READ_ONLY",),
-            ),
             occurred_at_utc=occurred_at_utc,
         )
 

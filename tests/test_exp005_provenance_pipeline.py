@@ -12,7 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vdbench.actuation import ActuationContext, ActuationOutcome, SafeActuationBoundary
+from vdbench.actuation import (
+    ActuationIdentityContext,
+    ActuationOutcome,
+    SafeActuationBoundary,
+)
 from vdbench.actuation_persistence import JsonlAuditSink
 from vdbench.config import IndexTrack, Metric
 from vdbench.drift import DetectorState, evaluate_drift_decision
@@ -252,7 +256,7 @@ class Exp005ProvenancePipelineTests(unittest.TestCase):
         self.assertEqual(policy.action, PolicyAction.NO_CHANGE)
         self.assertEqual(policy.evidence_provenance, current.provenance)
 
-        context = ActuationContext(
+        context = ActuationIdentityContext(
             metric=Metric.L2,
             threshold_stratum=STRATUM,
             collection_name="exp005_hnsw",
@@ -260,8 +264,6 @@ class Exp005ProvenancePipelineTests(unittest.TestCase):
             index_identity=HNSW_BINDING_ID,
             flat_index_identity=FLAT_BINDING_ID,
             data_identity=DATA_ID,
-            audited_query_ids=tuple(range(50)),
-            last_known_good=last_known_good,
             occurred_at_utc="2026-08-03T12:01:00Z",
         )
         client = _NoClient()

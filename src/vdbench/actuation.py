@@ -5,8 +5,8 @@ Purpose:
     record immutable outcomes, and leave detector/policy decisions outside this
     module. Candidate serving is owned exclusively by Stage4LiveRunner.
 Inputs:
-    A frozen PolicyDecision, ActuationContext, client-like executor, append-only
-    audit sink, and automatic-action controller.
+    A frozen PolicyDecision, qualification-free identity/rollback context,
+    client-like executor, append-only audit sink, and automatic-action controller.
 Outputs:
     Immutable ActuationResult and ActuationAuditRecord values.
 Dependencies:
@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 import re
+import unicodedata
 from typing import Protocol, TypeAlias
 
 from .config import Metric, THRESHOLD_LABELS
@@ -31,7 +32,6 @@ from .policy import (
     CanaryObservation,
     PolicyAction,
     PolicyDecision,
-    QualificationResult,
     SafetyGateResult,
 )
 
@@ -81,8 +81,8 @@ class RollbackVerification:
 
 
 @dataclass(frozen=True, slots=True)
-class ActuationContext:
-    """Immutable execution identity and audit-query context."""
+class ActuationIdentityContext:
+    """Immutable common identity projection with no qualification authority."""
 
     metric: Metric | str
     threshold_stratum: str
@@ -91,9 +91,22 @@ class ActuationContext:
     index_identity: str
     flat_index_identity: str
     data_identity: str
-    audited_query_ids: tuple[QueryId, ...]
-    last_known_good: QualificationResult
     occurred_at_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowActuationContext(ActuationIdentityContext):
+    """Read-only shadow identity plus exactly 50 canonical audit query IDs."""
+
+    audited_query_ids: tuple[QueryId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackActuationContext(ActuationIdentityContext):
+    """Rollback identity, expected ef, and 50 restoration-audit query IDs."""
+
+    expected_last_known_good_ef: int
+    audited_query_ids: tuple[QueryId, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +119,7 @@ class ActuationAuditRecord:
     attempted: bool
     success: bool
     reason: str
-    context: ActuationContext
+    context: ActuationIdentityContext
     current_ef: int
     candidate_ef: int | None
     last_known_good_ef: int | None
@@ -139,7 +152,7 @@ class ActuationClientLike(Protocol):
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult: ...
@@ -151,7 +164,7 @@ class ActuationClientLike(Protocol):
     def verify_restoration(
         self,
         *,
-        context: ActuationContext,
+        context: RollbackActuationContext,
         expected_ef: int,
     ) -> RollbackVerification: ...
 
@@ -197,10 +210,12 @@ def _valid_query_ids(values: object) -> bool:
         return False
     canonical: set[tuple[type, QueryId]] = set()
     for value in values:
-        if isinstance(value, bool) or not isinstance(value, (int, str)):
+        if isinstance(value, bool) or type(value) not in {int, str}:
             return False
-        if isinstance(value, str) and not value:
-            return False
+        if isinstance(value, str):
+            normalized = unicodedata.normalize("NFC", value)
+            if not normalized or normalized != value:
+                return False
         key = (type(value), value)
         if key in canonical:
             return False
@@ -208,32 +223,91 @@ def _valid_query_ids(values: object) -> bool:
     return True
 
 
-def _rollback_context_failure(context: ActuationContext) -> str | None:
-    """Validate explicit runtime rollback context, never legacy qualification."""
-
-    if not isinstance(context, ActuationContext):
-        return "ACTUATION_CONTEXT_INVALID"
-    metric = _metric(context.metric)
-    if metric is None:
-        return "ACTUATION_METRIC_INVALID"
-    if context.threshold_stratum not in THRESHOLD_LABELS:
-        return "ACTUATION_THRESHOLD_STRATUM_INVALID"
-    if not all(
-        _nonempty(value)
-        for value in (
+def _identity_context_failure(context: object) -> str | None:
+    if not isinstance(context, ActuationIdentityContext):
+        return "ACTUATION_IDENTITY_CONTEXT_INVALID"
+    try:
+        metric_value = context.metric
+        threshold_stratum = context.threshold_stratum
+        identity_values = (
             context.collection_name,
             context.configuration_identity,
             context.index_identity,
             context.flat_index_identity,
             context.data_identity,
         )
-    ):
+        occurred_at_utc = context.occurred_at_utc
+    except AttributeError:
+        return "ACTUATION_IDENTITY_CONTEXT_INVALID"
+    metric = _metric(metric_value)
+    if metric is None:
+        return "ACTUATION_METRIC_INVALID"
+    if threshold_stratum not in THRESHOLD_LABELS:
+        return "ACTUATION_THRESHOLD_STRATUM_INVALID"
+    if not all(_nonempty(value) for value in identity_values):
         return "ACTUATION_IDENTITY_MISSING"
-    if not _valid_query_ids(context.audited_query_ids):
-        return "ACTUATION_AUDIT_QUERY_IDS_INVALID"
-    if not _valid_rfc3339_utc(context.occurred_at_utc):
+    if not _valid_rfc3339_utc(occurred_at_utc):
         return "ACTUATION_TIMESTAMP_INVALID"
     return None
+
+
+def _shadow_context_failure(context: object) -> str | None:
+    if type(context) is not ShadowActuationContext:
+        return "SHADOW_ACTUATION_CONTEXT_INVALID"
+    identity_failure = _identity_context_failure(context)
+    if identity_failure is not None:
+        return identity_failure
+    try:
+        audited_query_ids = context.audited_query_ids
+    except AttributeError:
+        return "SHADOW_ACTUATION_CONTEXT_INVALID"
+    if not _valid_query_ids(audited_query_ids):
+        return "SHADOW_AUDIT_QUERY_IDS_INVALID"
+    return None
+
+
+def validate_shadow_actuation_context(
+    context: object,
+) -> ShadowActuationContext:
+    """Return one complete shadow context or raise its stable refusal reason."""
+
+    failure = _shadow_context_failure(context)
+    if failure is not None:
+        raise ValueError(failure)
+    assert type(context) is ShadowActuationContext
+    return context
+
+
+def _rollback_context_failure(context: object) -> str | None:
+    """Validate explicit runtime rollback context, never qualification evidence."""
+
+    if type(context) is not RollbackActuationContext:
+        return "ROLLBACK_ACTUATION_CONTEXT_INVALID"
+    identity_failure = _identity_context_failure(context)
+    if identity_failure is not None:
+        return identity_failure
+    try:
+        audited_query_ids = context.audited_query_ids
+        expected_ef = context.expected_last_known_good_ef
+    except AttributeError:
+        return "ROLLBACK_ACTUATION_CONTEXT_INVALID"
+    if not _valid_query_ids(audited_query_ids):
+        return "ROLLBACK_AUDIT_QUERY_IDS_INVALID"
+    if _rollback_ef_failure(expected_ef) is not None:
+        return "ROLLBACK_CONTEXT_LAST_KNOWN_GOOD_EF_INVALID"
+    return None
+
+
+def validate_rollback_actuation_context(
+    context: object,
+) -> RollbackActuationContext:
+    """Return one complete rollback context or raise its stable refusal reason."""
+
+    failure = _rollback_context_failure(context)
+    if failure is not None:
+        raise ValueError(failure)
+    assert type(context) is RollbackActuationContext
+    return context
 
 
 def _rollback_ef_failure(value: object) -> str | None:
@@ -250,7 +324,7 @@ def _verification_succeeded(
     verification: object,
     *,
     expected_ef: int,
-    context: ActuationContext,
+    context: RollbackActuationContext,
 ) -> bool:
     return bool(
         isinstance(verification, RollbackVerification)
@@ -280,7 +354,7 @@ class SafeActuationBoundary:
     def _record(
         self,
         decision: PolicyDecision,
-        context: ActuationContext,
+        context: ActuationIdentityContext,
         *,
         outcome: ActuationOutcome,
         attempted: bool,
@@ -334,7 +408,7 @@ class SafeActuationBoundary:
     def _blocked(
         self,
         decision: PolicyDecision,
-        context: ActuationContext,
+        context: ActuationIdentityContext,
         *,
         reason: str,
         traffic_fraction: float | None,
@@ -356,7 +430,7 @@ class SafeActuationBoundary:
     def execute(
         self,
         decision: PolicyDecision,
-        context: ActuationContext,
+        context: ActuationIdentityContext,
         *,
         traffic_fraction: float = MAX_CANARY_TRAFFIC_FRACTION,
     ) -> ActuationResult:
@@ -431,12 +505,21 @@ class SafeActuationBoundary:
                 traffic_fraction=None,
                 append=True,
             )
+        assert type(context) is RollbackActuationContext
+        if context.expected_last_known_good_ef != decision.last_known_good_ef:
+            return self._blocked(
+                decision,
+                context,
+                reason="ROLLBACK_LAST_KNOWN_GOOD_EF_MISMATCH",
+                traffic_fraction=None,
+                append=True,
+            )
         return self._rollback(decision, context)
 
     def _rollback(
         self,
         decision: PolicyDecision,
-        context: ActuationContext,
+        context: RollbackActuationContext,
     ) -> ActuationResult:
         last_known_good_ef = int(decision.last_known_good_ef)
         verification: RollbackVerification | None = None
@@ -498,12 +581,16 @@ __all__ = [
     "MAX_CANARY_TRAFFIC_FRACTION",
     "ActuationAuditRecord",
     "ActuationClientLike",
-    "ActuationContext",
+    "ActuationIdentityContext",
     "ActuationOutcome",
     "ActuationResult",
     "AuditSinkLike",
     "AutomaticActionControllerLike",
+    "RollbackActuationContext",
     "RollbackVerification",
     "SafeActuationBoundary",
+    "ShadowActuationContext",
     "ShadowResult",
+    "validate_rollback_actuation_context",
+    "validate_shadow_actuation_context",
 ]

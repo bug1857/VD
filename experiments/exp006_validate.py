@@ -20,7 +20,11 @@ import sys
 import tempfile
 from typing import Any, NoReturn
 
-from vdbench.actuation import ActuationContext, ActuationResult, SafeActuationBoundary
+from vdbench.actuation import (
+    ActuationIdentityContext,
+    ActuationResult,
+    SafeActuationBoundary,
+)
 from vdbench.config import IndexTrack, Metric
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
@@ -430,7 +434,19 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
         _write(output_dir / f"audit-{metric.value.lower()}.json", audit.records)
     client, sink, controller = _TrapClient(), _BoundaryAudit(), _Controller()
     policy = policies[Metric.L2.value]
-    noop = SafeActuationBoundary(client, sink, controller).execute(policy, ActuationContext(Metric.L2, "target-075", "exp006_l2_hnsw", "exp006-config-v1", "l2-hnsw-v1", "l2-flat-v1", "exp006-data-v1", tuple(range(50)), QualificationResult(False, None, ("EXP006",)), "2026-08-03T12:00:00Z"))
+    noop = SafeActuationBoundary(client, sink, controller).execute(
+        policy,
+        ActuationIdentityContext(
+            Metric.L2,
+            "target-075",
+            "exp006_l2_hnsw",
+            "exp006-config-v1",
+            "l2-hnsw-v1",
+            "l2-flat-v1",
+            "exp006-data-v1",
+            "2026-08-03T12:00:00Z",
+        ),
+    )
     dry_run_no_actuation_proof = _dry_run_no_actuation_proof(
         client=client,
         sink=sink,

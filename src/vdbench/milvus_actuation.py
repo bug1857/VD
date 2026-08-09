@@ -32,7 +32,16 @@ from typing import Protocol, Self, TypeAlias
 import numpy as np
 import numpy.typing as npt
 
-from .actuation import ActuationContext, QueryId, RollbackVerification, ShadowResult
+from .actuation import (
+    ActuationIdentityContext,
+    QueryId,
+    RollbackActuationContext,
+    RollbackVerification,
+    ShadowActuationContext,
+    ShadowResult,
+    validate_rollback_actuation_context,
+    validate_shadow_actuation_context,
+)
 from .config import (
     NUMERIC_TOLERANCE,
     THRESHOLD_LABELS,
@@ -507,7 +516,7 @@ class MilvusActuationClient:
     def candidate_ef(self) -> int | None:
         return self._candidate_ef
 
-    def _metric(self, context: ActuationContext) -> Metric:
+    def _metric(self, context: ActuationIdentityContext) -> Metric:
         try:
             return Metric(context.metric)
         except (TypeError, ValueError) as exc:
@@ -618,7 +627,7 @@ class MilvusActuationClient:
     def _run_audit(
         self,
         *,
-        context: ActuationContext,
+        context: ActuationIdentityContext,
         query_ids: Sequence[QueryId],
         ef_values: Sequence[int],
         collect_trace: bool,
@@ -838,7 +847,7 @@ class MilvusActuationClient:
     def _audit(
         self,
         *,
-        context: ActuationContext,
+        context: ActuationIdentityContext,
         query_ids: Sequence[QueryId],
         ef_values: Sequence[int],
     ) -> _AuditEvidence:
@@ -908,7 +917,7 @@ class MilvusActuationClient:
     def _build_shadow_trace(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         metric: Metric,
         candidate_ef: int,
         last_known_good_ef: int,
@@ -981,12 +990,16 @@ class MilvusActuationClient:
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult:
         """Audit 50 queries at both ef values against one exact FLAT/oracle baseline."""
 
+        try:
+            context = validate_shadow_actuation_context(context)
+        except ValueError as exc:
+            raise ContractViolation(str(exc)) from exc
         _validate_actuation_ef(candidate_ef, name="candidate_ef")
         _validate_actuation_ef(last_known_good_ef, name="last_known_good_ef")
         trace_sink = self.shadow_trace_sink
@@ -1059,12 +1072,18 @@ class MilvusActuationClient:
     def verify_restoration(
         self,
         *,
-        context: ActuationContext,
+        context: RollbackActuationContext,
         expected_ef: int,
     ) -> RollbackVerification:
         """Verify routing state, health/identity, and a fresh 50-query restored audit."""
 
+        try:
+            context = validate_rollback_actuation_context(context)
+        except ValueError as exc:
+            raise ContractViolation(str(exc)) from exc
         _validate_actuation_ef(expected_ef, name="expected_ef")
+        if context.expected_last_known_good_ef != expected_ef:
+            raise ContractViolation("ROLLBACK_LAST_KNOWN_GOOD_EF_MISMATCH")
         evidence = self._audit(
             context=context,
             query_ids=context.audited_query_ids,
@@ -1106,7 +1125,9 @@ class MilvusActuationClient:
     def _hnsw_binding(self, metric: Metric) -> CollectionIdentityBinding:
         return self.workload.identity_bindings[(metric, IndexTrack.HNSW)]
 
-    def _context_configuration_valid(self, context: ActuationContext) -> bool:
+    def _context_configuration_valid(
+        self, context: ActuationIdentityContext
+    ) -> bool:
         try:
             metric = self._metric(context)
             hnsw_name = self.workload.collection_names[(metric, IndexTrack.HNSW)]
@@ -1125,7 +1146,7 @@ class MilvusActuationClient:
         except (KeyError, TypeError, ValueError):
             return False
 
-    def _runtime_status(self, context: ActuationContext) -> _RuntimeStatus:
+    def _runtime_status(self, context: ActuationIdentityContext) -> _RuntimeStatus:
         metric = self._metric(context)
         loaded = True
         identities_match = True

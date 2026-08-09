@@ -1,14 +1,16 @@
 import ast
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 import unittest
 
 from vdbench.actuation import (
     ActuationClientLike,
-    ActuationContext,
+    ActuationIdentityContext,
     ActuationOutcome,
+    RollbackActuationContext,
     RollbackVerification,
     SafeActuationBoundary,
+    ShadowActuationContext,
     ShadowResult,
 )
 from vdbench.config import Metric
@@ -17,7 +19,6 @@ from vdbench.policy import (
     PolicyAction,
     PolicyDecision,
     PolicyMode,
-    QualificationResult,
     SafetyGateResult,
 )
 
@@ -30,22 +31,8 @@ THRESHOLD_STRATUM = "target-025"
 MODULE_PATH = Path(__file__).parents[1] / "src" / "vdbench" / "actuation.py"
 
 
-def last_known_good() -> QualificationResult:
-    return QualificationResult(
-        qualified=True,
-        ef=400,
-        reasons=(),
-        metric=Metric.L2,
-        threshold_stratum=THRESHOLD_STRATUM,
-        configuration_identity=CONFIGURATION_ID,
-        index_identity=INDEX_ID,
-        data_identity=DATA_ID,
-        qualifying_window_ids=("qualification-10", "qualification-11"),
-    )
-
-
-def context() -> ActuationContext:
-    return ActuationContext(
+def identity_context() -> ActuationIdentityContext:
+    return ActuationIdentityContext(
         metric=Metric.L2,
         threshold_stratum=THRESHOLD_STRATUM,
         collection_name="vd_l2_hnsw",
@@ -53,9 +40,30 @@ def context() -> ActuationContext:
         index_identity=INDEX_ID,
         flat_index_identity=FLAT_INDEX_ID,
         data_identity=DATA_ID,
-        audited_query_ids=tuple(range(50)),
-        last_known_good=last_known_good(),
         occurred_at_utc="2026-08-03T16:00:00Z",
+    )
+
+
+def shadow_context() -> ShadowActuationContext:
+    return ShadowActuationContext(
+        **{
+            field.name: getattr(identity_context(), field.name)
+            for field in fields(ActuationIdentityContext)
+        },
+        audited_query_ids=tuple(range(50)),
+    )
+
+
+def rollback_context(
+    *, expected_last_known_good_ef: int = 400
+) -> RollbackActuationContext:
+    return RollbackActuationContext(
+        **{
+            field.name: getattr(identity_context(), field.name)
+            for field in fields(ActuationIdentityContext)
+        },
+        expected_last_known_good_ef=expected_last_known_good_ef,
+        audited_query_ids=tuple(range(50)),
     )
 
 
@@ -152,7 +160,7 @@ class FakeActuationClient:
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult:
@@ -173,7 +181,7 @@ class FakeActuationClient:
     def verify_restoration(
         self,
         *,
-        context: ActuationContext,
+        context: RollbackActuationContext,
         expected_ef: int,
     ) -> RollbackVerification:
         self.calls.append(
@@ -236,7 +244,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         controller = FakeController()
         result = SafeActuationBoundary(client, sink, controller).execute(
             replace(decision(PolicyAction.START_CANARY), evidence_provenance=None),
-            context(),
+            identity_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
@@ -250,35 +258,19 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         controller = FakeController()
         result = SafeActuationBoundary(client, sink, controller).execute(
             decision(PolicyAction.START_CANARY),
-            replace(context(), flat_index_identity=""),
+            replace(identity_context(), flat_index_identity=""),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
         self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
         self.assertEqual(client.calls, [])
-
-    def test_start_canary_retirement_ignores_legacy_qualification_status(self) -> None:
-        boundary, client, sink, controller = harness()
-        legacy = QualificationResult(False, None, ("LEGACY_NOT_QUALIFIED",))
-
-        result = boundary.execute(
-            decision(PolicyAction.START_CANARY),
-            replace(context(), last_known_good=legacy),
-        )
-
-        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
-        self.assertEqual(result.reason, "GENERIC_START_CANARY_RETIRED")
-        self.assertFalse(result.executed)
-        self.assertEqual(client.calls, [])
-        self.assertEqual(sink.append_calls, [AUDIT_ID])
-        self.assertEqual(controller.calls, [])
 
     def test_generic_start_canary_is_permanently_retired_and_audited(self) -> None:
         boundary, client, sink, controller = harness()
 
         result = boundary.execute(
             decision(PolicyAction.START_CANARY),
-            context(),
+            identity_context(),
             traffic_fraction=0.10,
         )
 
@@ -300,7 +292,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
             gates=(gate(passed=False),),
         )
 
-        result = boundary.execute(rollback, context())
+        result = boundary.execute(rollback, rollback_context())
 
         self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
         self.assertTrue(result.success)
@@ -321,43 +313,41 @@ class SafeActuationBoundaryTests(unittest.TestCase):
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
 
-    def test_rollback_ignores_unqualified_legacy_lkg(self) -> None:
+    def test_context_projections_contain_no_qualification_authority(self) -> None:
+        forbidden = {
+            "last_known_good",
+            "qualification",
+            "qualification_windows",
+            "lkg_authority",
+        }
+        for context_type in (
+            ActuationIdentityContext,
+            ShadowActuationContext,
+            RollbackActuationContext,
+        ):
+            with self.subTest(context_type=context_type.__name__):
+                field_names = {field.name for field in fields(context_type)}
+                self.assertTrue(field_names.isdisjoint(forbidden))
+                annotations = " ".join(
+                    str(field.type) for field in fields(context_type)
+                )
+                self.assertNotIn("QualificationResult", annotations)
+                self.assertNotIn("QualificationWindow", annotations)
+                self.assertNotIn("LkgPhase3Authority", annotations)
+
+    def test_rollback_uses_only_qualification_free_context(self) -> None:
         boundary, client, sink, controller = harness()
-        legacy = QualificationResult(False, None, ("LEGACY_NOT_QUALIFIED",))
 
         result = boundary.execute(
             decision(PolicyAction.ROLLBACK),
-            replace(context(), last_known_good=legacy),
+            rollback_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
         self.assertEqual(result.reason, "ROLLBACK_VERIFIED")
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(client.calls[1], ("restore_last_known_good", 400))
         self.assertEqual(sink.append_calls, [AUDIT_ID])
         self.assertEqual(controller.calls, [])
-
-    def test_rollback_ignores_legacy_lkg_identity_disagreement(self) -> None:
-        boundary, client, _, _ = harness()
-        disagreeing = replace(
-            last_known_good(),
-            ef=200,
-            metric=Metric.COSINE,
-            threshold_stratum="target-075",
-            configuration_identity="legacy-other-config",
-            index_identity="legacy-other-index",
-            data_identity="legacy-other-data",
-        )
-
-        result = boundary.execute(
-            decision(PolicyAction.ROLLBACK),
-            replace(context(), last_known_good=disagreeing),
-        )
-
-        self.assertEqual(result.outcome, ActuationOutcome.SUCCEEDED)
-        self.assertEqual(
-            client.calls[1],
-            ("restore_last_known_good", 400),
-        )
 
     def test_rollback_requires_concrete_eligible_decision_lkg_ef(self) -> None:
         for value in (None, True, 100, 300, 3200):
@@ -368,7 +358,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
                     last_known_good_ef=value,
                 )
 
-                result = boundary.execute(malformed, context())
+                result = boundary.execute(malformed, rollback_context())
 
                 self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
                 self.assertEqual(
@@ -391,7 +381,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
             ({"index_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
             ({"flat_index_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
             ({"data_identity": ""}, "ACTUATION_IDENTITY_MISSING"),
-            ({"audited_query_ids": ()}, "ACTUATION_AUDIT_QUERY_IDS_INVALID"),
+            ({"audited_query_ids": ()}, "ROLLBACK_AUDIT_QUERY_IDS_INVALID"),
             ({"occurred_at_utc": "not-a-time"}, "ACTUATION_TIMESTAMP_INVALID"),
         )
         for changes, expected_reason in cases:
@@ -400,13 +390,77 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
                 result = boundary.execute(
                     decision(PolicyAction.ROLLBACK),
-                    replace(context(), **changes),
+                    replace(rollback_context(), **changes),
                 )
 
                 self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
                 self.assertEqual(result.reason, expected_reason)
                 self.assertEqual(client.calls, [])
                 self.assertEqual(sink.append_calls, [AUDIT_ID])
+
+    def test_rollback_context_expected_ef_mismatch_blocks_before_client_calls(
+        self,
+    ) -> None:
+        boundary, client, sink, _ = harness()
+
+        result = boundary.execute(
+            decision(PolicyAction.ROLLBACK),
+            rollback_context(expected_last_known_good_ef=800),
+        )
+
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertEqual(result.reason, "ROLLBACK_LAST_KNOWN_GOOD_EF_MISMATCH")
+        self.assertEqual(client.calls, [])
+        self.assertEqual(sink.append_calls, [AUDIT_ID])
+
+    def test_rollback_context_invalid_ef_blocks_before_client_calls(self) -> None:
+        for value in (True, 100, 300, 3200):
+            with self.subTest(value=value):
+                boundary, client, sink, _ = harness()
+                result = boundary.execute(
+                    decision(PolicyAction.ROLLBACK),
+                    rollback_context(expected_last_known_good_ef=value),
+                )
+
+                self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+                self.assertEqual(
+                    result.reason,
+                    "ROLLBACK_CONTEXT_LAST_KNOWN_GOOD_EF_INVALID",
+                )
+                self.assertEqual(client.calls, [])
+                self.assertEqual(sink.append_calls, [AUDIT_ID])
+
+    def test_rollback_requires_exactly_50_canonical_distinct_ids(self) -> None:
+        invalid_sets = (
+            tuple(range(49)),
+            tuple(range(49)) + (0,),
+            tuple(range(49)) + ("e\u0301",),
+        )
+        for values in invalid_sets:
+            with self.subTest(values=values[-2:]):
+                boundary, client, sink, _ = harness()
+                result = boundary.execute(
+                    decision(PolicyAction.ROLLBACK),
+                    replace(rollback_context(), audited_query_ids=values),
+                )
+
+                self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+                self.assertEqual(result.reason, "ROLLBACK_AUDIT_QUERY_IDS_INVALID")
+                self.assertEqual(client.calls, [])
+                self.assertEqual(sink.append_calls, [AUDIT_ID])
+
+    def test_object_forged_rollback_context_fails_closed_before_client_calls(
+        self,
+    ) -> None:
+        boundary, client, sink, _ = harness()
+        forged = object.__new__(RollbackActuationContext)
+
+        result = boundary.execute(decision(PolicyAction.ROLLBACK), forged)
+
+        self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
+        self.assertEqual(result.reason, "ACTUATION_IDENTITY_CONTEXT_INVALID")
+        self.assertEqual(client.calls, [])
+        self.assertEqual(sink.append_calls, [AUDIT_ID])
 
     def test_rollback_verification_failure_disables_automatic_actions(self) -> None:
         failed_verification = replace(
@@ -420,7 +474,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
         result = boundary.execute(
             decision(PolicyAction.ROLLBACK, gates=(gate(passed=False),)),
-            context(),
+            rollback_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.FAILED)
@@ -451,7 +505,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
                 result = boundary.execute(
                     decision(action, audit_id=audit_id),
-                    context(),
+                    identity_context(),
                 )
 
                 self.assertEqual(result.outcome, ActuationOutcome.NO_OP)
@@ -466,7 +520,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
         result = boundary.execute(
             decision(PolicyAction.START_CANARY, audit_id=""),
-            context(),
+            identity_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
@@ -482,7 +536,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
         result = boundary.execute(
             decision(PolicyAction.START_CANARY),
-            context(),
+            identity_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)
@@ -497,7 +551,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
 
         result = boundary.execute(
             decision(PolicyAction.START_CANARY),
-            context(),
+            identity_context(),
             traffic_fraction=0.100001,
         )
 
@@ -515,7 +569,7 @@ class SafeActuationBoundaryTests(unittest.TestCase):
                 PolicyAction.START_CANARY,
                 gates=(gate(passed=False),),
             ),
-            context(),
+            identity_context(),
         )
 
         self.assertEqual(result.outcome, ActuationOutcome.BLOCKED)

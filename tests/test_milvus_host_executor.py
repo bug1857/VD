@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from vdbench.actuation import ActuationContext, ShadowResult
+from vdbench.actuation import ShadowActuationContext, ShadowResult
 from vdbench.config import IndexTrack, Metric
 from vdbench.host_observation import (
     BackgroundShadowWorker,
@@ -152,7 +152,7 @@ class _FakeAdapter:
         self.harness = _FakeHarness({FLAT_COLLECTION: flat, HNSW_COLLECTION: hnsw})
         self.stack_health_probe = _FakeHealthProbe()
         self.shadow_trace_sink: object | None = None
-        self.shadow_calls: list[tuple[ActuationContext, int, int]] = []
+        self.shadow_calls: list[tuple[ShadowActuationContext, int, int]] = []
         self.shadow_result = ShadowResult(
             success=True,
             audited_query_count=50,
@@ -172,7 +172,7 @@ class _FakeAdapter:
     def shadow_candidate(
         self,
         *,
-        context: ActuationContext,
+        context: ShadowActuationContext,
         candidate_ef: int,
         last_known_good_ef: int,
     ) -> ShadowResult:
@@ -226,7 +226,7 @@ class _FakePublisher:
 
 
 def _trace(
-    context: ActuationContext,
+    context: ShadowActuationContext,
     *,
     candidate_ef: int,
     last_known_good_ef: int,
@@ -355,6 +355,8 @@ class MilvusHostShadowExecutorTests(unittest.TestCase):
         self.assertTrue(trace.complete)
         self.assertEqual(len(adapter.shadow_calls), 1)
         context, candidate_ef, last_known_good_ef = adapter.shadow_calls[0]
+        self.assertIs(type(context), ShadowActuationContext)
+        self.assertFalse(hasattr(context, "last_known_good"))
         self.assertEqual((candidate_ef, last_known_good_ef), (800, 400))
         self.assertEqual(context.metric, METRIC)
         self.assertEqual(context.threshold_stratum, STRATUM)
