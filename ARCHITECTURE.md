@@ -2664,6 +2664,209 @@ shadow observation), ADR-008 (human-gated candidate routing), and the accepted
 Phase-3 authority amendments. ADR-009 changes none of their authority
 boundaries.
 
+#### R2 raw-evidence provenance clarification (2026-08-09)
+
+This append-only clarification governs the raw-evidence boundary that must be
+implemented before an R1 `CalibratedResponseProfile` can be treated as carrying
+root-pinned calibration provenance. It does not change R1 statistics, profile
+schema, supported `ef` values, or any candidate-authority boundary.
+
+**Pre-result population commitment and canonical digests.** Before any
+supported-`ef` response-profile replay result is inspected or used for
+selection, the detector-trigger boundary, role assignments, canonical order,
+query payloads, complete 1,200-query calibration population, replay schedule,
+control profile, and environment profile must exist as immutable, checksum-
+verified commitments. Canonical query IDs remain exactly R1-compatible: a
+normalized ID is an exact integer or an NFC-normalized non-empty string,
+booleans are forbidden, and:
+
+```
+canonical_query_id_bytes =
+    canonical_serialize_tuple((normalized_query_id,))
+
+query_id_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_QUERY_ID::V1\x00"
+    + canonical_query_id_bytes
+).hexdigest()
+```
+
+Consequently integer `1` and string `"1"` are a canonical collision and may
+not coexist, while other mixed integer/string IDs remain valid. R2 must not
+produce evidence that unchanged R1 verification would reject.
+
+A query vector is a non-empty finite contiguous little-endian float32 vector.
+Its digest is exactly:
+
+```
+vector_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_QUERY_VECTOR::V1\x00"
+    + canonical_serialize_tuple(("dtype", "<f4", "dimensions", dimension_count))
+    + contiguous_little_endian_float32_bytes
+).hexdigest()
+```
+
+The strict `response-profile-query-payload-v1` payload contains exactly the
+schema version, vector digest, metric, threshold stratum, radius, range filter,
+limit, and consistency level, and its digest is:
+
+```
+query_payload_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_QUERY_PAYLOAD::V1\x00"
+    + canonical_json_bytes(query_payload)
+).hexdigest()
+```
+
+It excludes query ID, role, source namespace/position, canonical or replay
+order, `ef`, timestamps, result values, and index/data identity. Invented IDs,
+role changes, or ordering changes therefore cannot make a repeated vector or
+payload independent. `query_id_sha256` is local to its source namespace, not a
+global identity. Within one source namespace, role-membership comparisons use
+that canonical query-ID identity; across distinct source namespaces they use
+`observation_identity_sha256`. Required vector-digest and query-payload-digest
+disjointness applies unchanged across every source namespace and role.
+
+Local query IDs are not global identities. A versioned source-namespace digest
+binds one strict discriminated payload. `ARTIFACT` source identity contains
+exactly source kind, dataset ID, dataset version, and immutable generation-
+manifest SHA-256. `LIVE_STREAM` source identity contains exactly source kind,
+stable stream ID, data identity, and immutable source-workload-manifest SHA-256.
+The common payload also contains only its schema version. Role, `ef`, search/
+index configuration, timestamps, and source revision are excluded so the same
+source cannot gain a new namespace through reassignment, retuning, recapture,
+or code revision. Source revision remains separately bound by the evidence
+root. The digests are exactly:
+
+```
+source_namespace_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_SOURCE_NAMESPACE::V1\x00"
+    + canonical_json_bytes(source_namespace_payload)
+).hexdigest()
+
+observation_identity_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_OBSERVATION_IDENTITY::V1\x00"
+    + canonical_json_bytes({
+        "schema_version": "response-profile-observation-identity-v1",
+        "source_namespace_sha256": source_namespace_sha256,
+        "query_id_sha256": query_id_sha256,
+    })
+).hexdigest()
+```
+
+Role is deliberately excluded from observation identity so reassignment cannot
+create a new observation.
+
+**Closed role and disjointness catalog.** v1 recognizes only detector evidence,
+response-profile warm-up, response-profile calibration, the twenty indexed
+prospective-validation segments, Phase-3 qualification, Stage-4 routing,
+Stage-4 recall audit, Stage-4 schedule control, historical EXP-001 calibration,
+historical EXP-001 measured evidence, and the prohibited DATASET-001/002/003
+query/vector inventories. DATASET-001 may remain the searched base corpus, but
+none of its rows or query populations may be reused as a predictive query.
+Every calibration role manifest must include detector evidence explicitly and
+prove no overlap with all already materialized prohibited roles. Prospective
+segments are later-bound: their memberships, roles, order, and payloads must be
+frozen before their own supported-`ef` results are inspected, and completed
+EXP-010 evidence must prove pairwise disjointness across all twenty segments
+and every other catalog role. Omission of a required role manifest, duplicate
+vector, duplicate payload, or role overlap is `INCOMPLETE`. These uniqueness
+and disjointness rules apply to frozen role membership, not to repeated
+execution evidence for an already frozen member.
+
+**Deterministic schedule.** The v1 schedule uses master seed `20260810`. Query-
+order seed material is exactly:
+
+```
+(20260810, cell_id, role_or_segment_id,
+ workload_manifest_sha256, source_revision, "QUERY_ORDER")
+```
+
+Per-query `ef`-order seed material is exactly:
+
+```
+(20260810, cell_id, role_or_segment_id,
+ workload_manifest_sha256, source_revision, "EF_ORDER", query_id_sha256)
+```
+
+Each tuple is encoded with `canonical_serialize_tuple`, prefixed by
+`b"VD::RESPONSE_PROFILE_SCHEDULE_SEED::V1\x00"`, hashed with SHA-256, and
+converted to `seed_u64` from the first eight digest bytes as an unsigned big-
+endian integer. Query order uses one fresh
+`numpy.random.Generator(numpy.random.PCG64(seed_u64)).permutation(1200)` call;
+each query's `ef` order uses a separate fresh generator and one
+`permutation(4)` call over `(200, 400, 800, 1600)`. The schedule contract binds
+its schema/algorithm version, exact NumPy version, complete seed tuples, full
+seed digests, derived uint64 values, and all 4,800 realized `(query_id, ef)`
+positions. Any derivation, RNG/permutation implementation, version, or family
+change requires a new schedule-contract version.
+
+**Durable measurement lifecycle, block closure, and restart.** One query is one
+four-`ef` block. Before any measured search call, its exact schedule position
+must be durably and append-only recorded as `STARTED`; one matching
+`COMPLETED` record may be appended only for that start. A `STARTED` position
+without a valid `COMPLETED` record is terminal, can never be retried as a
+measured observation, and invalidates the run even without an explicit
+invalidation record. A usable profile requires exactly 4,800 matching,
+successful measured completions over exactly 1,200 queries, with no missing,
+extra, duplicate, substituted, or retried-as-new position.
+
+Each block binds immutable pre/post runtime snapshot receipts and is closed only
+after its four scheduled completions and post-block verification succeed.
+Full health/index/data documents may be stored once in immutable runtime,
+epoch, or block receipts and referenced from measurement records by digest;
+equivalent verification strength is required, and a reference may not hide a
+missing or changed identity. Latency is recomputed from finite, ordered client
+monotonic start/end timestamps; recall is recomputed from candidate IDs and
+independently reverified exact-oracle evidence. Stored aggregate recall,
+latency, result-count, threshold-violation, health, or identity assertions are
+never trusted without reconstruction.
+
+Every initial or resumed runtime epoch must durably establish successful replay
+of the entire frozen warm-up role before its first measured `STARTED` record.
+Every resumed epoch replays the exact same frozen, non-measured warm-up
+membership. Each replay creates execution evidence only: it does not create a
+new observation, population, role, or membership and never enters the 1,200
+calibration observations. Missing, incomplete, failed, or identity-incompatible
+warm-up evidence invalidates the run. Restart may resume only at a fully closed
+block boundary under a fresh epoch after complete warm-up replay. An orphan
+`STARTED`, one-to-three completed positions in an unclosed block, or any other
+mid-block restart is terminal; continuation requires a new run ID.
+
+`RUN_SEALED` and `RUN_INVALIDATED` records are audit/publication evidence only.
+Validity and invalidity are always mechanically derived from full manifest and
+record-chain verification. A seal cannot repair incomplete evidence, and the
+absence of an invalidation record cannot neutralize an orphan start, partial
+block, failure, tamper, identity change, or incomplete schedule.
+
+**Detached root and two verification levels.** The strict canonical raw-
+evidence-root payload excludes its own digest and binds every population/role,
+vector, oracle/FLAT, schedule, control, environment, runtime/epoch/block,
+record-chain, source-revision, count, and timestamp commitment. Its detached
+digest is exactly:
+
+```
+raw_evidence_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_RAW_EVIDENCE_ROOT::V1\x00"
+    + canonical_json_bytes(raw_evidence_root_payload)
+).hexdigest()
+```
+
+Internal integrity verification takes a bundle plus expected identity and
+returns only a non-authorizing integrity report. Root-pinned issuance takes the
+bundle, expected identity, and an independently supplied governed root pin;
+it must rerun/reconstruct complete bundle verification itself and must not
+trust a caller-supplied integrity report as sufficient evidence. The expected
+root must never be derived from the same bundle inside the issuing call.
+Successful comparison may issue a private-construction root-pinned calibration-
+evidence capability, but hashes and private constructors are API/integrity
+discipline, not signatures or hostile-host attestation.
+
+R2 remains predictive provenance only. A compromised producer can still lie
+about unobserved searches, timing boundaries, omitted external roles, or a root
+pin it controls; cryptographic signer identity, transparency, or remote
+attestation requires a separate decision. R1 remains unchanged, and R2 creates
+no freshness, policy, Milvus producer, Phase-3, admission, grant, route,
+execution, rollback, or actuation authority.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX

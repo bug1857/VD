@@ -1952,3 +1952,110 @@ Each executed stage must record:
 - explicit no-candidate/no-admission/no-grant/no-route/no-mutation flags; and
 - limitations and all deviations, including an `INCOMPLETE` result when the
   contract cannot be met.
+
+#### R2 raw-evidence protocol clarification (pre-registered 2026-08-09)
+
+This append-only clarification freezes EXP-010's raw-evidence provenance and
+crash-consistency rules before R2 implementation or any response-profile replay
+result is observed. It changes no statistical formula, sample count, supported
+`ef` value, validation cell, acceptance threshold, or authority boundary above.
+
+Before supported-`ef` results are inspected or used for selection, each cell
+must persist immutable detector-trigger, closed role-allocation, 1,200-query
+calibration-population, query-vector, exact-oracle/FLAT-reference, replay-
+schedule, control-profile, and environment-profile commitments. Query IDs use
+unchanged R1 canonicalization:
+
+```
+canonical_query_id_bytes =
+    canonical_serialize_tuple((normalized_query_id,))
+
+query_id_sha256 = SHA256(
+    b"VD::RESPONSE_PROFILE_QUERY_ID::V1\x00"
+    + canonical_query_id_bytes
+).hexdigest()
+```
+
+Integer `1` and string `"1"` therefore collide; other mixed integer/string IDs
+remain permitted. Query vectors use the domain-separated finite contiguous
+little-endian-float32 vector digest defined by ADR-009's R2 clarification. The
+query-payload digest binds only vector digest, metric, threshold stratum,
+radius, range filter, limit, and consistency level; it excludes IDs, roles,
+source/replay positions, order, `ef`, timestamps, results, and index/data
+identity and uses the exact `VD::RESPONSE_PROFILE_QUERY_PAYLOAD::V1` domain and
+canonical payload fixed by ADR-009. Calibration and every validation segment
+require distinct vector and payload digests. `query_id_sha256` is local to its
+source namespace: same-namespace role comparisons use it, while comparisons
+across distinct source namespaces use `observation_identity_sha256`. Bare
+`query_id_sha256` is never treated as a global identity.
+
+The closed role catalog comprises detector evidence, warm-up, calibration,
+twenty indexed prospective segments, Phase-3 qualification, Stage-4 routing,
+recall-audit and schedule-control evidence, historical EXP-001 calibration and
+measured evidence, and prohibited DATASET-001/002/003 query/vector inventories.
+Local IDs are compared only after binding them to the versioned source
+namespace using ADR-009's exact artifact/live-stream discriminated payload and
+`VD::RESPONSE_PROFILE_SOURCE_NAMESPACE::V1` and
+`VD::RESPONSE_PROFILE_OBSERVATION_IDENTITY::V1` domains; role is excluded from
+that cross-role observation identity.
+Calibration must prove disjointness from detector evidence and every already
+materialized prohibited role. Each prospective segment is later frozen before
+its own result inspection, and final EXP-010 evaluation must prove pairwise
+disjointness across every realized role. A missing catalog entry or overlap is
+`INCOMPLETE`. Uniqueness and disjointness apply to frozen role membership, not
+to repeated execution evidence for the same frozen member; vector/payload
+disjointness remains unchanged.
+
+Schedule derivation is exactly the ADR-009 R2 clarification: master seed
+`20260810`; query-order tuple ending in `"QUERY_ORDER"`; per-query `ef` tuple
+ending in `"EF_ORDER", query_id_sha256`; canonical tuple framing; the
+`VD::RESPONSE_PROFILE_SCHEDULE_SEED::V1` domain; unsigned big-endian extraction
+from the first eight SHA-256 bytes; one fresh PCG64 generator for the query
+permutation and one fresh PCG64 generator for every four-`ef` permutation. The
+exact NumPy version, algorithm version, tuples, digests, uint64 seeds, and all
+4,800 realized positions are frozen evidence.
+
+Every initial or resumed runtime epoch must durably complete the full frozen
+warm-up role before its first measured position. Every resumed epoch replays
+the exact same frozen non-measured membership. It creates execution evidence
+only, not a new observation, population, role, or membership, and never counts
+toward the 1,200 calibration observations. Missing, failed, incomplete, or
+identity-incompatible warm-up evidence invalidates the run.
+
+One query remains one four-`ef` block. Every measured call requires a durable
+append-only `STARTED` record before invocation and one matching durable
+`COMPLETED` record afterward. An orphan `STARTED` is terminal and non-retriable
+whether the crash happened before, during, or after the unrecorded call. A valid
+cell requires exactly 4,800 matching successful completions. Each block closes
+only after all four completions and referenced pre/post runtime verification
+succeed. Resume is permitted only after a fully closed block, under a fresh
+epoch with complete warm-up replay; restart during an unclosed partial block is
+terminal and requires a new run ID.
+
+Runtime/epoch/block snapshot receipts may hold full health, load, index, data,
+control, and environment evidence once and be referenced by digest from
+measurement records. Verification must reconstruct every reference and reject
+missing, substituted, incompatible, or changed evidence. Latency is derived
+from client monotonic timestamps, and recall is recomputed from independently
+verified oracle evidence; caller-supplied aggregate values are not trusted.
+
+Run seal/invalidation records are publication evidence, never verdicts. The
+full verified manifests and append-only chain mechanically determine validity;
+an orphan start or incomplete block invalidates evidence without an explicit
+invalidation event, and a forged seal cannot make it complete.
+
+The final canonical raw-evidence-root payload excludes its own digest. Its
+detached domain-separated SHA-256 binds every manifest, receipt, chain head,
+count, identity, source revision, and timestamp required by ADR-009. Internal
+verification of bundle plus expected identity yields only a non-authorizing
+integrity report. Root-pinned capability issuance accepts bundle, expected
+identity, and a separately governed expected root; it must independently rerun
+complete verification and may not rely on a supplied integrity report. The
+expected root is never derived from the same bundle by the issuing call.
+
+Root-pinned evidence is predictive provenance only. Hashes and private
+constructors are not signatures; producer/host compromise, omitted unknown
+external roles, and producer-controlled root pins remain explicit limitations.
+R1 remains unchanged, and no freshness, candidate policy, Milvus producer,
+Phase-3, admission, grant, route, execution, rollback, or actuation authority is
+created by this clarification or by EXP-010.
