@@ -2366,6 +2366,15 @@ Evidence status: CONTRACT DRAFT ONLY — NOT IMPLEMENTED — NOT RUN
 Acceptance note (2026-08-09): The reviewed R0 contract is architecture-approved,
 including its detached profile digest, result-independent population freeze,
 deterministic binary64 recall arithmetic, and exact one-query blocking schedule.
+Implementation note (2026-08-10): ADR-009 §Policy consumption rule 4 policy gate
+(RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE) implemented in `evaluate_tuning_policy`
+as B-001 fix. `CANARY_ENABLED` mode now requires `type(profile_authority) is
+CalibratedResponseProfile`; absent a verified profile, the function returns
+`RECOMMEND_EF` with reason `RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE`. Active-canary
+rollback precedence is preserved. 58 policy tests pass including 12 new
+`ResponseProfileAuthorityTests` cases. R1 builder and full verifier remain the only
+authorised CalibratedResponseProfile constructors. R2-C through R2-F and EXP-010
+remain NOT IMPLEMENTED — NOT RUN.
 
 Problem:
 

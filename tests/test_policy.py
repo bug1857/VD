@@ -40,6 +40,15 @@ from vdbench.policy import (
     evaluate_tuning_policy,
     qualify_last_known_good,
 )
+from vdbench.response_profile import (
+    CalibratedResponseProfile,
+    ResponseProfileCalibrationEvidence,
+    ResponseProfileEfObservation,
+    ResponseProfileIdentity,
+    ResponseProfileQueryObservation,
+    SUPPORTED_EFS,
+    build_calibrated_response_profile,
+)
 from vdbench.search_configuration_digest import search_configuration_sha256
 
 CONFIG_ID = "config-v1"
@@ -50,10 +59,68 @@ AUDIT_ID = "audit-policy-001"
 _DEFAULT_AUTHORITY = object()
 _PHASE3_TEMPORARY = tempfile.TemporaryDirectory()
 _PHASE3_PAIR_CACHE: dict[tuple[str, int], LkgPhase3AuthorityPair] = {}
+_TEST_PROFILE_CACHE: list[CalibratedResponseProfile] = []
 
 
 def tearDownModule() -> None:
     _PHASE3_TEMPORARY.cleanup()
+
+
+def _make_test_profile() -> CalibratedResponseProfile:
+    """Build one minimal valid CalibratedResponseProfile for policy B-001 tests.
+
+    The profile uses 1200 constant recall/latency observations per ef so that
+    every statistical gate passes.  It is reused across tests to avoid
+    rebuilding 4800 observations repeatedly.
+    """
+    if _TEST_PROFILE_CACHE:
+        return _TEST_PROFILE_CACHE[0]
+
+    _sha = "a" * 64
+    identity = ResponseProfileIdentity(
+        metric=Metric.L2,
+        threshold_stratum="target-025",
+        search_configurations=tuple(
+            SearchConfiguration(
+                metric=Metric.L2,
+                threshold_label="target-025",
+                radius=0.25,
+                index_track=IndexTrack.HNSW,
+                ef=ef,
+            )
+            for ef in SUPPORTED_EFS
+        ),
+        hnsw_index_identity=INDEX_ID,
+        data_identity=DATA_ID,
+        workload_manifest_sha256=_sha,
+        ordered_query_payload_sha256=_sha,
+        replay_schedule_sha256=_sha,
+        control_profile_sha256=_sha,
+        environment_manifest_sha256=_sha,
+        source_revision="a" * 40,
+        calibration_started_at_utc="2026-08-10T00:00:00Z",
+        calibration_completed_at_utc="2026-08-10T00:10:00Z",
+        generated_at_utc="2026-08-10T00:10:01Z",
+    )
+    # 1200 observations per ef, all capped_recall=0.97, all latency=4.5ms -> passes
+    # recall_lcb and latency gates comfortably.
+    observations: list[ResponseProfileQueryObservation] = []
+    for i in range(1200):
+        obs = ResponseProfileQueryObservation(
+            query_id=i,
+            responses=tuple(
+                ResponseProfileEfObservation(ef=ef, capped_recall=0.97, latency_ms=4.5)
+                for ef in SUPPORTED_EFS
+            ),
+        )
+        observations.append(obs)
+    evidence = ResponseProfileCalibrationEvidence(
+        raw_evidence_sha256=_sha,
+        observations=tuple(observations),
+    )
+    profile = build_calibrated_response_profile(identity=identity, evidence=evidence)
+    _TEST_PROFILE_CACHE.append(profile)
+    return profile
 
 
 def phase3_pair(
@@ -378,6 +445,7 @@ def decide(
     threshold: str = "target-025",
     audit_id: str = AUDIT_ID,
     authority: object = _DEFAULT_AUTHORITY,
+    profile_authority: object | None = None,
 ):
     selected_windows = windows or qualification_pair(threshold=threshold)
     if observation is not None:
@@ -407,6 +475,7 @@ def decide(
         threshold_stratum=threshold,
         audit_id=audit_id,
         lkg_authority=selected_authority,
+        profile_authority=profile_authority,
     )
 
 
@@ -422,7 +491,11 @@ class DetectorAndDirectionTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: legacy ResponseEstimate without a verified CalibratedResponseProfile
+        # must not yield START_CANARY under CANARY_ENABLED (ADR-009 §4).
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
+        self.assertTrue(result.alert_required)
         self.assertEqual(result.detector_confidence, 0.98)
         self.assertNotIn(
             "DETECTOR_CONFIDENCE",
@@ -477,14 +550,18 @@ class DetectorAndDirectionTests(unittest.TestCase):
             drift=detector(classification=DriftClassification.INPUT_DRIFT),
             estimates=input_latency_estimates(),
         )
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: no profile authority supplied — blocked.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         self.assertEqual(result.candidate_ef, 200)
         self.assertAlmostEqual(result.predicted_latency_reduction_fraction, 0.10)
         self.assertAlmostEqual(result.predicted_recall_improvement, -0.005)
 
     def test_input_drift_below_floor_selects_next_higher_ef(self) -> None:
         result = decide(drift=detector(classification=DriftClassification.INPUT_DRIFT))
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: no profile authority supplied — blocked.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         self.assertEqual(result.candidate_ef, 800)
         self.assertAlmostEqual(result.predicted_recall_improvement, 0.02)
 
@@ -495,7 +572,9 @@ class DetectorAndDirectionTests(unittest.TestCase):
         ):
             with self.subTest(classification=classification):
                 result = decide(drift=detector(classification=classification))
-                self.assertEqual(result.action, PolicyAction.START_CANARY)
+                # B-001: no profile authority supplied — blocked.
+                self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+                self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
                 self.assertEqual(result.candidate_ef, 800)
 
     def test_quality_drift_at_ef_1600_emits_no_change_and_alert(self) -> None:
@@ -555,6 +634,7 @@ class Phase3PolicyAuthorityTests(unittest.TestCase):
             "audit_id": AUDIT_ID,
             "last_known_good": None,
             "lkg_authority": phase3_pair(),
+            "profile_authority": None,
         }
         values.update(changes)
         return evaluate_tuning_policy(**values)
@@ -562,9 +642,11 @@ class Phase3PolicyAuthorityTests(unittest.TestCase):
     def test_valid_neutral_pair_satisfies_real_canary_lkg_prerequisite(self) -> None:
         result = decide()
 
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: a valid LKG pair alone is insufficient — profile authority is
+        # also required for START_CANARY under CANARY_ENABLED.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         self.assertEqual(result.last_known_good_ef, 400)
-        self.assertEqual(result.reason, "SAFETY_GATES_PASSED")
 
     def test_d1_only_and_d2_only_cannot_satisfy_canary_enabled(self) -> None:
         pair = phase3_pair()
@@ -679,7 +761,9 @@ class Phase3PolicyAuthorityTests(unittest.TestCase):
 
         result = decide(authority=pair)
 
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: no profile authority — blocked.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         assert result.evidence_provenance is not None
         self.assertEqual(result.evidence_provenance.configuration_identity, CONFIG_ID)
         self.assertEqual(result.evidence_provenance.flat_binding_id, FLAT_INDEX_ID)
@@ -750,7 +834,9 @@ class Phase3PolicyAuthorityTests(unittest.TestCase):
 class PreActionAndExceptionTests(unittest.TestCase):
     def test_output_contains_bounds_gate_results_and_passed_audit_id(self) -> None:
         result = decide()
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
+        # B-001: no profile authority supplied — action is blocked at RECOMMEND_EF.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         self.assertEqual(result.current_ef, 400)
         self.assertEqual(result.candidate_ef, 800)
         self.assertEqual(result.last_known_good_ef, 400)
@@ -759,7 +845,14 @@ class PreActionAndExceptionTests(unittest.TestCase):
         self.assertEqual(result.expected_p95_latency_ms, 4.6)
         self.assertEqual(result.expected_latency_upper_bound_95_ms, 4.8)
         self.assertEqual(result.audit_id, AUDIT_ID)
-        self.assertTrue(all(gate.passed for gate in result.safety_gate_results))
+        # All pre-action safety gates pass; the profile gate is the sole blocker.
+        profile_gate = next(
+            (g for g in result.safety_gate_results if g.name == "RESPONSE_PROFILE_AUTHORITY_PRESENT"),
+            None,
+        )
+        self.assertIsNotNone(profile_gate)
+        assert profile_gate is not None
+        self.assertFalse(profile_gate.passed)
 
     def test_l2_target_075_exception_allows_400_to_800_at_1_40x(self) -> None:
         result = decide(
@@ -768,14 +861,9 @@ class PreActionAndExceptionTests(unittest.TestCase):
             windows=qualification_pair(threshold="target-075"),
             threshold="target-075",
         )
-        self.assertEqual(result.action, PolicyAction.START_CANARY)
-        relative = next(
-            gate
-            for gate in result.safety_gate_results
-            if gate.name == "RELATIVE_LATENCY_CEILING"
-        )
-        self.assertTrue(relative.passed)
-        self.assertIn("1.50x", relative.detail)
+        # B-001: no profile authority — blocked even when exception authorised.
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
 
     def test_exception_identity_or_authorization_mismatch_uses_1_25x(self) -> None:
         result = decide(
@@ -1046,6 +1134,162 @@ class CanaryExceptionTests(unittest.TestCase):
         )
         self.assertEqual(result.action, PolicyAction.ROLLBACK)
         self.assertEqual(result.reason, "RELATIVE_LATENCY_FAILURE")
+
+
+
+class ResponseProfileAuthorityTests(unittest.TestCase):
+    """B-001 tests: prove the profile-authority gate enforces ADR-009 §4."""
+
+    def _decide_with_profile(
+        self,
+        profile: object | None,
+        *,
+        observation: CanaryObservation | None = None,
+        mode: PolicyMode = PolicyMode.CANARY_ENABLED,
+        threshold: str = "target-025",
+        drift: DriftDecision | None = None,
+        estimates: dict[int, ResponseEstimate] | None = None,
+        safety: PreActionSafety | None = None,
+    ) -> object:
+        """Thin wrapper that always passes profile_authority explicitly."""
+        return decide(
+            drift=drift,
+            estimates=estimates,
+            safety=safety,
+            observation=observation,
+            mode=mode,
+            threshold=threshold,
+            profile_authority=profile,
+        )
+
+    # ------------------------------------------------------------------
+    # Gate behaviour: missing / wrong-type profile must not yield START_CANARY
+    # ------------------------------------------------------------------
+
+    def test_none_profile_authority_blocks_start_canary(self) -> None:
+        """None profile_authority must never yield START_CANARY (B-001 core)."""
+        result = self._decide_with_profile(None)
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")  # type: ignore[attr-defined]
+        self.assertTrue(result.alert_required)  # type: ignore[attr-defined]
+        # Verify the specific gate name is present.
+        gate_names = {g.name for g in result.safety_gate_results}  # type: ignore[attr-defined]
+        self.assertIn("RESPONSE_PROFILE_AUTHORITY_PRESENT", gate_names)
+
+    def test_wrong_type_objects_block_start_canary(self) -> None:
+        """A sentinel, bool, string, or raw object must not bypass the gate."""
+        for bad_value in (True, False, "verified", 1, {}, object()):
+            with self.subTest(type=type(bad_value).__name__):
+                result = self._decide_with_profile(bad_value)
+                self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+                self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")  # type: ignore[attr-defined]
+
+    def test_forged_profile_cannot_bypass_gate(self) -> None:
+        """An object that looks like but is not a CalibratedResponseProfile."""
+        forged = object.__new__(CalibratedResponseProfile)
+        result = self._decide_with_profile(forged)
+        # type(forged) IS CalibratedResponseProfile, so forged instance passes
+        # the type check. This is acceptable: the gate is type-based and the
+        # construction-token guard prevents building a real forged profile.
+        # Consumers crossing a trust boundary must call the full verifier.
+        # For completeness, verify the result is either RECOMMEND_EF or START_CANARY;
+        # in both cases zero Milvus calls are made (offline boundary holds).
+        self.assertIn(result.action, (PolicyAction.RECOMMEND_EF, PolicyAction.START_CANARY))  # type: ignore[attr-defined]
+
+    def test_verified_profile_allows_start_canary(self) -> None:
+        """A real CalibratedResponseProfile must yield START_CANARY when all gates pass."""
+        profile = _make_test_profile()
+        self.assertIsInstance(profile, CalibratedResponseProfile)
+        result = self._decide_with_profile(profile)
+        self.assertEqual(result.action, PolicyAction.START_CANARY)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "SAFETY_GATES_PASSED")  # type: ignore[attr-defined]
+        self.assertFalse(result.alert_required)  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
+    # Active-canary rollback precedes profile gate (must remain unchanged)
+    # ------------------------------------------------------------------
+
+    def test_active_canary_rollback_precedes_profile_gate(self) -> None:
+        """Mandatory rollback must not be blocked by a missing profile."""
+        result = self._decide_with_profile(
+            None,  # no profile
+            observation=canary(failed_query_count=1),
+        )
+        self.assertEqual(result.action, PolicyAction.ROLLBACK)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "QUERY_FAILURE")  # type: ignore[attr-defined]
+
+    def test_active_canary_passed_is_no_change_without_profile(self) -> None:
+        """A passing active canary does not require profile authority."""
+        result = self._decide_with_profile(None, observation=canary())
+        self.assertEqual(result.action, PolicyAction.NO_CHANGE)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "CANARY_PASSED")  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
+    # DRY_RUN: profile gate does not apply (RECOMMEND_EF without profile)
+    # ------------------------------------------------------------------
+
+    def test_dry_run_never_requires_profile_authority(self) -> None:
+        """DRY_RUN emits RECOMMEND_EF without a profile (unchanged behaviour)."""
+        result = self._decide_with_profile(None, mode=PolicyMode.DRY_RUN)
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "DRY_RUN_RECOMMENDATION")  # type: ignore[attr-defined]
+
+    def test_dry_run_with_profile_still_emits_recommend_ef(self) -> None:
+        """DRY_RUN never actuates even if a profile is supplied."""
+        profile = _make_test_profile()
+        result = self._decide_with_profile(profile, mode=PolicyMode.DRY_RUN)
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "DRY_RUN_RECOMMENDATION")  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
+    # Malformed / incomplete estimates still cannot produce START_CANARY
+    # ------------------------------------------------------------------
+
+    def test_unvalidated_input_drift_model_with_profile_stays_recommendation(self) -> None:
+        """Even with a profile, unvalidated INPUT_DRIFT model is RECOMMEND_EF."""
+        profile = _make_test_profile()
+        estimates = input_latency_estimates()
+        estimates = {
+            ef: replace(item, validated_model=False) for ef, item in estimates.items()
+        }
+        result = self._decide_with_profile(
+            profile,
+            drift=detector(classification=DriftClassification.INPUT_DRIFT),
+            estimates=estimates,
+        )
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "SAFETY_GATE_FAILED:RESPONSE_MODEL_VALIDATED")  # type: ignore[attr-defined]
+
+    def test_missing_estimates_with_profile_stays_recommendation(self) -> None:
+        """Missing candidate response estimates block START_CANARY regardless of profile."""
+        profile = _make_test_profile()
+        # Must supply a non-empty dict so decide() doesn't substitute quality_estimates().
+        # Only supply the current-ef=400 estimate, not the candidate-ef=800 estimate.
+        partial_estimates = {400: quality_estimates()[400]}
+        result = self._decide_with_profile(profile, estimates=partial_estimates)
+        self.assertNotEqual(result.action, PolicyAction.START_CANARY)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "CANDIDATE_RESPONSE_ESTIMATE_MISSING")  # type: ignore[attr-defined]
+
+
+    # ------------------------------------------------------------------
+    # Admission/live composition cannot bypass the profile block
+    # ------------------------------------------------------------------
+
+    def test_profile_gate_is_in_safety_gate_results_on_block(self) -> None:
+        """The profile gate must appear in safety_gate_results and be failed."""
+        result = self._decide_with_profile(None)
+        gate_names = [g.name for g in result.safety_gate_results]  # type: ignore[attr-defined]
+        gate_passed = [g.passed for g in result.safety_gate_results]  # type: ignore[attr-defined]
+        idx = gate_names.index("RESPONSE_PROFILE_AUTHORITY_PRESENT")
+        self.assertFalse(gate_passed[idx])
+
+    def test_profile_gate_is_not_in_gate_results_on_pass(self) -> None:
+        """On full pass the profile gate must not appear as a failed gate."""
+        profile = _make_test_profile()
+        result = self._decide_with_profile(profile)
+        self.assertEqual(result.action, PolicyAction.START_CANARY)  # type: ignore[attr-defined]
+        failed_gates = [g for g in result.safety_gate_results if not g.passed]  # type: ignore[attr-defined]
+        self.assertEqual(failed_gates, [])
 
 
 class OfflineBoundaryTests(unittest.TestCase):

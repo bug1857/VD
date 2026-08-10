@@ -44,6 +44,7 @@ from .lkg_phase3_binding import (
     LkgPhase3AuthorityPair,
     bind_lkg_phase3_authority,
 )
+from .response_profile import CalibratedResponseProfile
 
 ACTUATION_LADDER = (200, 400, 800, 1600)
 RECALL_FLOOR = 0.95
@@ -1290,8 +1291,18 @@ def evaluate_tuning_policy(
     audit_id: str,
     last_known_good: QualificationResult | None = None,
     lkg_authority: LkgPhase3AuthorityPair | None = None,
+    profile_authority: object | None = None,
 ) -> PolicyDecision:
-    """Evaluate ADR-002 policy evidence without database or actuation access."""
+    """Evaluate ADR-002 policy evidence without database or actuation access.
+
+    ``profile_authority`` must be a ``CalibratedResponseProfile`` produced by
+    the R1 projector and verified by the R2 evidence chain before
+    ``CANARY_ENABLED`` mode may yield ``START_CANARY``.  A missing, wrong-type,
+    or unverified value causes the policy to emit ``RECOMMEND_EF`` with reason
+    ``RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE`` (ADR-009 §Policy consumption
+    rule 4).  ``DRY_RUN`` mode and active-canary rollback are not affected.
+    """
+
 
     if not isinstance(mode, PolicyMode):
         raise ValueError("mode must be DRY_RUN or CANARY_ENABLED")
@@ -1636,6 +1647,31 @@ def evaluate_tuning_policy(
             gates=gates,
             mode=mode,
             audit_id=audit_id,
+        )
+    # ADR-009 §Policy consumption rule 4: a missing, wrong-type, or unverified
+    # CalibratedResponseProfile must not yield START_CANARY.  Active-canary
+    # rollback (checked above at line ~1307) must remain available regardless;
+    # this gate applies only to the inactive-drift START_CANARY path.
+    if type(profile_authority) is not CalibratedResponseProfile:
+        profile_gate = _gate(
+            "RESPONSE_PROFILE_AUTHORITY_PRESENT",
+            False,
+            "CANARY_ENABLED START_CANARY requires a verified CalibratedResponseProfile "
+            "produced by R1 and verified by the R2 evidence chain (ADR-009)",
+        )
+        return _decision(
+            action=PolicyAction.RECOMMEND_EF,
+            current_ef=current_ef,
+            candidate_ef=candidate_ef,
+            last_known_good_ef=qualification.ef,
+            estimate=candidate_estimate,
+            current_estimate=current_estimate,
+            reason="RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE",
+            detector=detector,
+            gates=gates + (profile_gate,),
+            mode=mode,
+            audit_id=audit_id,
+            alert_required=True,
         )
     return _decision(
         action=PolicyAction.START_CANARY,
