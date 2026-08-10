@@ -174,6 +174,35 @@ class Stage4EvidenceBindingTests(unittest.TestCase):
         self.assertEqual(a.sha256, b.sha256)
         self.assertEqual(a.candidate_search_configuration_sha256, b.candidate_search_configuration_sha256)
 
+    def test_canonical_equality_rejects_substitution(self) -> None:
+        """RL-003: Exact canonical equality requirement rejects substitution attacks."""
+        class MockBinding:
+            def __init__(self, sha256: str):
+                self.sha256 = sha256
+
+        binding = _binding()
+        substitute = MockBinding(binding.sha256)
+
+        # __eq__ should reject a different type even if the digest matches
+        self.assertNotEqual(binding, substitute)
+        self.assertNotEqual(substitute, binding)
+
+        # LegacyStage4EvidenceBindingV1 must not be equal to a v2 binding
+        # even if its sha256 somehow matched (which is cryptographically infeasible,
+        # but type strictness should catch it immediately).
+        from vdbench.canary_stage4_evidence_binding_legacy import LegacyStage4EvidenceBindingV1
+        legacy_mock = LegacyStage4EvidenceBindingV1(**{
+            k: getattr(binding, k) if hasattr(binding, k) else "missing"
+            for k in [
+                "schema_version", "run_id", "source_revision", "metric", "threshold_stratum",
+                "current_ef", "candidate_ef", "last_known_good_ef",
+                "identity", "dataset002_manifest_sha256", "frozen_recall_audit_ids_sha256",
+                "eligible_workload_sha256", "candidate_selection_sha256",
+                "execution_schedule_sha256", "recall_evidence_schema_version",
+                "latency_evidence_schema_version"
+            ]
+        })
+        self.assertNotEqual(binding, legacy_mock)
 
 if __name__ == "__main__":
     unittest.main()

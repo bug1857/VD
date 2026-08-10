@@ -159,3 +159,12 @@ class Stage4EvidenceBinding:
         """Return false, rather than trusting malformed external digests."""
 
         return isinstance(expected_sha256, str) and _SHA256_RE.fullmatch(expected_sha256) is not None and expected_sha256 == self.sha256
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not Stage4EvidenceBinding:
+            return NotImplemented
+        return self.sha256 == other.sha256
+
+    def __hash__(self) -> int:
+        return hash(self.sha256)
+
