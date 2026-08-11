@@ -2238,3 +2238,149 @@ Passing R2-B means structural lifecycle completeness only. It is necessary but
 insufficient for raw-evidence validity, statistical validity, qualification,
 profile use, policy, authorization, routing, or execution. R2-C semantic
 verification remains mandatory before later independent-root-pinned issuance.
+
+### EXP-010 R2-G.3 semantic verification and root-pin preregistration (2026-08-11)
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+
+Risk level: CRITICAL
+
+Governing decision: ADR-009 R2-G.3 accepted clarification.
+
+Before any R2-C result is observed, EXP-010 freezes the exact response-profile
+oracle manifest, 200-member warm-up role, 1,200-member calibration population,
+4,800-position schedule, R2-B run binding, four semantic evidence schemas, R1
+identity, control/environment digests, HNSW/data identities, and source
+revision. Every runtime epoch executes 800 successful non-measured warm-up
+searches: each frozen warm-up member once at each supported `ef` in canonical
+member and ascending-`ef` order.
+
+R2-C acceptance requires complete reconstruction of all 1,200 blocks and 4,800
+successful measured results; exact lifecycle/blob association; passing PRE/POST
+runtime snapshots; independently expected exact-oracle records; threshold-valid
+candidate results; and query-major derived recall/latency observations. No
+producer-supplied aggregate is accepted. R2-C emits only a non-authorizing
+semantic report and computed raw-evidence root.
+
+R2-D acceptance requires a separately governed expected raw-root digest not
+derived from the bundle inside issuance. Issuance reruns complete R2-C
+verification and fails closed on any difference. R2-E acceptance requires exact
+root/identity matching and byte-deterministic projection through the unchanged
+R1 builder. Golden fixtures pin every canonical schema/domain and one complete
+adversarial fixture; production-count tests prove 1,200 observations and 4,800
+positions without shortcuts.
+
+Pre-registered adversarial cases include malformed/noncanonical documents,
+duplicate fields, wrong role/event association, unreferenced or reused blobs,
+warm-up omission/reorder/configuration substitution, runtime identity or health
+drift, schedule/ef/query substitution, failed and timed-out searches, duplicate
+result IDs, non-finite values, threshold/order violation, oracle substitution,
+event timing mismatch, count mismatch, stored aggregate injection, digest
+tamper, self-derived or wrong external root, forged report/capability/profile,
+and cross-import of Stage-4 or candidate authority.
+
+No freshness rule, policy migration, candidate authorization, Milvus producer,
+grant, route, execution, or live claim is part of this clarification. Results
+must not tune schemas, intervals, or failure criteria after the fact.
+
+### EXP-010 R2-G.4 offline producer and publication preregistration (2026-08-11)
+
+Status: CONTRACT DEFINED — NOT IMPLEMENTED — NOT RUN
+
+Risk level: CRITICAL
+
+Governing decision: ADR-009 R2-G.4 accepted clarification.
+
+Before producer results are inspected, EXP-010 freezes an offline injectable
+producer that consumes the exact R2-A/R2-B/R2-C contracts without redefining
+them. Each epoch must issue exactly 800 successful non-measured warm-up calls.
+Each measured position must have one durable STARTED before exactly one external
+search and one atomic result/completion afterward. PRE/POST readiness collection
+occurs outside SQLite transactions. Query material must mechanically rebuild to
+the frozen member identity before any dispatch.
+
+Acceptance requires: deterministic block-boundary resume; no continuation of an
+old epoch; no retry after orphan STARTED; exact 1,200 closed blocks, 4,800
+completed positions, and 4,800 measured calls; explicit fully verified ledger
+export; complete R2-C reconstruction; and no producer-issued root-pinned
+capability. Failure, timeout, malformed result, readiness failure, query
+substitution, crash-point, export tamper, and self-derived-root attempts must
+fail closed. The producer remains offline/injectable and imports no direct
+Milvus, policy, Phase-3, Stage-4, grant, route, or actuation module.
+
+The internally computed raw root is publication evidence only. A later R2-D
+call must receive an independently governed expected root and rerun R2-C. No
+freshness, policy migration, candidate authorization, live traffic, or
+production-readiness claim is part of this checkpoint.
+
+R2-G.4a additionally pre-registers post-run identity composition: static
+identity fields are frozen before execution; calibration start/completion come
+only from the verified first STARTED/last COMPLETED event metadata; generated
+time is captured only after completion. Planned timestamps are forbidden.
+Failed non-measured warm-up emits no completion claim and may restart only as a
+new epoch with the full 800-call replay; measured STARTED positions remain
+strictly non-retriable.
+
+### EXP-011 — Atomic detector-head freshness and profile-policy binding
+
+Status: PREREGISTERED — NOT RUN
+
+Risk level: CRITICAL
+
+Governing proposal: ADR-010 Proposed; Action 7A is structural and
+non-authorizing, and candidate use remains disabled.
+
+Objective: prove offline that response-profile use is bound to the exact
+unsuperseded detector trigger rather than a caller-selected TTL or opaque
+provenance string.
+
+Required scenarios are: canonical pre-result control binding; atomic monitor
+state/head append; restart and complete hash-chain replay; stale/superseded head
+refusal; mismatched window sequence/provenance/manifest/metric/stratum/
+configuration/data/FLAT/HNSW/environment/source refusal; forged historical head
+refusal; concurrent monitor append versus capability refresh; monitor failure
+or state/head divergence; bare profile and bare root-capability refusal; and
+proof that active rollback remains available without any profile evidence.
+
+Pass criteria: only one exact root-pinned profile/control/latest-head tuple may
+produce a fresh-profile capability; any later detector-head append makes the old
+tuple unusable on the next refresh; policy performs no I/O or statistics; no
+legacy response estimate, file monitor state, timestamp, TTL, or human prose can
+substitute; and no candidate action is enabled before separate real EXP-010
+review. Raw output, schemas, canonical golden digests, restart evidence, race
+results, and source revision must be persisted before this EXP can become
+VERIFIED.
+
+#### Prospective evidence protocol required before Action 7B
+
+This protocol is pre-registered and has not been run. For each exact EXP-010 v1
+cell, freeze an independently root-pinned calibrated profile and its control at
+one verified detector-head transaction. Continue collecting detector windows
+without using any prospective result to alter inclusion, ordering, replacement,
+or labels. Partition later detector evaluations prospectively into stationary
+clean windows, materially changed detector lineage, detector algorithm/config
+revision changes, and explicit data/index/environment/source-revision changes.
+Retain periods with no new detector evidence as a separate censored condition;
+do not infer stationarity from silence.
+
+For every later evaluation, replay the frozen profile protocol on the governed
+prospective segment and record simultaneous recall/latency interval coverage,
+profile utility decisions, exact detector state/classification/provenance, and
+the durable head-record lineage. Compare these pre-registered invalidation
+rules without post-result tuning: (A) invalidate on every later head, (B)
+invalidate only on materially changed detector lineage, and (C) preserve across
+stationary clean heads while invalidating exact algorithm/configuration/data/
+index/environment/source incompatibilities. Report false invalidation,
+missed-invalidity, coverage, and regeneration cost separately; no rule becomes
+candidate authority from a single favorable aggregate.
+
+Restart trials must cover clean reopen, head append immediately before/after a
+refresh, interrupted monitor state/head transaction, stale issued wrappers,
+and profile regeneration from a newly committed trigger. Regeneration may be
+triggered experimentally by each candidate rule, but candidate policy
+consumption requires independently reviewed evidence that the selected rule
+preserves the ADR-009 simultaneous safety bounds on later segments, plus an
+accepted ADR-010 status change and signed-lineage propagation. Real collection
+requires the committed offline producer package and, where Milvus replay is
+needed, a separately authorized read-only live command. No result is claimed by
+this preregistration.

@@ -48,6 +48,10 @@ from .monitor_evidence import (
 )
 from .shadow_window import AssembledShadowWindow, PersistedShadowTraceEnvelope, assemble_shadow_window
 from .shadow_event_types import MonitorStreamKey, ShadowTraceEvent, ShadowTraceEventSource
+from .response_profile_detector_head import (
+    ResponseProfileDetectorHead,
+    build_response_profile_detector_head,
+)
 
 
 _SCHEMA_VERSION = "workload-monitor-state-v2"
@@ -141,6 +145,10 @@ class MonitorStreamState:
     processed_event_ids: tuple[str, ...] = ()
     blocked_reason_codes: tuple[str, ...] = ()
     outbox: tuple[MonitorAuditRecord, ...] = ()
+    # The legacy file codec intentionally omits this field and therefore can
+    # never issue latest-head authority.  The hardened SQLite store persists it
+    # atomically with the state snapshot.
+    latest_detector_head: ResponseProfileDetectorHead | None = None
 
 
 class MonitorStateStore(Protocol):
@@ -550,6 +558,13 @@ class WorkloadMonitor:
                 previous_current=window,
                 previous_current_evidence=current_evidence,
                 next_window_sequence=state.next_window_sequence + 1,
+                latest_detector_head=build_response_profile_detector_head(
+                    stream_key=state.stream_key,
+                    window_sequence=window.window_sequence,
+                    detector_state=decision.state,
+                    detector_classification=decision.classification,
+                    detector_provenance=decision.evidence_provenance,
+                ),
             )
             state = _enqueue(
                 state,

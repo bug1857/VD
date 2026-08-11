@@ -2366,15 +2366,14 @@ Evidence status: CONTRACT DRAFT ONLY — NOT IMPLEMENTED — NOT RUN
 Acceptance note (2026-08-09): The reviewed R0 contract is architecture-approved,
 including its detached profile digest, result-independent population freeze,
 deterministic binary64 recall arithmetic, and exact one-query blocking schedule.
-Implementation note (2026-08-10): ADR-009 §Policy consumption rule 4 policy gate
-(RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE) implemented in `evaluate_tuning_policy`
-as B-001 fix. `CANARY_ENABLED` mode now requires `type(profile_authority) is
-CalibratedResponseProfile`; absent a verified profile, the function returns
+Implementation note (corrected 2026-08-11): ADR-009 §Policy consumption rule 4
+is enforced as a temporary hard interlock in `evaluate_tuning_policy`.
+`CANARY_ENABLED` cannot yield `START_CANARY` from any current value, including a
+valid bare R1 `CalibratedResponseProfile` or an object-forged instance; it returns
 `RECOMMEND_EF` with reason `RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE`. Active-canary
-rollback precedence is preserved. 58 policy tests pass including 12 new
-`ResponseProfileAuthorityTests` cases. R1 builder and full verifier remain the only
-authorised CalibratedResponseProfile constructors. R2-C through R2-F and EXP-010
-remain NOT IMPLEMENTED — NOT RUN.
+rollback precedence and DRY_RUN compatibility are preserved. R2-C through R2-F,
+independent root-pinned issuance, freshness governance, policy-chain profile-
+digest binding, and EXP-010 remain NOT IMPLEMENTED — NOT RUN.
 
 Problem:
 
@@ -3095,6 +3094,398 @@ validity or statistical validity. It never grants qualification, profile,
 policy, admission, authorization, routing, or execution authority. R2-C must
 semantically verify the opaque evidence before any later root-pinned
 calibration-evidence capability can exist.
+
+#### R2-G.3 semantic evidence, root pin, and R1 projection clarification (2026-08-11)
+
+Status: Accepted — implementation and adversarial verification pending
+
+Risk level: CRITICAL
+
+This append-only clarification freezes the missing R2-C through R2-E boundary.
+It changes no R1 statistic, R2-A population or schedule, R2-B lifecycle, Phase-3
+authority, Stage-4 evidence, policy, grant, route, or actuation contract. The
+response-profile path remains predictive and non-authorizing.
+
+**Options considered.** Reusing Stage-4 recall/latency evidence was rejected:
+its purpose, schedule, identity, and confidence contracts differ and would make
+Stage-4 evidence accidental response-profile authority. Trusting producer-
+supplied aggregate recall/latency was rejected because it cannot prove query-
+level schedule, oracle, threshold, or timing semantics. The selected design uses
+response-profile-specific canonical raw documents, complete reconstruction, an
+independently supplied root pin, and the unchanged R1 estimator as separate
+boundaries.
+
+**Common canonical rules.** Every semantic document is strict canonical JSON
+using `vdbench.artifacts.canonical_json_bytes`: exact field inventory and types,
+no duplicate JSON keys at a byte-parsing boundary, NFC text, lowercase 64-hex
+digests, finite binary64 numbers, booleans forbidden where integers or numbers
+are required, and byte-identical reconstructive verification. Each document
+stores its detached digest beside a payload that excludes that digest. Private
+constructors are API discipline, not signatures or hostile-host attestation.
+
+**Independent exact-oracle catalog.** Before replay, one immutable
+`response-profile-oracle-manifest-v1` contains exactly 1,200 records in the
+calibration population's frozen canonical order. Each strict
+`response-profile-oracle-record-v1` binds observation identity, query-ID digest,
+query-payload digest, exact positive result limit, exact non-negative full
+threshold cardinality, and capped exact-oracle result IDs and distances in
+metric order with integer-ID tie breaking. Result IDs are exact distinct
+integers; distances are finite binary64 values satisfying governed range
+semantics. Capped length is `min(full_count, limit)`. Record and manifest digest
+domains are `b"VD::RESPONSE_PROFILE_ORACLE_RECORD::V1\x00"` and
+`b"VD::RESPONSE_PROFILE_ORACLE_MANIFEST::V1\x00"`. Verification receives an
+independently verified expected oracle-manifest digest; a digest derived from
+the measured bundle inside the verifier cannot satisfy that expectation.
+
+**Warm-up execution.** `WARMUP_EXECUTION` bytes are one strict
+`response-profile-warmup-execution-v1` document under digest domain
+`b"VD::RESPONSE_PROFILE_WARMUP_EXECUTION::V1\x00"`. It binds lifecycle run,
+epoch, 200-member warm-up role-manifest digest, control/environment digests,
+HNSW/index and data identities, source revision, and exactly 800 execution
+records. In frozen role-member order, each member executes exactly once at each
+`ef` in `(200, 400, 800, 1600)` ascending order. Each record binds observation
+identity, query-ID digest, query-payload digest, exact validated HNSW search-
+configuration digest, `ef`, and outcome `SUCCESS`. Warm-up records contain no
+latency, recall, result IDs, distances, or calibration observation. Missing,
+failed, duplicate, extra, reordered, identity-mismatched, or configuration-
+mismatched execution invalidates the semantic run. A new epoch repeats the same
+membership as execution evidence only.
+
+**Runtime snapshots.** Both runtime roles use schema
+`response-profile-runtime-snapshot-v1` and digest domain
+`b"VD::RESPONSE_PROFILE_RUNTIME_SNAPSHOT::V1\x00"`. The payload binds lifecycle
+run, epoch, block, phase `PRE_BLOCK` or `POST_BLOCK`, RFC3339 UTC observation
+metadata, metric, threshold stratum, control/environment digests, HNSW/index
+and data identities, source revision, all four exact HNSW search-configuration
+digests in supported-`ef` order, collection-loaded state, and Milvus/etcd/MinIO
+health. Health and load values must be exact `true`; all identities and
+configurations must equal expected profile identity. PRE binds only
+`BLOCK_STARTED`; POST binds only its matching `BLOCK_CLOSED`. One block's PRE
+and POST agree on every non-time field. Snapshots contain no response result.
+
+**Measured results.** `MEASURED_RESULT` bytes use schema
+`response-profile-measured-result-v1` and digest domain
+`b"VD::RESPONSE_PROFILE_MEASURED_RESULT::V1\x00"`. The payload binds lifecycle
+run, epoch, block, schedule position, matching STARTED-event digest,
+observation identity, query-ID digest, query-payload digest, scheduled `ef`,
+exact validated HNSW search-configuration digest, independently expected oracle
+record digest, outcome, candidate IDs, candidate distances, and failure code.
+Outcome is exactly `SUCCESS`, `FAILED`, or `TIMED_OUT`. A usable calibration run
+requires `SUCCESS`; failed/timed-out documents preserve evidence but invalidate
+semantic completion and contain empty result arrays plus a canonical non-empty
+failure code. Successful documents have a null failure code, exact distinct
+integer IDs, same-length finite binary64 distances, at most `limit` results,
+metric-monotonic order, and no threshold violation. Candidate tie order is not
+authority; recall is set-based against capped oracle IDs.
+
+The verifier recomputes capped recall with the repository's governed empty-
+reference rule and recomputes latency milliseconds exactly as
+`(completed_monotonic_ns - started_monotonic_ns) / 1_000_000.0` from matching
+R2-B events. It trusts no result-supplied recall, latency, cardinality,
+threshold, health, or identity assertion. All derived values must be finite.
+Cross-position chronology and event/result association remain governed by R2-B.
+
+**R2-C bundle and semantic report.** One immutable in-memory bundle contains
+fully reconstructed R2-A calibration population, warm-up manifest, replay
+schedule, R2-B run binding, complete ordered event chain, every referenced
+opaque blob, independent oracle manifest, and expected R1 profile identity.
+R2-C reruns R2-A and R2-B reconstruction, then verifies every semantic document
+and exact one-to-one reference. Unreferenced, multiply referenced, missing,
+substituted, or wrong-role bytes fail closed. The strict
+`response-profile-semantic-verification-v1` report binds all expected identity
+fields; run/event/blob/oracle/population/schedule digests; exact counts; ordered
+query/`ef` derived recall and latency observations; calibration timestamps;
+stable reason codes; and `complete`. Its detached digest domain is
+`b"VD::RESPONSE_PROFILE_SEMANTIC_VERIFICATION::V1\x00"`. It is a non-authorizing
+integrity report and cannot itself be consumed by policy.
+
+**Raw-evidence root.** A complete report constructs the already-governed
+`response-profile-raw-evidence-root-v1` payload from exact profile identity,
+population/role/schedule/run/oracle/report digests, ordered lifecycle-event
+digests, ordered opaque-descriptor and byte digests, counts, and calibration
+timestamps. The payload excludes its digest. The existing
+`b"VD::RESPONSE_PROFILE_RAW_EVIDENCE_ROOT::V1\x00"` formula remains unchanged.
+Internal verification returns the report and computed root only; it issues no
+candidate-capable evidence.
+
+**R2-D independently root-pinned capability.** Issuance takes the entire bundle,
+exact expectation, and one independently supplied lowercase raw-evidence root.
+It reruns R2-C and compares the computed root with `hmac.compare_digest`; a
+caller-supplied prior report is insufficient. Only a complete match privately
+constructs immutable `root-pinned-response-profile-evidence-v1`, binding the
+semantic-report digest, raw root, all R1 identity fields, and exact query-major
+derived observations. Its detached digest domain is
+`b"VD::ROOT_PINNED_RESPONSE_PROFILE_EVIDENCE::V1\x00"`. This is root-pinned
+integrity, not qualification, freshness, admission, grant, routing, execution,
+or signer authority.
+
+**R2-E deterministic R1 projection.** Projection accepts only the exact concrete
+root-pinned capability plus independently supplied expected root and R1
+identity. It reconstructs the capability, compares root and identity, builds
+`ResponseProfileCalibrationEvidence` in frozen query order with responses in
+`(200, 400, 800, 1600)` order, and invokes existing R1
+`build_calibrated_response_profile`. R1 formulas, ranks, profile schema, and
+digest are not reimplemented. The resulting profile's
+`raw_evidence_sha256` equals the independent root pin. Bare R1 profiles and R2-C
+reports remain non-authorizing.
+
+**Failure and dependency boundaries.** Malformed/non-canonical documents,
+unsupported schemas, source/configuration/identity mismatch, missing roles,
+failed searches, oracle disagreement, threshold violation, health failure,
+schedule substitution, lifecycle/count/digest/root mismatch, and unreferenced
+or reused evidence fail closed with stable reasons and no partial capability or
+profile. R2-C through R2-E import no policy, Phase-3, Stage-4, grant, route,
+actuation, Milvus client, or live-service module. Freshness, policy profile-
+digest propagation, producer execution, and adversarial publication remain
+separate reviewed checkpoints.
+
+Consequences: v1 stores substantial query-level evidence and performs complete
+reconstruction, prioritizing research validity over throughput. The 800-search
+per-epoch warm-up cost is explicit. Compression or authenticated signing needs
+a new contract with equivalence evidence; v1 historical bytes are never
+reinterpreted.
+
+#### R2-G.4 offline producer, durable export, and adversarial publication clarification (2026-08-11)
+
+Status: Accepted — implementation and adversarial verification pending
+
+Risk level: CRITICAL
+
+This append-only clarification governs R2-F's offline composition. It does not
+authorize a Milvus adapter, candidate traffic, policy consumption, freshness,
+grant, routing, or actuation.
+
+**Verified durable export.** The R2-B2 ledger may expose one explicit immutable
+`response-profile-lifecycle-export-v1` value containing only the exact verified
+run binding, complete ordered event chain, and complete event-ordered opaque
+evidence collection. Export occurs under the ledger's existing ownership and
+thread lock, in one coherent SQLite read transaction, after file, schema,
+pragma, run-binding, canonical-document, hash-chain, head, foreign-key, and full
+R2-B reconstruction checks. It is refused for a poisoned/closed instance,
+terminal recovery, an active measurement permit, a recovery interlock, or a
+structurally incomplete lifecycle. Exported bytes are copied immutable values;
+the metadata-only `current_view` remains unchanged. The export is evidence
+transport only, never authority, and R2-C must independently reconstruct it.
+
+**Producer ports and trusted inputs.** One offline `ResponseProfileProducer`
+composition consumes exact R2-A calibration/warm-up manifests and replay
+schedule through the immutable R2-B run binding; one expected R1 identity; one
+independently constructed exact-oracle manifest; canonical query material for
+every frozen calibration and warm-up member; the durable ledger; and injected
+ports for query execution, runtime readiness snapshots, a monotonic clock, and
+UTC metadata time. Query material is accepted only when rebuilding the existing
+R2-A vector/query-payload/observation identities yields the exact frozen member.
+The producer neither constructs nor chooses the independent oracle/root pin.
+
+The query-execution port accepts one immutable query vector plus the exact
+validated HNSW `SearchConfiguration` selected by the governed schedule and
+returns only exact candidate IDs/distances. The producer records monotonic time
+immediately before durable STARTED and immediately after the external call; it
+does not trust a client-reported latency. Runtime readiness is collected outside
+the SQLite lock and encoded into the governed PRE/POST snapshots. No external
+query, health, oracle, filesystem publication, or reviewer operation occurs
+while a ledger transaction is held.
+
+**Execution and crash ordering.** Every initial or resumed epoch executes all
+800 governed non-measured warm-up searches successfully before one atomic
+`WARMUP_COMPLETED` append. For each next block the producer collects and appends
+PRE, durably appends each `MEASUREMENT_STARTED`, invokes exactly one search only
+after receiving that current-instance permit, atomically appends the matching
+result and completion, collects/appends POST, and closes the block. A client
+failure or timeout is persisted as the governed failed result and ends the run
+fail closed; it is not replaced or retried. A crash after STARTED remains the
+R2-B terminal orphan. Resume is derived only from verified ledger state: closed-
+block reopen begins a fresh epoch and complete warm-up; warm-up-only interruption
+also begins a fresh epoch; a terminal orphan/partial block cannot resume.
+
+**Publication boundary.** After exactly 1,200 closed blocks and 4,800 completed
+positions, the producer may append audit-only `RUN_SEALED`, request the verified
+durable export, assemble the R2-C bundle from that export and the frozen
+independent inputs, and run internal R2-C verification. Its result is only the
+non-authorizing semantic report and computed raw root. R2-D issuance remains a
+separate reviewer/composition call that receives an independently supplied
+expected root and reruns R2-C. The producer must not feed its own computed root
+back as the independent pin.
+
+**Failure and bounded execution.** Construction rejects missing, duplicate,
+extra, noncanonical, or identity-mismatched query material before dispatch. A
+bounded `run(max_blocks)` operation may stop only at a closed-block boundary and
+reports progress without claiming completion. Unexpected port, ledger, encoding,
+or verification failures fail closed with stable reason codes and no retry of a
+durably started position. No mutable aggregate, caller-supplied cursor, seal, or
+result count is progress authority; ledger reconstruction is authoritative.
+
+R2-F adversarial verification must prove zero search before durable STARTED,
+exact 800-search warm-up per epoch, exact 4,800 measured calls, deterministic
+resume, failure/timeout persistence, no measured retry, query-material
+substitution refusal, unhealthy snapshot refusal by R2-C, explicit export
+reconstruction, self-derived-root non-issuance, and static absence of policy,
+Stage-4, grant, route, actuation, and direct Milvus dependencies.
+
+##### R2-G.4a runtime/final identity composition clarification (2026-08-11)
+
+The producer cannot possess final calibration timestamps before performing the
+measurements that define them. It therefore receives one immutable static
+calibration context containing exactly the R1 identity fields other than
+`calibration_started_at_utc`, `calibration_completed_at_utc`, and
+`generated_at_utc`. Runtime semantic documents bind only that static projection.
+After verified durable export, the first measured STARTED metadata timestamp and
+last measured COMPLETED metadata timestamp become the calibration interval; an
+injected UTC clock supplies `generated_at_utc` no earlier than completion. The
+producer then constructs the ordinary unchanged R1 `ResponseProfileIdentity`.
+No planned, caller-predicted, or rewritten measurement timestamp is accepted.
+R2-C still receives and verifies the final complete R1 identity.
+
+A failed or interrupted non-measured warm-up never emits `WARMUP_COMPLETED` and
+cannot proceed to measurement. It may be abandoned under the already-governed
+warm-up-only recovery rule; the next producer attempt starts a fresh epoch and
+replays all 800 warm-up calls. This is not retry of a measured observation and
+does not change population membership. Once any measured STARTED is durable,
+the existing orphan/partial-block terminal rules apply without exception.
+
+---
+
+### ADR-010: Bind response profiles to an atomic latest detector head without a universal TTL
+
+Status: Proposed — offline structural implementation under review; candidate use remains disabled
+
+Risk level: CRITICAL
+
+#### Context and decision drivers
+
+ADR-009 intentionally forbids inventing a universal response-profile TTL. The
+completed R2-C through R2-F boundaries prove raw calibration integrity but do
+not yet prove which detector trigger caused calibration or that no later
+detector evaluation superseded it. `control_profile_sha256` is currently only
+an opaque identity pin, and `FileMonitorStateStore` cannot atomically issue a
+verified latest-head capability. Treating either as freshness would be a
+candidate-authority bypass.
+
+The design must preserve rollback-first policy behavior, keep pure policy free
+of I/O, bind the exact detector trigger before calibration results, detect every
+later detector evaluation, and remain fail closed when monitoring stalls or its
+state cannot be verified.
+
+#### Options considered
+
+1. **Fixed elapsed-time TTL.** Rejected: EXP-010 has not established a
+   transportable duration, and a timestamp cannot prove workload stationarity.
+2. **Read `FileMonitorStateStore` immediately before policy.** Rejected: it has
+   no atomic latest-decision record, process ownership, hash chain, or coherent
+   issue-and-compare transaction.
+3. **Human assertion that the profile is fresh.** Rejected as machine
+   authority; a human may still refuse or approve a later signed grant.
+4. **Pre-result trigger binding plus append-only atomic detector-head ledger.**
+   Chosen: freshness becomes exact lineage compatibility, not elapsed-time
+   inference.
+
+#### Pre-result control binding
+
+Before any calibration result is inspected, one strict canonical
+`response-profile-control-v1` document binds exactly:
+
+- schema version;
+- monitor stream identity (`stream_id`, metric, threshold stratum,
+  configuration identity, data identity, FLAT identity, HNSW identity);
+- exact detector `EvidenceProvenance.sha256`, reference/current window IDs and
+  manifests, and the exact evaluated current `window_sequence`;
+- the exact canonical detector-head digest plus the verified durable head-record
+  sequence, record digest, and persistence timestamp from which the control was
+  frozen;
+- calibration-population, warm-up-role, ordered-query-payload, and replay-
+  schedule digests;
+- environment-manifest digest and source revision; and
+- `frozen_at_utc` metadata captured before response-profile results.
+
+Its detached digest is
+`SHA256(b"VD::RESPONSE_PROFILE_CONTROL::V1\x00" + canonical_json_bytes(payload))`.
+R2-C receives the concrete control document independently, reconstructs its
+detector provenance, verifies exact R2-A/R2-B/R1 identity agreement, and
+requires its digest to equal `ResponseProfileIdentity.control_profile_sha256`.
+The control document becomes part of the semantic bundle and raw-root
+projection through that already-bound identity digest. A caller-chosen opaque
+digest can no longer establish trigger lineage.
+
+#### Atomic latest detector head
+
+A new hardened SQLite store owns one append-only chain per monitor stream. Each
+terminal detector evaluation appends one strict
+`response-profile-detector-head-v1` record in the same transaction that stores
+the monitor state/outbox transition exposing that evaluation. The record binds
+stream identity, exact window sequence, detector state/classification, and the
+complete detector provenance. Detector state and classification are retained
+because provenance alone does not bind the terminal detector outcome and could
+otherwise substitute a different classification over the same evidence
+lineage. Policy audit ID is deliberately excluded because policy follows the
+detector trigger and must not become part of detector authority. A separate
+detector-evaluation timestamp is excluded because it cannot prove durable
+ordering. The durable head record instead binds a unique store-instance
+identity, persistence timestamp, previous-record digest, sequence, and canonical
+record digest. The store-instance identity prevents a semantically identical
+head from another ledger from substituting for the committed trigger; the
+record digest and timestamp make transaction identity and ordering mechanically
+checkable. STRICT tables, exact schema verification,
+UPDATE/DELETE triggers, `BEGIN IMMEDIATE`, process ownership, path hardening,
+and full chain reconstruction follow the existing hardened-ledger contracts.
+
+The legacy file store remains valid for DRY_RUN compatibility but can never
+issue freshness evidence. Candidate-capable composition requires the SQLite
+store's private `VerifiedLatestDetectorHead`, issued from one coherent read
+transaction after complete chain verification. It is a snapshot at that
+instant, not a promise that it remains latest forever.
+
+#### Non-authorizing verified-refresh evidence
+
+One pure binder consumes the exact concrete root-pinned R2-D capability, its
+deterministically projected R1 profile, the verified control document, and one
+verified-latest detector head. It reconstructs all inputs and requires:
+
+- profile/root/capability/control digests agree exactly;
+- control trigger provenance, terminal detector outcome, window sequence, head
+  digest, durable head-record sequence, record digest, and persistence timestamp
+  equal the verified latest head;
+- metric, stratum, configuration, data, FLAT, and HNSW identities agree with
+  the detector provenance and policy pre-action evidence;
+- durable head-record persistence precedes control freeze, control freeze
+  strictly precedes profile calibration start, and calibration uses the
+  exact governed population/schedule/environment/source identities; and
+- no newer detector head exists at the issuing refresh.
+
+`FreshResponseProfileEvidence` is historical, non-authorizing evidence of one
+verified refresh instant only: at that instant, the root-pinned profile/control
+lineage matched the store-issued latest detector head. It does not promise
+continuing freshness and cannot establish qualification, policy, admission,
+grant, activation, routing, or execution authority. Private construction is API
+discipline, not cryptographic authenticity. The binder performs no statistics
+and no I/O.
+
+Policy remains rollback-first and the existing B-001 candidate interlock remains
+closed. Action 7A does not consume this evidence in candidate-capable policy.
+Future candidate-capable evaluation, if separately accepted after prospective
+evidence, must acquire one newly verified latest-head snapshot in the same
+governed policy-evaluation composition and bind that exact durable head-record
+digest into the resulting policy and signed lineage. A previously issued latest
+head or refresh-evidence value is historical only. Future activation must
+revalidate the governed latest-head lineage under the separately reviewed
+signed-lineage contract. DRY_RUN may inspect verified predictive evidence for
+diagnostics, but no bare profile, legacy estimate, or Action-7A wrapper may
+authorize `START_CANARY`.
+
+#### Evidence gate and consequences
+
+This proposal defines structural machinery for detecting exact detector-lineage
+compatibility; it does not define the empirical rule for when a later head
+should invalidate a profile and does not claim a time TTL. Candidate-capable
+issuance remains disabled until EXP-010/EXP-011 prospective evidence is produced
+and independently reviewed, an invalidation policy is accepted, and the atomic-
+head implementation passes restart, race, tamper, stale-head, and TOCTOU tests.
+The mechanism can detect a later or incompatible head; whether a stationary
+later head preserves predictive validity is an empirical question, not an
+Action-7A architecture claim.
+
+Signed grant, activation, route-state, lifecycle, and execution-ledger v2
+propagation are deliberately deferred to ADR-011. No existing v1 grant or
+historical audit record is reinterpreted as carrying response-profile lineage.
 
 ---
 
