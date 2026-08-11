@@ -475,9 +475,10 @@ class QualificationReportCliTests(unittest.TestCase):
         OBSERVATION_COUNT_INVALID INCOMPLETE from a 5-of-1200 ledger, never
         a "binding-json is malformed" rejection)."""
         document = dict(self.binding.to_document())
-        argv = self._tampered_binding_argv(run_id="run-valid-canonical-v2", document=document)
+        run_id = self.binding.run_id
+        argv = self._tampered_binding_argv(run_id=run_id, document=document)
         _populate_ledger(
-            self.ledger_path, run_id="run-valid-canonical-v2", binding_sha256=self.binding_sha256,
+            self.ledger_path, run_id=run_id, binding_sha256=self.binding_sha256,
             all_perfect=True, count=5,
         )
         buffer = io.StringIO()
@@ -500,19 +501,21 @@ class QualificationReportCliTests(unittest.TestCase):
     # -- recall-only mode ---------------------------------------------------
 
     def test_recall_only_exits_zero_when_passing_with_no_latency_evidence(self) -> None:
-        _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True)
+        run_id = self.binding.run_id
+        _populate_ledger(self.ledger_path, run_id=run_id, binding_sha256=self.binding_sha256, all_perfect=True)
         exit_code = main(
-            ["--report-kind", "recall-only", *self._base_argv(ledger_path=self.ledger_path, run_id="run-pass")]
+            ["--report-kind", "recall-only", *self._base_argv(ledger_path=self.ledger_path, run_id=run_id)]
         )
         self.assertEqual(exit_code, 0)
 
     def test_recall_only_report_self_identifies_and_never_claims_qualification(self) -> None:
-        _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True)
+        run_id = self.binding.run_id
+        _populate_ledger(self.ledger_path, run_id=run_id, binding_sha256=self.binding_sha256, all_perfect=True)
         completed = subprocess.run(
             [
                 sys.executable, "-m", "vdbench.canary_stage4_qualification_report",
                 "--report-kind", "recall-only",
-                *self._base_argv(ledger_path=self.ledger_path, run_id="run-pass"),
+                *self._base_argv(ledger_path=self.ledger_path, run_id=run_id),
             ],
             capture_output=True, text=True, env=_subprocess_env(),
         )
@@ -556,12 +559,13 @@ class QualificationReportCliTests(unittest.TestCase):
         self.assertEqual(payload["decision_status"], Stage4DecisionStatus.INCOMPLETE.value)
 
     def test_full_qualification_exits_zero_when_both_present_bound_and_passing(self) -> None:
-        _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True)
+        run_id = self.binding.run_id
+        _populate_ledger(self.ledger_path, run_id=run_id, binding_sha256=self.binding_sha256, all_perfect=True)
         exit_code = main(
             [
                 "--report-kind", "full-qualification",
-                *self._base_argv(ledger_path=self.ledger_path, run_id="run-pass"),
-                *self._full_latency_argv(run_id="run-pass"),
+                *self._base_argv(ledger_path=self.ledger_path, run_id=run_id),
+                *self._full_latency_argv(run_id=run_id),
             ]
         )
         self.assertEqual(exit_code, 0)

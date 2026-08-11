@@ -187,6 +187,19 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
         self.assertIsNone(result.execution_ledger_chain_head_sha256)
         self.assertIsNone(result.schedule_evaluation)
 
+    def test_execution_ledger_run_lineage_cannot_be_relabelled(self) -> None:
+        ledger = self._ledger(run_id="different-stage4-run")
+        binding = _binding_for(self.schedule)
+
+        result = build_stage4_latency_evidence(
+            binding=binding, schedule=self.schedule, ledger=ledger
+        )
+
+        self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
+        self.assertEqual(result.reason_codes, ("EVIDENCE_BINDING_MISMATCH",))
+        self.assertIsNone(result.evidence_binding_sha256)
+        self.assertIsNone(result.execution_ledger_chain_head_sha256)
+
     def test_mismatched_metric_binding_is_incomplete(self) -> None:
         ledger = self._ledger()
         binding = _binding_for(
@@ -236,7 +249,7 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
         maps to FAILING here too, not INCOMPLETE. Only a binding mismatch
         (checked before the ledger is even read) is INCOMPLETE at this layer."""
         ledger = self._ledger()
-        binding = _binding_for(self.schedule)
+        binding = _binding_for(self.schedule, run_id=ledger.run_id)
 
         result = build_stage4_latency_evidence(binding=binding, schedule=self.schedule, ledger=ledger)
 
@@ -269,7 +282,7 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
                 reason_code=None,
             )
             self.assertTrue(ledger.append(observation).accepted)
-        binding = _binding_for(self.schedule)
+        binding = _binding_for(self.schedule, run_id=ledger.run_id)
 
         result = build_stage4_latency_evidence(binding=binding, schedule=self.schedule, ledger=ledger)
 

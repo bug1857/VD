@@ -42,6 +42,7 @@ from vdbench.response_profile_lifecycle import (
 )
 from vdbench.response_profile_lifecycle_ledger import (
     MeasurementStartPermit,
+    ResponseProfileLifecycleExport,
     ResponseProfileLifecycleLedger,
     ResponseProfileLifecycleLedgerError,
 )
@@ -960,6 +961,33 @@ class RecoveryInterlockTests(ResponseProfileLifecycleLedgerFixture):
 
 
 class VerificationAndDependencyTests(ResponseProfileLifecycleLedgerFixture):
+    def test_raw_export_is_private_and_refuses_incomplete_lifecycle(self) -> None:
+        with self.assertRaises(TypeError):
+            ResponseProfileLifecycleExport()
+        with self._ledger() as ledger:
+            self._ready(ledger)
+            _assert_error(
+                self,
+                ledger.export_verified_lifecycle,
+                "LIFECYCLE_EXPORT_UNAVAILABLE",
+            )
+
+    def test_complete_lifecycle_exports_fully_reconstructed_evidence(self) -> None:
+        with self._ledger() as ledger:
+            self._ready(ledger)
+            for block in range(CALIBRATION_QUERY_COUNT):
+                self._complete_block(ledger, block=block)
+            exported = ledger.export_verified_lifecycle()
+
+        self.assertIs(type(exported), ResponseProfileLifecycleExport)
+        self.assertEqual(exported.run_binding, self.binding)
+        self.assertEqual(len(exported.events), 12_002)
+        self.assertEqual(len(exported.opaque_evidence), 7_201)
+        self.assertEqual(
+            tuple(event.event_seq for event in exported.events),
+            tuple(range(12_002)),
+        )
+
     def test_expected_run_binding_and_canonical_blob_tamper_fail_closed(self) -> None:
         with self._ledger() as ledger:
             self._ready(ledger)

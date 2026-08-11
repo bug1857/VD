@@ -372,7 +372,9 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
         evidence into a PASSING decision."""
 
         recall_ledger = CanaryRecallAuditLedger(
-            self.ledger_path, run_id="fake-pipeline-run-3", binding_sha256=self.binding.sha256
+            self.ledger_path,
+            run_id=self.binding.run_id,
+            binding_sha256=self.binding.sha256,
         )
         for query_id in self.frozen_query_ids:
             oracle_ids, candidate_ids = _fake_oracle_and_candidate_ids(
@@ -383,7 +385,7 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
                     query_id=query_id,
                     oracle_result_ids=oracle_ids,
                     candidate_result_ids=candidate_ids,
-                    producer_run_id="fake-pipeline-run-3",
+                    producer_run_id=self.binding.run_id,
                     recorded_at_utc="2026-08-04T00:00:00Z",
                     **self.context,
                 )
@@ -398,17 +400,11 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
         self.assertEqual(recall_evaluation.status, EvaluationStatus.PASSING)
 
         unrelated_binding = replace(self.binding, run_id="a-completely-different-run")
-        latency_ledger = self._populate_latency_ledger(run_id="fake-pipeline-run-3")
+        latency_ledger = self._populate_latency_ledger(run_id=unrelated_binding.run_id)
         mismatched_latency_evidence = build_stage4_latency_evidence(
             binding=unrelated_binding, schedule=self.schedule, ledger=latency_ledger
         )
-        # The ledger itself was never bound to unrelated_binding's schedule
-        # digest expectation check (schedule/ledger still match each other),
-        # but the *ledger's* schedule_sha256 still matches the real schedule
-        # while unrelated_binding also declares that same schedule digest --
-        # so this evidence is individually PASSING; the mismatch that must
-        # be caught is the binding *identity* (run_id), proven below via the
-        # decision-level digest inequality, not at this construction step.
+        self.assertEqual(mismatched_latency_evidence.status, EvaluationStatus.PASSING)
         self.assertNotEqual(mismatched_latency_evidence.evidence_binding_sha256, self.binding.sha256)
 
         decision = combine_stage4_decision(

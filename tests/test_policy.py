@@ -847,7 +847,11 @@ class PreActionAndExceptionTests(unittest.TestCase):
         self.assertEqual(result.audit_id, AUDIT_ID)
         # All pre-action safety gates pass; the profile gate is the sole blocker.
         profile_gate = next(
-            (g for g in result.safety_gate_results if g.name == "RESPONSE_PROFILE_AUTHORITY_PRESENT"),
+            (
+                g
+                for g in result.safety_gate_results
+                if g.name == "RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE"
+            ),
             None,
         )
         self.assertIsNotNone(profile_gate)
@@ -1174,7 +1178,7 @@ class ResponseProfileAuthorityTests(unittest.TestCase):
         self.assertTrue(result.alert_required)  # type: ignore[attr-defined]
         # Verify the specific gate name is present.
         gate_names = {g.name for g in result.safety_gate_results}  # type: ignore[attr-defined]
-        self.assertIn("RESPONSE_PROFILE_AUTHORITY_PRESENT", gate_names)
+        self.assertIn("RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE", gate_names)
 
     def test_wrong_type_objects_block_start_canary(self) -> None:
         """A sentinel, bool, string, or raw object must not bypass the gate."""
@@ -1188,22 +1192,17 @@ class ResponseProfileAuthorityTests(unittest.TestCase):
         """An object that looks like but is not a CalibratedResponseProfile."""
         forged = object.__new__(CalibratedResponseProfile)
         result = self._decide_with_profile(forged)
-        # type(forged) IS CalibratedResponseProfile, so forged instance passes
-        # the type check. This is acceptable: the gate is type-based and the
-        # construction-token guard prevents building a real forged profile.
-        # Consumers crossing a trust boundary must call the full verifier.
-        # For completeness, verify the result is either RECOMMEND_EF or START_CANARY;
-        # in both cases zero Milvus calls are made (offline boundary holds).
-        self.assertIn(result.action, (PolicyAction.RECOMMEND_EF, PolicyAction.START_CANARY))  # type: ignore[attr-defined]
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")  # type: ignore[attr-defined]
 
-    def test_verified_profile_allows_start_canary(self) -> None:
-        """A real CalibratedResponseProfile must yield START_CANARY when all gates pass."""
+    def test_bare_r1_profile_is_predictive_only_and_cannot_start_canary(self) -> None:
+        """A valid bare R1 profile is not the deferred root-pinned capability."""
         profile = _make_test_profile()
         self.assertIsInstance(profile, CalibratedResponseProfile)
         result = self._decide_with_profile(profile)
-        self.assertEqual(result.action, PolicyAction.START_CANARY)  # type: ignore[attr-defined]
-        self.assertEqual(result.reason, "SAFETY_GATES_PASSED")  # type: ignore[attr-defined]
-        self.assertFalse(result.alert_required)  # type: ignore[attr-defined]
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")  # type: ignore[attr-defined]
+        self.assertTrue(result.alert_required)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Active-canary rollback precedes profile gate (must remain unchanged)
@@ -1280,16 +1279,19 @@ class ResponseProfileAuthorityTests(unittest.TestCase):
         result = self._decide_with_profile(None)
         gate_names = [g.name for g in result.safety_gate_results]  # type: ignore[attr-defined]
         gate_passed = [g.passed for g in result.safety_gate_results]  # type: ignore[attr-defined]
-        idx = gate_names.index("RESPONSE_PROFILE_AUTHORITY_PRESENT")
+        idx = gate_names.index("RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE")
         self.assertFalse(gate_passed[idx])
 
-    def test_profile_gate_is_not_in_gate_results_on_pass(self) -> None:
-        """On full pass the profile gate must not appear as a failed gate."""
+    def test_bare_profile_still_has_failed_candidate_capability_gate(self) -> None:
+        """R1 validity cannot stand in for the deferred R2 root-pinned boundary."""
         profile = _make_test_profile()
         result = self._decide_with_profile(profile)
-        self.assertEqual(result.action, PolicyAction.START_CANARY)  # type: ignore[attr-defined]
+        self.assertEqual(result.action, PolicyAction.RECOMMEND_EF)  # type: ignore[attr-defined]
         failed_gates = [g for g in result.safety_gate_results if not g.passed]  # type: ignore[attr-defined]
-        self.assertEqual(failed_gates, [])
+        self.assertEqual(
+            [gate.name for gate in failed_gates],
+            ["RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE"],
+        )
 
 
 class OfflineBoundaryTests(unittest.TestCase):

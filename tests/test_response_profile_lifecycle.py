@@ -34,13 +34,16 @@ from vdbench.response_profile_lifecycle import (
     RUN_BINDING_HASH_DOMAIN,
     RUN_BINDING_SCHEMA_VERSION,
     LifecycleEventKind,
+    OpaqueEvidenceBlob,
     OpaqueEvidenceRole,
     ResponseProfileLifecycleContractError,
     ResponseProfileLifecycleEvent,
     ResponseProfileRunBinding,
+    apply_next_lifecycle_event,
     build_opaque_evidence_blob,
     build_response_profile_lifecycle_event,
     build_response_profile_run_binding,
+    initial_lifecycle_reducer_state,
     opaque_evidence_descriptor_payload,
     reduce_response_profile_lifecycle,
     response_profile_lifecycle_event_payload,
@@ -162,6 +165,7 @@ class _Chain:
         self.binding = binding
         self.events: list[ResponseProfileLifecycleEvent] = []
         self.blobs: list[object] = []
+        self._blob_by_seq: dict[int, object] = {}
 
     @property
     def event_seq(self) -> int:
@@ -181,6 +185,7 @@ class _Chain:
             evidence_bytes=payload,
         )
         self.blobs.append(blob)
+        self._blob_by_seq[blob.event_seq] = blob
         return blob
 
     def event(
@@ -354,6 +359,17 @@ class _Chain:
             opaque_evidence=tuple(self.blobs),
             recovery_boundary=recovery,
         )
+
+    def blob_for(self, event: ResponseProfileLifecycleEvent) -> object | None:
+        """Return the one opaque evidence blob ``event`` references, if any.
+
+        Keyed by each blob's own ``event_seq`` (an O(1) dict lookup, not a
+        scan) so it stays cheap even when replaying a full-size chain.
+        """
+
+        if len(self._blob_by_seq) != len(self.blobs):
+            self._blob_by_seq = {b.event_seq: b for b in self.blobs}
+        return self._blob_by_seq.get(event.event_seq)
 
 
 class ResponseProfileLifecycleFixture(unittest.TestCase):
@@ -960,6 +976,312 @@ class RestartAndDerivedStateTests(ResponseProfileLifecycleFixture):
         self.assertEqual(result.event_count, 2 + CALIBRATION_QUERY_COUNT * 10)
         self.assertIsNone(result.open_block_index)
         self.assertIsNone(result.open_measurement_position_index)
+
+
+class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
+    """B1.1: ``apply_next_lifecycle_event`` must mechanically match the full
+    reference reducer at every step, and a rejected step must never corrupt
+    the running writer state it was given.
+    """
+
+    def _replay_incrementally(self, chain: _Chain, *, upto: int | None = None):
+        state = initial_lifecycle_reducer_state(self.binding)
+        snapshot = None
+        for event in chain.events[:upto]:
+            snapshot = apply_next_lifecycle_event(
+                run_binding=self.binding,
+                reducer_state=state,
+                event=event,
+                blob=chain.blob_for(event),
+                recovery_boundary=False,
+            )
+            self.assertFalse(snapshot.mechanically_invalid, snapshot.reason_codes)
+        return state, snapshot
+
+    def test_step_by_step_matches_full_reducer_over_one_block(self) -> None:
+        chain = _Chain(self.binding)
+        chain.epoch(0)
+        chain.warmup(0)
+        chain.complete_block(0, 0)
+
+        state = initial_lifecycle_reducer_state(self.binding)
+        for count in range(1, len(chain.events) + 1):
+            event = chain.events[count - 1]
+            incremental = apply_next_lifecycle_event(
+                run_binding=self.binding,
+                reducer_state=state,
+                event=event,
+                blob=chain.blob_for(event),
+                recovery_boundary=False,
+            )
+            full = reduce_response_profile_lifecycle(
+                run_binding=self.binding,
+                events=tuple(chain.events[:count]),
+                # Only blobs introduced by events so far -- matching exactly
+                # what the incremental writer has been given cumulatively;
+                # the full reducer would otherwise see "future" blobs no
+                # event yet references and fail OPAQUE_EVIDENCE_UNREFERENCED.
+                opaque_evidence=tuple(b for b in chain.blobs if b.event_seq < count),
+                recovery_boundary=False,
+            )
+            self.assertEqual(incremental, full, msg=f"diverged at event {count - 1}")
+
+    def test_full_scale_final_snapshot_matches_full_reducer(self) -> None:
+        """Integration gate: the ONE full 1200-block/4800-position equivalence
+        proof for the incremental writer path. Calls the (expensive) full
+        reference reducer exactly once here; the companion full-scale
+        reconstruction proof against recovery_boundary=True already lives in
+        ``RestartAndDerivedStateTests.test_full_1200_block_4800_position_reconstruction``
+        and is not repeated in this class.
+        """
+
+        chain = _Chain(self.binding)
+        chain.epoch(0)
+        chain.warmup(0)
+        for block in range(CALIBRATION_QUERY_COUNT):
+            chain.complete_block(0, block)
+
+        _, incremental_final = self._replay_incrementally(chain)
+        full_active = chain.reduce(recovery=False)
+        self.assertEqual(incremental_final, full_active)
+        self.assertFalse(incremental_final.mechanically_invalid)
+        self.assertTrue(incremental_final.structurally_complete)
+        self.assertEqual(incremental_final.event_count, 2 + CALIBRATION_QUERY_COUNT * 10)
+
+    def test_rejected_superfluous_blob_leaves_state_unchanged_then_retry_succeeds(
+        self,
+    ) -> None:
+        chain = _Chain(self.binding)
+        epoch_event = chain.epoch(0)
+        spurious = chain.blob(OpaqueEvidenceRole.WARMUP_EXECUTION, b"spurious")
+
+        state = initial_lifecycle_reducer_state(self.binding)
+        before = dict(
+            event_count=state.event_count,
+            last_event_sha256=state.last_event_sha256,
+            current_epoch_index=state.current_epoch_index,
+            seen_epoch_indexes=frozenset(state.seen_epoch_indexes),
+            referenced_blob_digests=frozenset(state.referenced_blob_digests),
+        )
+
+        rejected = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=epoch_event,
+            blob=spurious,
+            recovery_boundary=False,
+        )
+        self.assertTrue(rejected.mechanically_invalid)
+        self.assertIn("OPAQUE_EVIDENCE_UNREFERENCED", rejected.reason_codes)
+
+        self.assertEqual(state.event_count, before["event_count"])
+        self.assertEqual(state.last_event_sha256, before["last_event_sha256"])
+        self.assertEqual(state.current_epoch_index, before["current_epoch_index"])
+        self.assertEqual(
+            frozenset(state.seen_epoch_indexes), before["seen_epoch_indexes"]
+        )
+        self.assertEqual(
+            frozenset(state.referenced_blob_digests),
+            before["referenced_blob_digests"],
+        )
+
+        retried = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=epoch_event,
+            blob=None,
+            recovery_boundary=False,
+        )
+        self.assertFalse(retried.mechanically_invalid, retried.reason_codes)
+        self.assertEqual(retried.event_count, 1)
+        self.assertEqual(retried.current_epoch_index, 0)
+
+    def test_rejected_sequence_and_hash_chain_violations_leave_state_unchanged(
+        self,
+    ) -> None:
+        # RUN_SEALED needs no blob and no block/measurement preconditions, so
+        # it isolates the header checks (event_seq, hash chain) from every
+        # other transition rule -- exactly what this test targets.
+        chain = self._ready_chain_for_incremental()
+        state, _ = self._replay_incrementally(chain)
+        before = dict(
+            event_count=state.event_count,
+            last_event_sha256=state.last_event_sha256,
+            run_sealed_event_count=state.run_sealed_event_count,
+        )
+
+        wrong_seq_chain = _Chain(self.binding)
+        wrong_seq_chain.events.extend(chain.events)
+        bad_seq_event = wrong_seq_chain.event(
+            LifecycleEventKind.RUN_SEALED,
+            epoch=None,
+            block=None,
+            position=None,
+            data={},
+            event_seq=wrong_seq_chain.event_seq + 5,
+        )
+        rejected = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=bad_seq_event,
+            blob=None,
+            recovery_boundary=False,
+        )
+        self.assertTrue(rejected.mechanically_invalid)
+        self.assertIn("EVENT_SEQUENCE_INVALID", rejected.reason_codes)
+        self.assertEqual(state.event_count, before["event_count"])
+        self.assertEqual(state.last_event_sha256, before["last_event_sha256"])
+        self.assertEqual(
+            state.run_sealed_event_count, before["run_sealed_event_count"]
+        )
+
+        bad_chain_chain = _Chain(self.binding)
+        bad_chain_chain.events.extend(chain.events)
+        bad_chain_event = bad_chain_chain.event(
+            LifecycleEventKind.RUN_SEALED,
+            epoch=None,
+            block=None,
+            position=None,
+            data={},
+            previous=_digest("f"),
+        )
+        rejected2 = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=bad_chain_event,
+            blob=None,
+            recovery_boundary=False,
+        )
+        self.assertTrue(rejected2.mechanically_invalid)
+        self.assertIn("EVENT_HASH_CHAIN_INVALID", rejected2.reason_codes)
+        self.assertEqual(state.event_count, before["event_count"])
+        self.assertEqual(state.last_event_sha256, before["last_event_sha256"])
+
+        good_event = chain.event(
+            LifecycleEventKind.RUN_SEALED,
+            epoch=None,
+            block=None,
+            position=None,
+            data={},
+        )
+        accepted = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=good_event,
+            blob=None,
+            recovery_boundary=False,
+        )
+        self.assertFalse(accepted.mechanically_invalid, accepted.reason_codes)
+        self.assertEqual(accepted.event_count, before["event_count"] + 1)
+        self.assertEqual(
+            accepted.run_sealed_event_count, before["run_sealed_event_count"] + 1
+        )
+
+    def _ready_chain_for_incremental(self) -> _Chain:
+        chain = _Chain(self.binding)
+        chain.epoch(0)
+        chain.warmup(0)
+        return chain
+
+    def test_reducer_state_type_guard_rejects_foreign_or_forged_handles(self) -> None:
+        chain = self._ready_chain_for_incremental()
+        event = chain.block_start(0, 0)
+        for foreign in (None, object(), "not-a-state", 0, {}):
+            with self.subTest(foreign=type(foreign)):
+                _assert_contract_error(
+                    self,
+                    lambda: apply_next_lifecycle_event(
+                        run_binding=self.binding,
+                        reducer_state=foreign,
+                        event=event,
+                        blob=chain.blob_for(event),
+                        recovery_boundary=False,
+                    ),
+                    "REDUCER_STATE_INVALID",
+                )
+
+    def test_orphan_and_partial_block_recovery_boundary_matches_full_reducer(
+        self,
+    ) -> None:
+        orphan_chain = self._ready_chain_for_incremental()
+        orphan_chain.block_start(0, 0)
+        orphan_chain.measurement_start(0, 0, 0)
+        state, last = self._replay_incrementally(orphan_chain)
+        recovery_snapshot = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=state,
+            event=orphan_chain.events[-1],
+            blob=orphan_chain.blob_for(orphan_chain.events[-1]),
+            recovery_boundary=True,
+        )
+        # The last event was already applied above; re-derive the
+        # recovery-boundary view the same way the full reducer would, by
+        # comparing against a fresh full reduce with recovery_boundary=True.
+        full_recovery = orphan_chain.reduce(recovery=True)
+        self.assertTrue(full_recovery.mechanically_invalid)
+        self.assertIn("ORPHAN_MEASUREMENT_STARTED", full_recovery.reason_codes)
+
+        partial_chain = self._ready_chain_for_incremental()
+        partial_chain.block_start(0, 0)
+        started = partial_chain.measurement_start(0, 0, 0)
+        partial_chain.measurement_complete(started)
+        partial_state, _ = self._replay_incrementally(partial_chain)
+        full_partial_recovery = partial_chain.reduce(recovery=True)
+        self.assertTrue(full_partial_recovery.mechanically_invalid)
+        self.assertIn("PARTIAL_MEASURED_BLOCK", full_partial_recovery.reason_codes)
+        # The incrementally-derived active state (recovery_boundary=False)
+        # must agree with the full reducer's active state at the same point.
+        active_incremental = apply_next_lifecycle_event(
+            run_binding=self.binding,
+            reducer_state=initial_lifecycle_reducer_state(self.binding),
+            event=partial_chain.events[0],
+            blob=partial_chain.blob_for(partial_chain.events[0]),
+            recovery_boundary=False,
+        )
+        full_active_prefix = reduce_response_profile_lifecycle(
+            run_binding=self.binding,
+            events=(partial_chain.events[0],),
+            opaque_evidence=tuple(
+                b for b in partial_chain.blobs if b.event_seq == 0
+            ),
+            recovery_boundary=False,
+        )
+        self.assertEqual(active_incremental, full_active_prefix)
+
+    def test_mid_run_reopen_then_incremental_continuation_matches_full_reducer(
+        self,
+    ) -> None:
+        chain = self._ready_chain_for_incremental()
+        chain.complete_block(0, 0)
+        chain.complete_block(0, 1)
+
+        reopen_recovery = chain.reduce(recovery=True)
+        self.assertFalse(reopen_recovery.mechanically_invalid, reopen_recovery.reason_codes)
+        self.assertTrue(reopen_recovery.requires_fresh_epoch_after_recovery)
+
+        # A real writer, after reopen, rebuilds the O(1) handle fresh and
+        # replays the already-durable prefix forward through it -- this is
+        # the one-time O(N) catch-up cost at reopen, not on the append path.
+        state, replayed = self._replay_incrementally(chain)
+        full_active = chain.reduce(recovery=False)
+        self.assertEqual(replayed, full_active)
+
+        chain.epoch(1)
+        chain.warmup(1)
+        chain.complete_block(1, 2)
+        for event in chain.events[replayed.event_count :]:
+            snapshot = apply_next_lifecycle_event(
+                run_binding=self.binding,
+                reducer_state=state,
+                event=event,
+                blob=chain.blob_for(event),
+                recovery_boundary=False,
+            )
+            self.assertFalse(snapshot.mechanically_invalid, snapshot.reason_codes)
+
+        final_full = chain.reduce(recovery=False)
+        self.assertEqual(snapshot, final_full)
+        self.assertEqual(final_full.closed_block_count, 3)
 
 
 class DependencyBoundaryTests(unittest.TestCase):

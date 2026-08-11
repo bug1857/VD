@@ -510,6 +510,13 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             run_id="exp009-live-runner-test",
         )
 
+    def test_live_request_run_id_must_match_stage4_evidence_lineage(self) -> None:
+        request = self._live_request()
+        with self.assertRaisesRegex(
+            ValueError, "run_id must equal evidence_binding.run_id"
+        ):
+            replace(request, run_id="different-stage4-run")
+
     def _ledger(self, root: Path) -> Stage4ExecutionLedger:
         private = root / "private"
         private.mkdir(mode=0o700)

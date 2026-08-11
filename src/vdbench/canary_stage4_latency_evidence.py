@@ -89,6 +89,7 @@ def build_stage4_latency_evidence(
     if (
         schedule.schedule_sha256 != binding.execution_schedule_sha256
         or ledger.schedule_sha256 != binding.execution_schedule_sha256
+        or ledger.run_id != binding.run_id
         or schedule.metric is not binding.metric
         or schedule.threshold_stratum != binding.threshold_stratum
         or schedule.candidate_ef != binding.candidate_ef

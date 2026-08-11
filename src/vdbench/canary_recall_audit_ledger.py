@@ -385,6 +385,12 @@ class CanaryRecallAuditLedger:
 
         return self._binding_sha256
 
+    @property
+    def run_id(self) -> str:
+        """The immutable producer-run lineage bound into this ledger's genesis."""
+
+        return self._run_id
+
     def append(self, observation: RecallAuditObservation) -> RecallAuditAppendResult:
         """Append one observation once; a conflicting duplicate fails closed.
 

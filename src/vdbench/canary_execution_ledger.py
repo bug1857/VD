@@ -301,6 +301,12 @@ class Stage4ExecutionLedger:
 
         return self._schedule.schedule_sha256
 
+    @property
+    def run_id(self) -> str:
+        """Expose the immutable run lineage verified from ``execution_run``."""
+
+        return self._run_id
+
     def records(self) -> tuple[Stage4ExecutionRecord, ...]:
         """Return the validated immutable ledger history in execution order."""
 

@@ -264,6 +264,25 @@ class Stage4RecallAuditProducerConstructionTests(unittest.TestCase):
             )
         self.assertEqual(str(ctx.exception), "ORACLE_RESULT_POPULATION_INVALID")
 
+    def test_ledger_run_lineage_must_match_evidence_binding(self) -> None:
+        ledger = CanaryRecallAuditLedger(
+            self.ledger_path,
+            run_id="different-stage4-run",
+            binding_sha256=self.binding.sha256,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Stage4RecallAuditProducer(
+                binding=self.binding,
+                search_configuration=_SEARCH_CONFIGURATION,
+                dataset002_schema_version=DATASET002_SCHEMA_VERSION,
+                query_source=_NeverCalled(),
+                oracle_result_ids_by_query_id=self.oracle_map,
+                client=_NeverCalled(),
+                ledger=ledger,
+                utc_now=_clock(),
+            )
+        self.assertEqual(str(ctx.exception), "LEDGER_RUN_ID_MISMATCH")
+
     def test_oracle_population_with_a_foreign_extra_id_is_rejected(self) -> None:
         wrong = dict(self.oracle_map)
         wrong[999999] = (1, 2, 3)

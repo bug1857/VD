@@ -159,6 +159,8 @@ class Stage4LiveRunRequest:
             raise ValueError("activation timestamps must be RFC3339 UTC")
         if not _canonical_run_id(self.run_id):
             raise ValueError("run_id must be canonical non-empty text")
+        if self.run_id != self.evidence_binding.run_id:
+            raise ValueError("run_id must equal evidence_binding.run_id")
 
 
 @dataclass(frozen=True, slots=True)

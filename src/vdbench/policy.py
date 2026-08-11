@@ -44,7 +44,6 @@ from .lkg_phase3_binding import (
     LkgPhase3AuthorityPair,
     bind_lkg_phase3_authority,
 )
-from .response_profile import CalibratedResponseProfile
 
 ACTUATION_LADDER = (200, 400, 800, 1600)
 RECALL_FLOOR = 0.95
@@ -1295,12 +1294,10 @@ def evaluate_tuning_policy(
 ) -> PolicyDecision:
     """Evaluate ADR-002 policy evidence without database or actuation access.
 
-    ``profile_authority`` must be a ``CalibratedResponseProfile`` produced by
-    the R1 projector and verified by the R2 evidence chain before
-    ``CANARY_ENABLED`` mode may yield ``START_CANARY``.  A missing, wrong-type,
-    or unverified value causes the policy to emit ``RECOMMEND_EF`` with reason
-    ``RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE`` (ADR-009 §Policy consumption
-    rule 4).  ``DRY_RUN`` mode and active-canary rollback are not affected.
+    ``profile_authority`` is reserved for the later root-pinned response-profile
+    capability. R1's bare profile is predictive data, not candidate authority,
+    so no current value may make this boundary emit ``START_CANARY``.
+    ``DRY_RUN`` mode and active-canary rollback are not affected.
     """
 
 
@@ -1648,43 +1645,30 @@ def evaluate_tuning_policy(
             mode=mode,
             audit_id=audit_id,
         )
-    # ADR-009 §Policy consumption rule 4: a missing, wrong-type, or unverified
-    # CalibratedResponseProfile must not yield START_CANARY.  Active-canary
-    # rollback (checked above at line ~1307) must remain available regardless;
-    # this gate applies only to the inactive-drift START_CANARY path.
-    if type(profile_authority) is not CalibratedResponseProfile:
-        profile_gate = _gate(
-            "RESPONSE_PROFILE_AUTHORITY_PRESENT",
-            False,
-            "CANARY_ENABLED START_CANARY requires a verified CalibratedResponseProfile "
-            "produced by R1 and verified by the R2 evidence chain (ADR-009)",
-        )
-        return _decision(
-            action=PolicyAction.RECOMMEND_EF,
-            current_ef=current_ef,
-            candidate_ef=candidate_ef,
-            last_known_good_ef=qualification.ef,
-            estimate=candidate_estimate,
-            current_estimate=current_estimate,
-            reason="RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE",
-            detector=detector,
-            gates=gates + (profile_gate,),
-            mode=mode,
-            audit_id=audit_id,
-            alert_required=True,
-        )
+    # ADR-009 keeps candidate-capable profile consumption disabled until R2-C
+    # through R2-F, independent root pinning, governed freshness, and policy-
+    # chain digest propagation are implemented and verified. In particular,
+    # neither a bare R1 profile nor an object-forged instance may cross this
+    # temporary interlock. The parameter remains only to preserve the call
+    # shape for the later, separately governed capability.
+    profile_gate = _gate(
+        "RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE",
+        False,
+        "candidate-capable response-profile consumption is not implemented",
+    )
     return _decision(
-        action=PolicyAction.START_CANARY,
+        action=PolicyAction.RECOMMEND_EF,
         current_ef=current_ef,
         candidate_ef=candidate_ef,
         last_known_good_ef=qualification.ef,
         estimate=candidate_estimate,
         current_estimate=current_estimate,
-        reason="SAFETY_GATES_PASSED",
+        reason="RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE",
         detector=detector,
-        gates=gates,
+        gates=gates + (profile_gate,),
         mode=mode,
         audit_id=audit_id,
+        alert_required=True,
     )
 
 

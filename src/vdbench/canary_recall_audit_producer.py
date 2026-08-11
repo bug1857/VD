@@ -194,6 +194,8 @@ class Stage4RecallAuditProducer:
 
         if ledger.binding_sha256 != binding.sha256:
             raise ValueError("LEDGER_BINDING_MISMATCH")
+        if ledger.run_id != binding.run_id:
+            raise ValueError("LEDGER_RUN_ID_MISMATCH")
         if search_configuration.index_track is not IndexTrack.HNSW:
             raise ValueError("SEARCH_CONFIGURATION_INDEX_TRACK_INVALID")
         if search_configuration != binding.candidate_search_configuration:

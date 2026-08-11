@@ -23,7 +23,7 @@ Crash semantics:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -76,6 +76,8 @@ __all__ = [
     "response_profile_lifecycle_event_payload",
     "response_profile_lifecycle_event_document",
     "reduce_response_profile_lifecycle",
+    "initial_lifecycle_reducer_state",
+    "apply_next_lifecycle_event",
 ]
 
 
@@ -1027,6 +1029,11 @@ class _ReducerState:
     event_count: int
     run_sealed_event_count: int
     run_invalidated_event_count: int
+    # Cached result of verifying the run binding exactly once. Verification
+    # fully rebuilds the replay schedule (all CALIBRATION_QUERY_COUNT blocks),
+    # which is expensive; `apply_next_lifecycle_event` must never redo it on
+    # every call, or the incremental writer path stops being O(1) per event.
+    verified_run_binding: ResponseProfileRunBinding
 
 
 def _snapshot(
@@ -1103,6 +1110,234 @@ def _same_query_id(left: object, right: object) -> bool:
     return type(left) is type(right) and left == right
 
 
+_BLOB_CONSUMING_EVENT_KINDS = frozenset(
+    {
+        LifecycleEventKind.WARMUP_COMPLETED,
+        LifecycleEventKind.BLOCK_STARTED,
+        LifecycleEventKind.MEASUREMENT_COMPLETED,
+        LifecycleEventKind.BLOCK_CLOSED,
+    }
+)
+
+
+def _apply_lifecycle_event(
+    state: _ReducerState,
+    *,
+    verified_binding: ResponseProfileRunBinding,
+    candidate: ResponseProfileLifecycleEvent,
+    consume_blob: Callable[..., str | None],
+) -> str | None:
+    """Apply exactly one candidate lifecycle event to ``state`` in place.
+
+    Returns a failure reason code, or ``None`` on success (in which case
+    ``state.last_event_sha256``/``state.event_count`` have been advanced).
+
+    This is the SOLE per-event transition logic, mechanically extracted
+    verbatim from ``reduce_response_profile_lifecycle``'s own loop body with
+    no behavior change. Both the full reference reducer (replaying from
+    genesis) and the writer-side incremental step
+    (``apply_next_lifecycle_event``, B1.1) call this exact function, so their
+    per-event outcomes can never diverge -- there is only one implementation
+    of "what one event does to state," not two independently maintained
+    ones.
+    """
+
+    try:
+        event = verify_response_profile_lifecycle_event(candidate)
+    except (AttributeError, TypeError, ValueError):
+        return "LIFECYCLE_EVENT_INVALID"
+    if event.run_binding_sha256 != verified_binding.run_binding_sha256:
+        return "EVENT_RUN_BINDING_MISMATCH"
+    if event.event_seq != state.event_count:
+        return "EVENT_SEQUENCE_INVALID"
+    if not hmac.compare_digest(
+        event.previous_event_sha256, state.last_event_sha256
+    ):
+        return "EVENT_HASH_CHAIN_INVALID"
+
+    kind = event.event_kind
+    data = event.event_data
+    reason: str | None = None
+
+    if kind is LifecycleEventKind.EPOCH_STARTED:
+        if state.open_block_index is not None or state.active_started_event is not None:
+            reason = "EPOCH_STARTED_DURING_OPEN_BLOCK"
+        elif event.epoch_index in state.seen_epoch_indexes:
+            reason = "EPOCH_INDEX_REUSED"
+        else:
+            assert event.epoch_index is not None
+            state.current_epoch_index = event.epoch_index
+            state.seen_epoch_indexes.add(event.epoch_index)
+            state.warmup_completed = False
+            state.previous_completed_monotonic_ns = None
+
+    elif kind is LifecycleEventKind.WARMUP_COMPLETED:
+        assert type(data) is _WarmupCompletedData
+        if state.current_epoch_index is None:
+            reason = "EPOCH_REQUIRED"
+        elif event.epoch_index != state.current_epoch_index:
+            reason = "EPOCH_INDEX_MISMATCH"
+        elif state.warmup_completed:
+            reason = "WARMUP_DUPLICATE"
+        elif data.warmup_role_manifest_sha256 != (
+            verified_binding.warmup_role_manifest_sha256
+        ):
+            reason = "WARMUP_MANIFEST_MISMATCH"
+        else:
+            reason = consume_blob(
+                data.warmup_execution_blob_sha256,
+                role=OpaqueEvidenceRole.WARMUP_EXECUTION,
+                event=event,
+            )
+            if reason is None:
+                state.warmup_completed = True
+
+    elif kind is LifecycleEventKind.BLOCK_STARTED:
+        assert type(data) is _BlockStartedData
+        if state.current_epoch_index is None:
+            reason = "EPOCH_REQUIRED"
+        elif event.epoch_index != state.current_epoch_index:
+            reason = "EPOCH_INDEX_MISMATCH"
+        elif not state.warmup_completed:
+            reason = "WARMUP_REQUIRED"
+        elif state.open_block_index is not None:
+            reason = "BLOCK_ALREADY_OPEN"
+        elif state.closed_block_count >= CALIBRATION_QUERY_COUNT:
+            reason = "SCHEDULE_EXHAUSTED"
+        elif event.block_index != state.closed_block_count:
+            reason = "BLOCK_ORDER_MISMATCH"
+        else:
+            reason = consume_blob(
+                data.pre_block_runtime_snapshot_blob_sha256,
+                role=OpaqueEvidenceRole.PRE_BLOCK_RUNTIME_SNAPSHOT,
+                event=event,
+            )
+            if reason is None:
+                state.open_block_index = event.block_index
+                state.block_started_event_sha256 = event.lifecycle_event_sha256
+                state.block_completion_digests = []
+
+    elif kind is LifecycleEventKind.MEASUREMENT_STARTED:
+        assert type(data) is _MeasurementStartedData
+        if state.open_block_index is None:
+            reason = "BLOCK_REQUIRED"
+        elif state.active_started_event is not None:
+            reason = "MEASUREMENT_ALREADY_STARTED"
+        elif event.epoch_index != state.current_epoch_index:
+            reason = "EPOCH_INDEX_MISMATCH"
+        elif event.block_index != state.open_block_index:
+            reason = "BLOCK_INDEX_MISMATCH"
+        else:
+            expected_block = verified_binding.replay_schedule.blocks[
+                state.open_block_index
+            ]
+            within_index = len(state.block_completion_digests)
+            expected = expected_block.positions[within_index]
+            if data.within_block_index != within_index:
+                reason = "POSITION_ORDER_MISMATCH"
+            elif event.position_index != expected.position_index:
+                reason = "POSITION_ORDER_MISMATCH"
+            elif expected.position_index in state.seen_position_indexes:
+                reason = "POSITION_DUPLICATE"
+            elif (
+                state.previous_completed_monotonic_ns is not None
+                and data.started_monotonic_ns
+                < state.previous_completed_monotonic_ns
+            ):
+                reason = "MONOTONIC_CHRONOLOGY_INVALID"
+            elif (
+                data.canonical_query_index != expected.canonical_query_index
+                or not _same_query_id(data.query_id, expected.query_id)
+                or data.query_id_sha256 != expected.query_id_sha256
+                or data.observation_identity_sha256
+                != expected.observation_identity_sha256
+                or data.ef != expected.ef
+            ):
+                reason = "SCHEDULE_POSITION_MISMATCH"
+            else:
+                state.active_started_event = event
+                state.seen_position_indexes.add(expected.position_index)
+
+    elif kind is LifecycleEventKind.MEASUREMENT_COMPLETED:
+        assert type(data) is _MeasurementCompletedData
+        started = state.active_started_event
+        if started is None:
+            reason = "MEASUREMENT_REQUIRED"
+        elif (
+            event.epoch_index != started.epoch_index
+            or event.block_index != started.block_index
+            or event.position_index != started.position_index
+        ):
+            reason = "MEASUREMENT_INDEX_MISMATCH"
+        elif data.measurement_started_event_sha256 != (
+            started.lifecycle_event_sha256
+        ):
+            reason = "STARTED_EVENT_DIGEST_MISMATCH"
+        else:
+            started_data = started.event_data
+            assert type(started_data) is _MeasurementStartedData
+            if data.completed_monotonic_ns <= started_data.started_monotonic_ns:
+                reason = "MONOTONIC_ORDER_INVALID"
+            else:
+                reason = consume_blob(
+                    data.measured_result_blob_sha256,
+                    role=OpaqueEvidenceRole.MEASURED_RESULT,
+                    event=event,
+                )
+                if reason is None:
+                    state.block_completion_digests.append(
+                        event.lifecycle_event_sha256
+                    )
+                    state.completed_position_count += 1
+                    state.previous_completed_monotonic_ns = (
+                        data.completed_monotonic_ns
+                    )
+                    state.active_started_event = None
+
+    elif kind is LifecycleEventKind.BLOCK_CLOSED:
+        assert type(data) is _BlockClosedData
+        if state.open_block_index is None:
+            reason = "BLOCK_REQUIRED"
+        elif state.active_started_event is not None:
+            reason = "MEASUREMENT_INCOMPLETE"
+        elif event.epoch_index != state.current_epoch_index:
+            reason = "EPOCH_INDEX_MISMATCH"
+        elif event.block_index != state.open_block_index:
+            reason = "BLOCK_INDEX_MISMATCH"
+        elif len(state.block_completion_digests) != 4:
+            reason = "BLOCK_INCOMPLETE"
+        elif data.block_started_event_sha256 != state.block_started_event_sha256:
+            reason = "BLOCK_STARTED_DIGEST_MISMATCH"
+        elif data.measurement_completed_event_sha256 != tuple(
+            state.block_completion_digests
+        ):
+            reason = "BLOCK_COMPLETION_ORDER_MISMATCH"
+        else:
+            reason = consume_blob(
+                data.post_block_runtime_snapshot_blob_sha256,
+                role=OpaqueEvidenceRole.POST_BLOCK_RUNTIME_SNAPSHOT,
+                event=event,
+            )
+            if reason is None:
+                state.closed_block_count += 1
+                state.open_block_index = None
+                state.block_started_event_sha256 = None
+                state.block_completion_digests = []
+
+    elif kind is LifecycleEventKind.RUN_SEALED:
+        state.run_sealed_event_count += 1
+
+    elif kind is LifecycleEventKind.RUN_INVALIDATED:
+        state.run_invalidated_event_count += 1
+
+    if reason is not None:
+        return reason
+
+    state.last_event_sha256 = event.lifecycle_event_sha256
+    state.event_count += 1
+    return None
+
+
 def reduce_response_profile_lifecycle(
     *,
     run_binding: ResponseProfileRunBinding,
@@ -1146,6 +1381,7 @@ def reduce_response_profile_lifecycle(
         event_count=0,
         run_sealed_event_count=0,
         run_invalidated_event_count=0,
+        verified_run_binding=verified_binding,
     )
 
     blobs: dict[str, OpaqueEvidenceBlob] = {}
@@ -1197,214 +1433,12 @@ def reduce_response_profile_lifecycle(
         return None
 
     for candidate in events:
-        try:
-            event = verify_response_profile_lifecycle_event(candidate)
-        except (AttributeError, TypeError, ValueError):
-            return _fail(
-                "LIFECYCLE_EVENT_INVALID",
-                run_binding=verified_binding,
-                state=state,
-                recovery_boundary=recovery_boundary,
-            )
-        if event.run_binding_sha256 != verified_binding.run_binding_sha256:
-            return _fail(
-                "EVENT_RUN_BINDING_MISMATCH",
-                run_binding=verified_binding,
-                state=state,
-                recovery_boundary=recovery_boundary,
-            )
-        if event.event_seq != state.event_count:
-            return _fail(
-                "EVENT_SEQUENCE_INVALID",
-                run_binding=verified_binding,
-                state=state,
-                recovery_boundary=recovery_boundary,
-            )
-        if not hmac.compare_digest(
-            event.previous_event_sha256, state.last_event_sha256
-        ):
-            return _fail(
-                "EVENT_HASH_CHAIN_INVALID",
-                run_binding=verified_binding,
-                state=state,
-                recovery_boundary=recovery_boundary,
-            )
-
-        kind = event.event_kind
-        data = event.event_data
-        reason: str | None = None
-
-        if kind is LifecycleEventKind.EPOCH_STARTED:
-            if state.open_block_index is not None or state.active_started_event is not None:
-                reason = "EPOCH_STARTED_DURING_OPEN_BLOCK"
-            elif event.epoch_index in state.seen_epoch_indexes:
-                reason = "EPOCH_INDEX_REUSED"
-            else:
-                assert event.epoch_index is not None
-                state.current_epoch_index = event.epoch_index
-                state.seen_epoch_indexes.add(event.epoch_index)
-                state.warmup_completed = False
-                state.previous_completed_monotonic_ns = None
-
-        elif kind is LifecycleEventKind.WARMUP_COMPLETED:
-            assert type(data) is _WarmupCompletedData
-            if state.current_epoch_index is None:
-                reason = "EPOCH_REQUIRED"
-            elif event.epoch_index != state.current_epoch_index:
-                reason = "EPOCH_INDEX_MISMATCH"
-            elif state.warmup_completed:
-                reason = "WARMUP_DUPLICATE"
-            elif data.warmup_role_manifest_sha256 != (
-                verified_binding.warmup_role_manifest_sha256
-            ):
-                reason = "WARMUP_MANIFEST_MISMATCH"
-            else:
-                reason = consume_blob(
-                    data.warmup_execution_blob_sha256,
-                    role=OpaqueEvidenceRole.WARMUP_EXECUTION,
-                    event=event,
-                )
-                if reason is None:
-                    state.warmup_completed = True
-
-        elif kind is LifecycleEventKind.BLOCK_STARTED:
-            assert type(data) is _BlockStartedData
-            if state.current_epoch_index is None:
-                reason = "EPOCH_REQUIRED"
-            elif event.epoch_index != state.current_epoch_index:
-                reason = "EPOCH_INDEX_MISMATCH"
-            elif not state.warmup_completed:
-                reason = "WARMUP_REQUIRED"
-            elif state.open_block_index is not None:
-                reason = "BLOCK_ALREADY_OPEN"
-            elif state.closed_block_count >= CALIBRATION_QUERY_COUNT:
-                reason = "SCHEDULE_EXHAUSTED"
-            elif event.block_index != state.closed_block_count:
-                reason = "BLOCK_ORDER_MISMATCH"
-            else:
-                reason = consume_blob(
-                    data.pre_block_runtime_snapshot_blob_sha256,
-                    role=OpaqueEvidenceRole.PRE_BLOCK_RUNTIME_SNAPSHOT,
-                    event=event,
-                )
-                if reason is None:
-                    state.open_block_index = event.block_index
-                    state.block_started_event_sha256 = event.lifecycle_event_sha256
-                    state.block_completion_digests = []
-
-        elif kind is LifecycleEventKind.MEASUREMENT_STARTED:
-            assert type(data) is _MeasurementStartedData
-            if state.open_block_index is None:
-                reason = "BLOCK_REQUIRED"
-            elif state.active_started_event is not None:
-                reason = "MEASUREMENT_ALREADY_STARTED"
-            elif event.epoch_index != state.current_epoch_index:
-                reason = "EPOCH_INDEX_MISMATCH"
-            elif event.block_index != state.open_block_index:
-                reason = "BLOCK_INDEX_MISMATCH"
-            else:
-                expected_block = verified_binding.replay_schedule.blocks[
-                    state.open_block_index
-                ]
-                within_index = len(state.block_completion_digests)
-                expected = expected_block.positions[within_index]
-                if data.within_block_index != within_index:
-                    reason = "POSITION_ORDER_MISMATCH"
-                elif event.position_index != expected.position_index:
-                    reason = "POSITION_ORDER_MISMATCH"
-                elif expected.position_index in state.seen_position_indexes:
-                    reason = "POSITION_DUPLICATE"
-                elif (
-                    state.previous_completed_monotonic_ns is not None
-                    and data.started_monotonic_ns
-                    < state.previous_completed_monotonic_ns
-                ):
-                    reason = "MONOTONIC_CHRONOLOGY_INVALID"
-                elif (
-                    data.canonical_query_index != expected.canonical_query_index
-                    or not _same_query_id(data.query_id, expected.query_id)
-                    or data.query_id_sha256 != expected.query_id_sha256
-                    or data.observation_identity_sha256
-                    != expected.observation_identity_sha256
-                    or data.ef != expected.ef
-                ):
-                    reason = "SCHEDULE_POSITION_MISMATCH"
-                else:
-                    state.active_started_event = event
-                    state.seen_position_indexes.add(expected.position_index)
-
-        elif kind is LifecycleEventKind.MEASUREMENT_COMPLETED:
-            assert type(data) is _MeasurementCompletedData
-            started = state.active_started_event
-            if started is None:
-                reason = "MEASUREMENT_REQUIRED"
-            elif (
-                event.epoch_index != started.epoch_index
-                or event.block_index != started.block_index
-                or event.position_index != started.position_index
-            ):
-                reason = "MEASUREMENT_INDEX_MISMATCH"
-            elif data.measurement_started_event_sha256 != (
-                started.lifecycle_event_sha256
-            ):
-                reason = "STARTED_EVENT_DIGEST_MISMATCH"
-            else:
-                started_data = started.event_data
-                assert type(started_data) is _MeasurementStartedData
-                if data.completed_monotonic_ns <= started_data.started_monotonic_ns:
-                    reason = "MONOTONIC_ORDER_INVALID"
-                else:
-                    reason = consume_blob(
-                        data.measured_result_blob_sha256,
-                        role=OpaqueEvidenceRole.MEASURED_RESULT,
-                        event=event,
-                    )
-                    if reason is None:
-                        state.block_completion_digests.append(
-                            event.lifecycle_event_sha256
-                        )
-                        state.completed_position_count += 1
-                        state.previous_completed_monotonic_ns = (
-                            data.completed_monotonic_ns
-                        )
-                        state.active_started_event = None
-
-        elif kind is LifecycleEventKind.BLOCK_CLOSED:
-            assert type(data) is _BlockClosedData
-            if state.open_block_index is None:
-                reason = "BLOCK_REQUIRED"
-            elif state.active_started_event is not None:
-                reason = "MEASUREMENT_INCOMPLETE"
-            elif event.epoch_index != state.current_epoch_index:
-                reason = "EPOCH_INDEX_MISMATCH"
-            elif event.block_index != state.open_block_index:
-                reason = "BLOCK_INDEX_MISMATCH"
-            elif len(state.block_completion_digests) != 4:
-                reason = "BLOCK_INCOMPLETE"
-            elif data.block_started_event_sha256 != state.block_started_event_sha256:
-                reason = "BLOCK_STARTED_DIGEST_MISMATCH"
-            elif data.measurement_completed_event_sha256 != tuple(
-                state.block_completion_digests
-            ):
-                reason = "BLOCK_COMPLETION_ORDER_MISMATCH"
-            else:
-                reason = consume_blob(
-                    data.post_block_runtime_snapshot_blob_sha256,
-                    role=OpaqueEvidenceRole.POST_BLOCK_RUNTIME_SNAPSHOT,
-                    event=event,
-                )
-                if reason is None:
-                    state.closed_block_count += 1
-                    state.open_block_index = None
-                    state.block_started_event_sha256 = None
-                    state.block_completion_digests = []
-
-        elif kind is LifecycleEventKind.RUN_SEALED:
-            state.run_sealed_event_count += 1
-
-        elif kind is LifecycleEventKind.RUN_INVALIDATED:
-            state.run_invalidated_event_count += 1
-
+        reason = _apply_lifecycle_event(
+            state,
+            verified_binding=verified_binding,
+            candidate=candidate,
+            consume_blob=consume_blob,
+        )
         if reason is not None:
             return _fail(
                 reason,
@@ -1412,9 +1446,6 @@ def reduce_response_profile_lifecycle(
                 state=state,
                 recovery_boundary=recovery_boundary,
             )
-
-        state.last_event_sha256 = event.lifecycle_event_sha256
-        state.event_count += 1
 
     if len(state.referenced_blob_digests) != len(blobs):
         return _fail(
@@ -1427,6 +1458,220 @@ def reduce_response_profile_lifecycle(
     return _snapshot(
         run_binding=verified_binding,
         state=state,
+        recovery_boundary=recovery_boundary,
+        reasons=(),
+    )
+
+
+# -----------------------------------------------------------------------------
+# B1.1 writer-side incremental reduction
+#
+# `reduce_response_profile_lifecycle` above is, and remains, the sole
+# reference truth: full replay from genesis, unchanged in behavior. Reopen
+# and recovery MUST keep using it exactly as before.
+#
+# The two functions below exist only to avoid re-verifying and re-scanning
+# the COMPLETE prior event/blob history on every single append (previously
+# O(N) work per append, O(N^2) total across N appends -- see B1.1 scale
+# measurement). Both are thin wrappers around `_apply_lifecycle_event`, the
+# exact same per-event step function the full reducer's own loop calls, so
+# there is only one implementation of "what one event does to state" for
+# both call paths to ever diverge from.
+# -----------------------------------------------------------------------------
+
+
+def initial_lifecycle_reducer_state(run_binding: ResponseProfileRunBinding) -> object:
+    """Return an opaque, mutable, writer-only reducer-state handle bound to
+    ``run_binding``, equivalent to the internal state
+    ``reduce_response_profile_lifecycle`` holds before processing its first
+    event.
+
+    The return value is deliberately untyped from the caller's perspective:
+    treat it as an opaque token. Never construct, inspect, copy, serialize,
+    or persist it directly -- it is valid only for the lifetime of one
+    process's in-memory writer path and must be rebuilt (via this function,
+    then replayed forward with ``apply_next_lifecycle_event``) on every
+    reopen, exactly mirroring what a fresh full reduction would derive.
+    """
+
+    verified_binding = verify_response_profile_run_binding(run_binding)
+    return _ReducerState(
+        current_epoch_index=None,
+        warmup_completed=False,
+        previous_completed_monotonic_ns=None,
+        open_block_index=None,
+        block_started_event_sha256=None,
+        active_started_event=None,
+        block_completion_digests=[],
+        closed_block_count=0,
+        completed_position_count=0,
+        seen_epoch_indexes=set(),
+        seen_position_indexes=set(),
+        referenced_blob_digests=set(),
+        last_event_sha256=verified_binding.run_binding_sha256,
+        event_count=0,
+        run_sealed_event_count=0,
+        run_invalidated_event_count=0,
+        verified_run_binding=verified_binding,
+    )
+
+
+def apply_next_lifecycle_event(
+    *,
+    run_binding: ResponseProfileRunBinding,
+    reducer_state: object,
+    event: ResponseProfileLifecycleEvent,
+    blob: OpaqueEvidenceBlob | None,
+    recovery_boundary: bool,
+) -> ResponseProfileLifecycleSnapshot:
+    """Writer-side incremental B1.1 step.
+
+    Applies exactly one new canonical ``event`` (plus at most one new opaque
+    evidence ``blob``, which must be referenced by that same event's own
+    data fields) to ``reducer_state`` in place, without re-verifying or
+    re-scanning any prior event or blob, and returns the resulting
+    ``ResponseProfileLifecycleSnapshot``.
+
+    ``run_binding`` is checked cheaply (type and digest only) against the
+    binding already verified once by ``initial_lifecycle_reducer_state`` --
+    it is deliberately never re-verified from scratch here. Full binding
+    verification rebuilds the entire replay schedule and is expensive
+    (seconds, for a full-size schedule); paying that cost again on every
+    single event would defeat the point of an O(1)-per-event writer step.
+
+    ``reducer_state`` MUST be the exact object most recently returned by
+    ``initial_lifecycle_reducer_state`` (for the first call) or by this
+    function (for every subsequent call) for this exact ``run_binding`` --
+    it is mutated in place; there is no separate value to thread through by
+    hand.
+
+    Equivalence requirement (proved exhaustively by this module's own test
+    suite, not merely asserted here): calling this function once per event,
+    in canonical order, starting from ``initial_lifecycle_reducer_state``,
+    must produce -- after the Nth call -- a snapshot byte-identical to
+    ``reduce_response_profile_lifecycle`` called fresh with the same first N
+    events/blobs and the same ``recovery_boundary``. On a governed
+    transition failure, ``reducer_state`` is left completely unchanged
+    (matching ``_apply_lifecycle_event``'s own atomic-per-event contract),
+    so a failed step never corrupts the running state for a caller that
+    chooses to inspect it afterward.
+
+    This function must never substitute for full replay at reopen/recovery
+    time -- it is valid only for advancing an already-verified running state
+    one step at a time on the normal (non-recovery) append path.
+    """
+
+    if not isinstance(reducer_state, _ReducerState):
+        raise _error(
+            "REDUCER_STATE_INVALID",
+            "reducer_state must be the opaque handle returned by "
+            "initial_lifecycle_reducer_state or apply_next_lifecycle_event",
+        )
+    if (
+        type(run_binding) is not ResponseProfileRunBinding
+        or run_binding.run_binding_sha256
+        != reducer_state.verified_run_binding.run_binding_sha256
+    ):
+        raise _error(
+            "RUN_BINDING_INVALID",
+            "run_binding must be the exact binding reducer_state was built from",
+        )
+    verified_binding = reducer_state.verified_run_binding
+    if type(recovery_boundary) is not bool:
+        raise _error(
+            "RECOVERY_BOUNDARY_INVALID", "recovery_boundary must be an exact bool"
+        )
+
+    blobs: dict[str, OpaqueEvidenceBlob] = {}
+    if blob is not None:
+        try:
+            verified_blob = verify_opaque_evidence_blob(blob)
+        except (AttributeError, TypeError, ValueError):
+            return _fail(
+                "OPAQUE_EVIDENCE_INVALID",
+                run_binding=verified_binding,
+                state=reducer_state,
+                recovery_boundary=recovery_boundary,
+            )
+        if verified_blob.run_binding_sha256 != verified_binding.run_binding_sha256:
+            return _fail(
+                "OPAQUE_EVIDENCE_RUN_BINDING_MISMATCH",
+                run_binding=verified_binding,
+                state=reducer_state,
+                recovery_boundary=recovery_boundary,
+            )
+        # A blob can only ever be referenced by an event kind whose branch in
+        # `_apply_lifecycle_event` calls `consume_blob`. Reject a blob paired
+        # with any other kind here, before `_apply_lifecycle_event` runs --
+        # otherwise the event could apply successfully and mutate
+        # `reducer_state` in place (advancing event_count/last_event_sha256)
+        # while this function still reports failure, silently poisoning the
+        # writer's running state out from under a caller who trusts this
+        # function's own atomicity contract.
+        try:
+            verified_event = verify_response_profile_lifecycle_event(event)
+        except (AttributeError, TypeError, ValueError):
+            return _fail(
+                "LIFECYCLE_EVENT_INVALID",
+                run_binding=verified_binding,
+                state=reducer_state,
+                recovery_boundary=recovery_boundary,
+            )
+        if verified_event.event_kind not in _BLOB_CONSUMING_EVENT_KINDS:
+            return _fail(
+                "OPAQUE_EVIDENCE_UNREFERENCED",
+                run_binding=verified_binding,
+                state=reducer_state,
+                recovery_boundary=recovery_boundary,
+            )
+        blobs[verified_blob.opaque_evidence_sha256] = verified_blob
+
+    def consume_blob(
+        digest: str,
+        *,
+        role: OpaqueEvidenceRole,
+        event: ResponseProfileLifecycleEvent,
+    ) -> str | None:
+        candidate_blob = blobs.get(digest)
+        if candidate_blob is None:
+            return "OPAQUE_EVIDENCE_MISSING"
+        if digest in reducer_state.referenced_blob_digests:
+            return "OPAQUE_EVIDENCE_REUSED"
+        if candidate_blob.evidence_role is not role:
+            return "OPAQUE_EVIDENCE_ROLE_MISMATCH"
+        if (
+            candidate_blob.run_binding_sha256 != event.run_binding_sha256
+            or candidate_blob.event_seq != event.event_seq
+        ):
+            return "OPAQUE_EVIDENCE_EVENT_BINDING_MISMATCH"
+        reducer_state.referenced_blob_digests.add(digest)
+        return None
+
+    reason = _apply_lifecycle_event(
+        reducer_state,
+        verified_binding=verified_binding,
+        candidate=event,
+        consume_blob=consume_blob,
+    )
+    if reason is not None:
+        return _fail(
+            reason,
+            run_binding=verified_binding,
+            state=reducer_state,
+            recovery_boundary=recovery_boundary,
+        )
+
+    if blobs and not (set(blobs) <= reducer_state.referenced_blob_digests):
+        return _fail(
+            "OPAQUE_EVIDENCE_UNREFERENCED",
+            run_binding=verified_binding,
+            state=reducer_state,
+            recovery_boundary=recovery_boundary,
+        )
+
+    return _snapshot(
+        run_binding=verified_binding,
+        state=reducer_state,
         recovery_boundary=recovery_boundary,
         reasons=(),
     )

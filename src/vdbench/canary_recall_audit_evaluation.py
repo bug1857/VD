@@ -37,6 +37,7 @@ Scope:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -168,6 +169,16 @@ def evaluate_recall_audit_evidence(
         )
     if not isinstance(binding, Stage4EvidenceBinding):
         raise TypeError("binding must be a Stage4EvidenceBinding")
+    # R-001: the v1 evaluator is bound to exactly one recall floor. A caller
+    # cannot shop for a different threshold under this evaluator's method
+    # identity -- a genuinely different floor requires a new, separately
+    # versioned evaluator contract, not a parameter change here.
+    if (
+        type(recall_floor) is not float
+        or not math.isfinite(recall_floor)
+        or recall_floor != 0.95
+    ):
+        raise ValueError("recall_floor must be exactly 0.95 under the v1 evaluator contract")
 
     if (
         search_configuration != binding.candidate_search_configuration
@@ -201,6 +212,8 @@ def evaluate_recall_audit_evidence(
             or observation.dataset002_schema_version != dataset002_schema_version
         ):
             _append_once(reasons, "OBSERVATION_CONTEXT_MISMATCH")
+        if observation.producer_run_id != binding.run_id:
+            _append_once(reasons, "OBSERVATION_PRODUCER_RUN_MISMATCH")
 
     if reasons:
         # The binding itself matched (the gate above already passed); this
@@ -235,7 +248,12 @@ def evaluate_recall_audit_evidence(
 def _evidence_digest(observations: tuple[RecallAuditObservation, ...]) -> str:
     ordered = sorted(observations, key=lambda observation: observation.query_id)
     document = [
-        [observation.query_id, observation.oracle_result_sha256, observation.candidate_result_sha256]
+        [
+            observation.query_id,
+            observation.oracle_result_sha256,
+            observation.candidate_result_sha256,
+            observation.producer_run_id,
+        ]
         for observation in ordered
     ]
     return hashlib.sha256(canonical_json_bytes(document)).hexdigest()

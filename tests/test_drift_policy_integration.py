@@ -315,7 +315,10 @@ class DriftPolicyIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(drift.classification, DriftClassification.INPUT_DRIFT)
         self.assertEqual(dry_run.action, PolicyAction.RECOMMEND_EF)
-        self.assertEqual(canary_enabled.action, PolicyAction.START_CANARY)
+        self.assertEqual(canary_enabled.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(
+            canary_enabled.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE"
+        )
         self.assertEqual(dry_run.candidate_ef, 200)
         self.assertEqual(canary_enabled.candidate_ef, 200)
 
@@ -346,7 +349,8 @@ class DriftPolicyIntegrationTests(unittest.TestCase):
         self.assertEqual(
             drift.classification, DriftClassification.INPUT_AND_QUALITY_DRIFT
         )
-        self.assertEqual(policy.action, PolicyAction.START_CANARY)
+        self.assertEqual(policy.action, PolicyAction.RECOMMEND_EF)
+        self.assertEqual(policy.reason, "RESPONSE_PROFILE_AUTHORITY_UNAVAILABLE")
         self.assertEqual(policy.candidate_ef, 800)
         self.assertGreater(policy.candidate_ef, policy.current_ef)
 

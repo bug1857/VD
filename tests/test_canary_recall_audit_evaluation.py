@@ -118,7 +118,7 @@ def _obs(query_id: int, capped_recall: float, *, result_cap: int = 100, **overri
         dataset002_schema_version=_CONTEXT["dataset002_schema_version"],
         oracle_result_ids=oracle_ids,
         candidate_result_ids=candidate_ids,
-        producer_run_id="fake-run-001",
+        producer_run_id=_CONTEXT["binding"].run_id,
         recorded_at_utc="2026-08-04T00:00:00Z",
     )
     fields.update(overrides)
@@ -152,6 +152,38 @@ class EvaluateRecallAuditEvidenceTests(unittest.TestCase):
         self.assertEqual(len(result.evidence_digest), 64)
         self.assertEqual(result.status, EvaluationStatus.PASSING)
         self.assertEqual(result.evidence_binding_sha256, _CONTEXT["binding"].sha256)
+
+    def test_recall_floor_exact_0_95_accepted(self) -> None:
+        observations = tuple(_obs(qid, 1.0) for qid in range(EXP009_RECALL_AUDIT_COUNT))
+        result = evaluate_recall_audit_evidence(
+            expected_query_ids=self.expected_ids,
+            observations=observations,
+            recall_floor=0.95,
+            **_CONTEXT,
+        )
+        self.assertIsInstance(result, Stage4RecallAuditEvaluation)
+
+    def test_recall_floor_rejects_alternate_and_malformed_values(self) -> None:
+        observations = tuple(_obs(qid, 1.0) for qid in range(EXP009_RECALL_AUDIT_COUNT))
+        for bad_floor in (
+            0.949,
+            0.951,
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            1,
+            "0.95",
+        ):
+            with self.subTest(bad_floor=bad_floor):
+                with self.assertRaises(ValueError):
+                    evaluate_recall_audit_evidence(
+                        expected_query_ids=self.expected_ids,
+                        observations=observations,
+                        recall_floor=bad_floor,
+                        **_CONTEXT,
+                    )
 
     def test_evidence_digest_changes_if_any_observation_changes(self) -> None:
         observations = tuple(_obs(qid, 1.0) for qid in range(EXP009_RECALL_AUDIT_COUNT))
@@ -274,6 +306,36 @@ class EvaluateRecallAuditEvidenceTests(unittest.TestCase):
             expected_query_ids=self.expected_ids, observations=observations, **_CONTEXT
         )
         self.assertIn("OBSERVATION_CONTEXT_MISMATCH", result.reason_codes)
+
+    def test_mismatched_producer_run_cannot_be_relabelled_with_binding(self) -> None:
+        observations = self._pooled_batch_with_one_mismatch(
+            producer_run_id="different-stage4-run"
+        )
+        result = evaluate_recall_audit_evidence(
+            expected_query_ids=self.expected_ids, observations=observations, **_CONTEXT
+        )
+        self.assertEqual(result.status, EvaluationStatus.INCOMPLETE)
+        self.assertIn("OBSERVATION_PRODUCER_RUN_MISMATCH", result.reason_codes)
+        self.assertIsNone(result.evidence_digest)
+
+    def test_evidence_digest_binds_producer_run_lineage(self) -> None:
+        observations = tuple(
+            _obs(qid, 1.0) for qid in range(EXP009_RECALL_AUDIT_COUNT)
+        )
+        original = evaluate_recall_audit_evidence(
+            expected_query_ids=self.expected_ids, observations=observations, **_CONTEXT
+        )
+        alternate_binding = _binding(run_id="alternate-stage4-run")
+        alternate_observations = tuple(
+            _obs(qid, 1.0, producer_run_id=alternate_binding.run_id)
+            for qid in range(EXP009_RECALL_AUDIT_COUNT)
+        )
+        alternate = evaluate_recall_audit_evidence(
+            expected_query_ids=self.expected_ids,
+            observations=alternate_observations,
+            **{**_CONTEXT, "binding": alternate_binding},
+        )
+        self.assertNotEqual(original.evidence_digest, alternate.evidence_digest)
 
     def test_empty_observations_is_not_applicable(self) -> None:
         result = evaluate_recall_audit_evidence(

@@ -45,8 +45,10 @@ from .response_profile_lifecycle import (
     ResponseProfileLifecycleEvent,
     ResponseProfileLifecycleSnapshot,
     ResponseProfileRunBinding,
+    apply_next_lifecycle_event,
     build_opaque_evidence_blob,
     build_response_profile_lifecycle_event,
+    initial_lifecycle_reducer_state,
     opaque_evidence_document,
     reduce_response_profile_lifecycle,
     response_profile_lifecycle_event_document,
@@ -61,6 +63,7 @@ from .response_profile_lifecycle import (
 __all__ = [
     "ResponseProfileLifecycleLedgerError",
     "ResponseProfileLifecycleLedgerView",
+    "ResponseProfileLifecycleExport",
     "MeasurementStartPermit",
     "ResponseProfileLifecycleLedger",
 ]
@@ -317,6 +320,31 @@ class ResponseProfileLifecycleLedgerView:
     run_invalidated_event_count: int
     requires_fresh_epoch_after_recovery: bool
     structurally_complete: bool
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ResponseProfileLifecycleExport:
+    """One fully verified immutable lifecycle export; evidence, not authority."""
+
+    run_binding: ResponseProfileRunBinding
+    events: tuple[ResponseProfileLifecycleEvent, ...]
+    opaque_evidence: tuple[OpaqueEvidenceBlob, ...]
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("lifecycle exports are issued only by the durable ledger")
+
+
+def _make_lifecycle_export(
+    *,
+    run_binding: ResponseProfileRunBinding,
+    events: tuple[ResponseProfileLifecycleEvent, ...],
+    opaque_evidence: tuple[OpaqueEvidenceBlob, ...],
+) -> ResponseProfileLifecycleExport:
+    value = object.__new__(ResponseProfileLifecycleExport)
+    object.__setattr__(value, "run_binding", run_binding)
+    object.__setattr__(value, "events", events)
+    object.__setattr__(value, "opaque_evidence", opaque_evidence)
+    return value
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -621,6 +649,10 @@ class ResponseProfileLifecycleLedger:
         self._lock_path = ""
         self._events: list[ResponseProfileLifecycleEvent] = []
         self._blobs: list[OpaqueEvidenceBlob] = []
+        # B1.1: opaque O(1)-per-append writer handle, derived once at open by
+        # replaying the already-verified prefix (see _load_and_reduce_locked).
+        # Never the source of truth -- full replay is, and stays, that.
+        self._writer_state: object | None = None
         self._terminal_recovery = False
         self._terminal_reason_codes: tuple[str, ...] = ()
         self._recovery_interlock = False
@@ -850,6 +882,41 @@ class ResponseProfileLifecycleLedger:
         self._events = events
         self._blobs = blobs
         self._snapshot = snapshot
+        if not self._terminal_recovery:
+            self._writer_state = self._build_writer_state_locked(
+                events, blobs, active=active
+            )
+
+    def _build_writer_state_locked(
+        self,
+        events: list[ResponseProfileLifecycleEvent],
+        blobs: list[OpaqueEvidenceBlob],
+        *,
+        active: ResponseProfileLifecycleSnapshot,
+    ) -> object:
+        """Rebuild the O(1)-per-append B1.1 writer handle once, by replaying
+        the already-verified durable prefix (one-time O(N) reopen cost, not
+        on the append path). Full replay (``active`` above) remains the
+        reference truth; this must converge to exactly the same snapshot.
+        """
+
+        blob_by_seq = {blob.event_seq: blob for blob in blobs}
+        state = initial_lifecycle_reducer_state(self._run_binding)
+        replayed = active
+        for event in events:
+            replayed = apply_next_lifecycle_event(
+                run_binding=self._run_binding,
+                reducer_state=state,
+                event=event,
+                blob=blob_by_seq.get(event.event_seq),
+                recovery_boundary=False,
+            )
+        if replayed != active:
+            raise _error(
+                "PERSISTED_LIFECYCLE_INVALID",
+                "incremental replay of persisted prefix diverged from full reducer",
+            )
+        return state
 
     def _event_from_row(self, row: sqlite3.Row) -> ResponseProfileLifecycleEvent:
         document = _parse_canonical_document(
@@ -1117,10 +1184,22 @@ class ResponseProfileLifecycleLedger:
         event: ResponseProfileLifecycleEvent,
         blob: OpaqueEvidenceBlob | None,
     ) -> ResponseProfileLifecycleSnapshot:
-        snapshot = reduce_response_profile_lifecycle(
+        """B1.1: derive the candidate next state in O(1), not by re-deriving
+        the whole prior history. On rejection, ``self._writer_state`` is
+        guaranteed left byte-identical to before this call (proved by this
+        module's own equivalence/rejection tests), so a declined candidate
+        never corrupts the writer state a later, valid attempt will use.
+        """
+
+        if self._writer_state is None:
+            raise _error(
+                "LEDGER_TERMINAL", "writer state unavailable for mutation"
+            )
+        snapshot = apply_next_lifecycle_event(
             run_binding=self._run_binding,
-            events=tuple((*self._events, event)),
-            opaque_evidence=tuple((*self._blobs, *((blob,) if blob is not None else ()))),
+            reducer_state=self._writer_state,
+            event=event,
+            blob=blob,
             recovery_boundary=False,
         )
         if snapshot.mechanically_invalid:
@@ -1275,6 +1354,79 @@ class ResponseProfileLifecycleLedger:
                 structurally_complete=snapshot.structurally_complete,
             )
 
+    def export_verified_lifecycle(self) -> ResponseProfileLifecycleExport:
+        """Return a coherent, complete, fully reconstructed evidence snapshot.
+
+        This is the only raw-byte export boundary.  It deliberately performs a
+        fresh database reconstruction instead of exposing the writer's cached
+        lists, and it never turns evidence into semantic or candidate authority.
+        """
+
+        with self._mutex:
+            connection = self._require_operational()
+            if (
+                self._terminal_recovery
+                or self._recovery_interlock
+                or self._active_permit is not None
+                or not self._snapshot.structurally_complete
+            ):
+                raise _error(
+                    "LIFECYCLE_EXPORT_UNAVAILABLE",
+                    "only a complete active lifecycle can be exported",
+                )
+            try:
+                self._verify_file_identity()
+                connection.execute("BEGIN")
+                self._verify_schema_locked(connection)
+                self._verify_runtime_head_locked(connection)
+                events = tuple(
+                    self._event_from_row(row)
+                    for row in connection.execute(
+                        "SELECT * FROM response_profile_lifecycle_events "
+                        "ORDER BY event_seq"
+                    ).fetchall()
+                )
+                opaque_evidence = tuple(
+                    self._blob_from_row(row)
+                    for row in connection.execute(
+                        "SELECT * FROM response_profile_opaque_evidence "
+                        "ORDER BY event_seq"
+                    ).fetchall()
+                )
+                reconstructed = reduce_response_profile_lifecycle(
+                    run_binding=self._run_binding,
+                    events=events,
+                    opaque_evidence=opaque_evidence,
+                    recovery_boundary=False,
+                )
+                if (
+                    reconstructed.mechanically_invalid
+                    or not reconstructed.structurally_complete
+                    or reconstructed != self._snapshot
+                    or events != tuple(self._events)
+                    or opaque_evidence != tuple(self._blobs)
+                ):
+                    raise _error(
+                        "LIFECYCLE_EXPORT_INVALID",
+                        "durable lifecycle export did not match verified state",
+                    )
+                connection.execute("COMMIT")
+            except BaseException as exc:
+                self._rollback_quietly()
+                self._poisoned = True
+                self._active_permit = None
+                if isinstance(exc, ResponseProfileLifecycleLedgerError):
+                    raise exc
+                raise _error(
+                    "LIFECYCLE_EXPORT_FAILED",
+                    "durable lifecycle export failed",
+                ) from exc
+            return _make_lifecycle_export(
+                run_binding=self._run_binding,
+                events=events,
+                opaque_evidence=opaque_evidence,
+            )
+
     def begin_epoch(
         self, *, epoch_index: int, recorded_at_utc: str
     ) -> ResponseProfileLifecycleEvent:
@@ -1402,7 +1554,12 @@ class ResponseProfileLifecycleLedger:
                     "started_monotonic_ns": started_monotonic_ns,
                 },
             )
-            snapshot = self._candidate_snapshot(event, None)
+            # Build the permit before deriving the candidate snapshot: the
+            # candidate step (B1.1) tentatively advances the writer state as
+            # a side effect of succeeding, so nothing that can still fail
+            # (like permit construction) may run between it and commit --
+            # otherwise a permit-construction failure here would leave the
+            # writer state advanced for an event that was never persisted.
             try:
                 permit = _make_permit(
                     owner_pid=self._owner_pid,
@@ -1420,6 +1577,7 @@ class ResponseProfileLifecycleLedger:
                     "MEASUREMENT_PERMIT_CONSTRUCTION_FAILED",
                     "measurement permit could not be constructed",
                 ) from exc
+            snapshot = self._candidate_snapshot(event, None)
             self._commit_candidate(
                 event=event,
                 blob=None,
