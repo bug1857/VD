@@ -36,6 +36,7 @@ from .canary_execution_ledger import (
     Stage4ExecutionLedger,
     Stage4LedgerError,
     Stage4LedgerProgress,
+    Stage4LedgerStartResult,
     Stage4LedgerStatus,
     Stage4SlotObservation,
 )
@@ -201,34 +202,77 @@ class Stage4SerialRunner:
             return self._result(0, ("LEDGER_NOT_ACTIVE",))
         if progress.status is Stage4LedgerStatus.COMPLETE:
             return self._result(0, ())
+        if progress.status is Stage4LedgerStatus.AMBIGUOUS:
+            # A durable STARTED marker with no matching terminal record --
+            # governed recovery is required; this boundary never resolves it
+            # automatically.
+            return self._result(0, ("LEDGER_AMBIGUOUS",))
 
         dispatched = 0
         end_index = min(len(self._schedule.steps), progress.record_count + limit)
         for execution_index in range(progress.record_count, end_index):
             step = self._schedule.steps[execution_index]
-            observation, was_dispatched = self._observe(step)
-            append = self._ledger.append(observation)
+            observation, was_dispatched, started_record_sha256 = self._observe(step)
+            if observation is None or started_record_sha256 is None:
+                return self._result(dispatched, ("LEDGER_START_REFUSED",))
             dispatched += int(was_dispatched)
+            append = self._ledger.complete_slot(
+                observation, started_record_sha256=started_record_sha256
+            )
             if not append.accepted:
                 return self._result(dispatched, (append.reason_code or "LEDGER_APPEND_REFUSED",))
             if not _observation_is_safe(observation):
                 return self._result(dispatched, (observation.reason_code or "SLOT_UNSAFE",))
         return self._result(dispatched, ())
 
-    def _observe(self, step: Stage4ScheduleStep) -> tuple[Stage4SlotObservation, bool]:
+    def _observe(
+        self, step: Stage4ScheduleStep
+    ) -> tuple[Stage4SlotObservation | None, bool, str | None]:
         start = _monotonic(self._monotonic_ns, "CLOCK_START_INVALID")
+        start_recorded_at = _timestamp(self._utc_now())
+        try:
+            start_result = self._ledger.start_slot(
+                step.execution_index,
+                started_monotonic_ns=start,
+                recorded_at_utc=start_recorded_at,
+            )
+        except Stage4LedgerError:
+            return None, False, None
+        if (
+            not isinstance(start_result, Stage4LedgerStartResult)
+            or not start_result.accepted
+            or not isinstance(start_result.start_sha256, str)
+        ):
+            # No durable STARTED marker -- the injected executor must not be
+            # invoked, matching the STARTED-before-dispatch contract shared
+            # with Stage4LiveRunner.
+            return None, False, None
+        started_record_sha256 = start_result.start_sha256
+
         try:
             query_vector = self._vector_source.vector_for_step(step)
         except Exception:
             finish = _monotonic(self._monotonic_ns, "CLOCK_FINISH_INVALID")
-            return self._failure_observation(step, start, finish, "QUERY_SOURCE_FAILURE"), False
+            return (
+                self._failure_observation(step, start, finish, "QUERY_SOURCE_FAILURE"),
+                False,
+                started_record_sha256,
+            )
         try:
             outcome = self._executor.execute(step=step, query_vector=query_vector)
         except Exception:
             finish = _monotonic(self._monotonic_ns, "CLOCK_FINISH_INVALID")
-            return self._failure_observation(step, start, finish, "EXECUTOR_EXCEPTION"), True
+            return (
+                self._failure_observation(step, start, finish, "EXECUTOR_EXCEPTION"),
+                True,
+                started_record_sha256,
+            )
         finish = _monotonic(self._monotonic_ns, "CLOCK_FINISH_INVALID")
-        return self._observation_from_outcome(step, start, finish, outcome), True
+        return (
+            self._observation_from_outcome(step, start, finish, outcome),
+            True,
+            started_record_sha256,
+        )
 
     def _observation_from_outcome(
         self,

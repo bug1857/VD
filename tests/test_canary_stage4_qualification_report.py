@@ -254,7 +254,13 @@ def _populate_latency_ledger(path: Path, *, run_id: str, schedule) -> Stage4Exec
     ledger = Stage4ExecutionLedger(path, run_id=run_id, schedule=schedule)
     for step in schedule.steps:
         latency = 1.0 if step.control_query_id is not None else 2.0
-        ledger.append(
+        start_result = ledger.start_slot(
+            step.execution_index,
+            started_monotonic_ns=step.execution_index * 10,
+            recorded_at_utc="2026-08-04T15:01:00Z",
+        )
+        assert start_result.accepted and start_result.start_sha256 is not None
+        completed = ledger.complete_slot(
             Stage4SlotObservation(
                 execution_index=step.execution_index,
                 observed_ef=step.expected_ef,
@@ -271,8 +277,10 @@ def _populate_latency_ledger(path: Path, *, run_id: str, schedule) -> Stage4Exec
                 result_count=0,
                 latency_ms=latency,
                 reason_code=None,
-            )
+            ),
+            started_record_sha256=start_result.start_sha256,
         )
+        assert completed.accepted
     return ledger
 
 

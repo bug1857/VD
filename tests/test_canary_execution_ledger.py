@@ -13,6 +13,7 @@ import unittest
 from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
 from vdbench.canary_execution_ledger import (
     Stage4ExecutionLedger,
+    Stage4LedgerAppendResult,
     Stage4LedgerError,
     Stage4LedgerStatus,
     Stage4SlotObservation,
@@ -123,6 +124,36 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
             schedule=self.schedule if schedule is None else schedule,
         )
 
+    def _start_and_complete(
+        self,
+        ledger: Stage4ExecutionLedger,
+        execution_index: int,
+        **kwargs: object,
+    ) -> Stage4LedgerAppendResult:
+        """Drive the real two-phase start_slot -> complete_slot lifecycle.
+
+        Mirrors the pre-hardening ``ledger.append(self._observation(...))``
+        call shape as closely as possible so most existing test bodies need
+        only this one substitution.
+        """
+
+        started_monotonic_ns = kwargs.pop("started_monotonic_ns", None)
+        if started_monotonic_ns is None:
+            started_monotonic_ns = execution_index * 10
+        start_result = ledger.start_slot(
+            execution_index,
+            started_monotonic_ns=started_monotonic_ns,
+            recorded_at_utc=f"2026-08-04T14:01:{execution_index % 60:02d}Z",
+        )
+        if not start_result.accepted:
+            raise AssertionError(f"start_slot unexpectedly refused: {start_result.reason_code}")
+        observation = self._observation(
+            execution_index, started_monotonic_ns=started_monotonic_ns, **kwargs
+        )
+        return ledger.complete_slot(
+            observation, started_record_sha256=start_result.start_sha256
+        )
+
     def _observation(
         self,
         execution_index: int,
@@ -163,9 +194,15 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ledger = self._ledger(root)
-            first = ledger.append(self._observation(0))
-            second = ledger.append(self._observation(1))
-            duplicate = ledger.append(self._observation(1))
+            first = self._start_and_complete(ledger, 0)
+            second = self._start_and_complete(ledger, 1)
+            # A replay of the same already-closed index, even with a stale
+            # digest, is refused before it can touch the ledger at all: this
+            # exact ledger instance's one-time start session for index 1 was
+            # already consumed by `second`.
+            duplicate = ledger.complete_slot(
+                self._observation(1), started_record_sha256=("0" * 64)
+            )
             restarted = Stage4ExecutionLedger(
                 root / "private" / "stage4.sqlite3",
                 run_id="exp009-ledger-test-001",
@@ -175,7 +212,7 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
             self.assertTrue(first.accepted)
             self.assertTrue(second.accepted)
             self.assertFalse(duplicate.accepted)
-            self.assertEqual(duplicate.reason_code, "EXECUTION_INDEX_UNEXPECTED")
+            self.assertEqual(duplicate.reason_code, "STARTED_SESSION_MISMATCH")
             progress = restarted.progress()
             self.assertEqual(progress.status, Stage4LedgerStatus.IN_PROGRESS)
             self.assertEqual(progress.record_count, 2)
@@ -185,16 +222,17 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
     def test_failed_outcome_is_recorded_then_blocks_all_later_slots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ledger = self._ledger(Path(temporary))
-            self.assertTrue(ledger.append(self._observation(0)).accepted)
-            failed = ledger.append(
-                self._observation(
-                    1,
-                    success=False,
-                    threshold_semantics_valid=False,
-                    reason_code="MILVUS_SEARCH_FAILED",
-                )
+            self.assertTrue(self._start_and_complete(ledger, 0).accepted)
+            failed = self._start_and_complete(
+                ledger,
+                1,
+                success=False,
+                threshold_semantics_valid=False,
+                reason_code="MILVUS_SEARCH_FAILED",
             )
-            after_failure = ledger.append(self._observation(2))
+            after_failure = ledger.start_slot(
+                2, started_monotonic_ns=30, recorded_at_utc="2026-08-04T14:01:02Z"
+            )
 
             self.assertTrue(failed.accepted)
             self.assertEqual(ledger.progress().status, Stage4LedgerStatus.FAILED)
@@ -264,22 +302,31 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
                     case_root = root / name
                     case_root.mkdir()
                     ledger = self._ledger(case_root)
-                    result = ledger.append(self._observation(0, **changes))
+                    result = self._start_and_complete(ledger, 0, **changes)
                     self.assertTrue(result.accepted)
                     self.assertEqual(ledger.progress().status, Stage4LedgerStatus.FAILED)
-                    self.assertFalse(ledger.append(self._observation(1)).accepted)
+                    blocked = ledger.start_slot(
+                        1, started_monotonic_ns=30, recorded_at_utc="2026-08-04T14:01:01Z"
+                    )
+                    self.assertFalse(blocked.accepted)
+                    self.assertEqual(blocked.reason_code, "RUN_NOT_ACTIVE")
 
     def test_rejects_overlapping_interval_and_schedule_substitution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ledger = self._ledger(root)
             self.assertTrue(
-                ledger.append(
-                    self._observation(0, started_monotonic_ns=100, finished_monotonic_ns=110)
+                self._start_and_complete(
+                    ledger, 0, started_monotonic_ns=100, finished_monotonic_ns=110
                 ).accepted
             )
-            overlapping = ledger.append(
-                self._observation(1, started_monotonic_ns=110, finished_monotonic_ns=120)
+            start1 = ledger.start_slot(
+                1, started_monotonic_ns=110, recorded_at_utc="2026-08-04T14:01:01Z"
+            )
+            self.assertTrue(start1.accepted)
+            overlapping = ledger.complete_slot(
+                self._observation(1, started_monotonic_ns=110, finished_monotonic_ns=120),
+                started_record_sha256=start1.start_sha256,
             )
             self.assertFalse(overlapping.accepted)
             self.assertEqual(overlapping.reason_code, "MONOTONIC_INTERVAL_VIOLATION")
@@ -316,7 +363,7 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             ledger = self._ledger(Path(temporary))
             for execution_index in range(1200):
-                result = ledger.append(self._observation(execution_index))
+                result = self._start_and_complete(ledger, execution_index)
                 self.assertTrue(result.accepted)
             progress = ledger.progress()
 
@@ -328,7 +375,7 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ledger = self._ledger(root)
-            self.assertTrue(ledger.append(self._observation(0)).accepted)
+            self.assertTrue(self._start_and_complete(ledger, 0).accepted)
             database = root / "private" / "stage4.sqlite3"
             connection = sqlite3.connect(database)
             try:
@@ -337,6 +384,12 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
                 with self.assertRaises(sqlite3.DatabaseError):
                     connection.execute(
                         "UPDATE execution_records SET record_json = record_json"
+                    )
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute("DELETE FROM execution_starts")
+                with self.assertRaises(sqlite3.DatabaseError):
+                    connection.execute(
+                        "UPDATE execution_starts SET start_json = start_json"
                     )
                 with self.assertRaises(sqlite3.DatabaseError):
                     connection.execute("DELETE FROM execution_run")
@@ -368,6 +421,145 @@ class CanaryExecutionLedgerTests(unittest.TestCase):
             "host_observation",
         }
         self.assertFalse(any(name.split(".")[-1] in forbidden for name in imports))
+
+    def test_orphan_started_marker_is_ambiguous_and_blocks_start_and_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = self._ledger(root)
+            self.assertTrue(self._start_and_complete(ledger, 0).accepted)
+            # Slot 1 is started but the process "crashes" before completing it
+            # -- start_slot succeeds, complete_slot is never called.
+            orphan_start = ledger.start_slot(
+                1, started_monotonic_ns=10, recorded_at_utc="2026-08-04T14:01:01Z"
+            )
+            self.assertTrue(orphan_start.accepted)
+
+            progress = ledger.progress()
+            self.assertEqual(progress.status, Stage4LedgerStatus.AMBIGUOUS)
+            self.assertEqual(progress.reason_code, "ORPHAN_STARTED_NO_TERMINAL")
+            self.assertEqual(progress.chain_head_sha256, orphan_start.start_sha256)
+            self.assertEqual(progress.record_count, 1)
+
+            # No new slot may be started while the ledger is ambiguous.
+            blocked_start = ledger.start_slot(
+                2, started_monotonic_ns=20, recorded_at_utc="2026-08-04T14:01:02Z"
+            )
+            self.assertFalse(blocked_start.accepted)
+            self.assertEqual(blocked_start.reason_code, "LEDGER_AMBIGUOUS_ORPHAN_START")
+
+    def test_same_instance_may_complete_the_slot_it_just_started(self) -> None:
+        """The normal, non-crash lifecycle: one instance starts then
+        completes its own slot without ever being refused as ambiguous."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = self._ledger(Path(temporary))
+            start = ledger.start_slot(
+                0, started_monotonic_ns=5, recorded_at_utc="2026-08-04T14:01:00Z"
+            )
+            self.assertTrue(start.accepted)
+            completed = ledger.complete_slot(
+                self._observation(0, started_monotonic_ns=5, finished_monotonic_ns=8),
+                started_record_sha256=start.start_sha256,
+            )
+            self.assertTrue(completed.accepted)
+            self.assertEqual(ledger.progress().status, Stage4LedgerStatus.IN_PROGRESS)
+
+    def test_fresh_instance_cannot_resolve_an_orphan_even_with_the_correct_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = self._ledger(root)
+            self.assertTrue(self._start_and_complete(ledger, 0).accepted)
+            orphan_start = ledger.start_slot(
+                1, started_monotonic_ns=10, recorded_at_utc="2026-08-04T14:01:01Z"
+            )
+            self.assertTrue(orphan_start.accepted)
+            # Simulate process death: the in-memory session that owns this
+            # start is gone, only the durable digest remains on disk.
+            del ledger
+
+            reopened = Stage4ExecutionLedger(
+                root / "private" / "stage4.sqlite3",
+                run_id="exp009-ledger-test-001",
+                schedule=self.schedule,
+            )
+            self.assertEqual(reopened.progress().status, Stage4LedgerStatus.AMBIGUOUS)
+
+            # Attempting to close it out as a success, using the exact
+            # correct started_record_sha256, must still be refused: a fresh
+            # instance never owns the session, regardless of digest
+            # correctness.
+            success_attempt = reopened.complete_slot(
+                self._observation(1, started_monotonic_ns=10, finished_monotonic_ns=15),
+                started_record_sha256=orphan_start.start_sha256,
+            )
+            self.assertFalse(success_attempt.accepted)
+            self.assertEqual(success_attempt.reason_code, "STARTED_SESSION_MISMATCH")
+
+            # Nor may it be silently converted into a FAILED terminal record
+            # and "cleanly" closed out that way either.
+            failure_attempt = reopened.complete_slot(
+                self._observation(
+                    1,
+                    started_monotonic_ns=10,
+                    finished_monotonic_ns=15,
+                    success=False,
+                    threshold_semantics_valid=False,
+                    reason_code="OPERATOR_RECOVERY_MARK_FAILED",
+                ),
+                started_record_sha256=orphan_start.start_sha256,
+            )
+            self.assertFalse(failure_attempt.accepted)
+            self.assertEqual(failure_attempt.reason_code, "STARTED_SESSION_MISMATCH")
+
+            # The ledger remains exactly as ambiguous as before either attempt.
+            self.assertEqual(reopened.progress().status, Stage4LedgerStatus.AMBIGUOUS)
+            self.assertEqual(len(reopened.records()), 1)
+
+    def test_restart_reconstructs_identical_start_and_terminal_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ledger = self._ledger(root)
+            for execution_index in range(3):
+                self.assertTrue(self._start_and_complete(ledger, execution_index).accepted)
+
+            reopened = Stage4ExecutionLedger(
+                root / "private" / "stage4.sqlite3",
+                run_id="exp009-ledger-test-001",
+                schedule=self.schedule,
+            )
+            self.assertEqual(len(reopened.starts()), 3)
+            self.assertEqual(len(reopened.records()), 3)
+            for index, (start, record) in enumerate(
+                zip(reopened.starts(), reopened.records())
+            ):
+                self.assertEqual(start.execution_index, index)
+                self.assertEqual(record.observation.execution_index, index)
+                self.assertEqual(record.started_record_sha256, start.start_sha256)
+
+    def test_start_slot_out_of_order_and_non_monotonic_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = self._ledger(Path(temporary))
+            out_of_order = ledger.start_slot(
+                5, started_monotonic_ns=1, recorded_at_utc="2026-08-04T14:01:00Z"
+            )
+            self.assertFalse(out_of_order.accepted)
+            self.assertEqual(out_of_order.reason_code, "EXECUTION_INDEX_UNEXPECTED")
+
+            self.assertTrue(self._start_and_complete(ledger, 0, started_monotonic_ns=100, finished_monotonic_ns=105).accepted)
+            non_monotonic = ledger.start_slot(
+                1, started_monotonic_ns=50, recorded_at_utc="2026-08-04T14:01:01Z"
+            )
+            self.assertFalse(non_monotonic.accepted)
+            self.assertEqual(non_monotonic.reason_code, "MONOTONIC_START_VIOLATION")
+
+    def test_complete_slot_without_any_start_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = self._ledger(Path(temporary))
+            result = ledger.complete_slot(
+                self._observation(0), started_record_sha256=("a" * 64)
+            )
+            self.assertFalse(result.accepted)
+            self.assertEqual(result.reason_code, "STARTED_SESSION_MISMATCH")
 
 
 if __name__ == "__main__":

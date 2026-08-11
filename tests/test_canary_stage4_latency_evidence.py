@@ -281,7 +281,17 @@ class Stage4LatencyEvidenceTests(unittest.TestCase):
                 latency_ms=latency,
                 reason_code=None,
             )
-            self.assertTrue(ledger.append(observation).accepted)
+            start_result = ledger.start_slot(
+                step.execution_index,
+                started_monotonic_ns=step.execution_index * 10,
+                recorded_at_utc="2026-08-04T15:01:00Z",
+            )
+            self.assertTrue(start_result.accepted)
+            self.assertTrue(
+                ledger.complete_slot(
+                    observation, started_record_sha256=start_result.start_sha256
+                ).accepted
+            )
         binding = _binding_for(self.schedule, run_id=ledger.run_id)
 
         result = build_stage4_latency_evidence(binding=binding, schedule=self.schedule, ledger=ledger)

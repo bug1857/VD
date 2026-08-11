@@ -43,6 +43,7 @@ from .canary_execution_ledger import (
     Stage4LedgerAppendResult,
     Stage4LedgerError,
     Stage4LedgerProgress,
+    Stage4LedgerStartResult,
     Stage4LedgerStatus,
     Stage4SlotObservation,
 )
@@ -183,6 +184,7 @@ class _SlotExecution:
     observation: Stage4SlotObservation | None
     dispatched: bool
     reason_code: str | None
+    started_record_sha256: str | None
 
 
 class Stage4LiveRunner:
@@ -313,7 +315,11 @@ class Stage4LiveRunner:
                     (execution.reason_code or "SLOT_OBSERVATION_UNAVAILABLE",),
                 )
             try:
-                appended = self._ledger.append(execution.observation)
+                assert execution.started_record_sha256 is not None
+                appended = self._ledger.complete_slot(
+                    execution.observation,
+                    started_record_sha256=execution.started_record_sha256,
+                )
             except Stage4LedgerError:
                 rollback = self._contain(context, RollbackTrigger.SLOT_SAFETY_FAILURE)
                 return self._result(
@@ -393,11 +399,41 @@ class Stage4LiveRunner:
         try:
             start = self._clock()
         except Exception:
-            return _SlotExecution(None, False, "CLOCK_START_INVALID")
+            return _SlotExecution(None, False, "CLOCK_START_INVALID", None)
+        try:
+            start_recorded_at = self._timestamp()
+        except Exception:
+            return _SlotExecution(None, False, "UTC_CLOCK_INVALID", None)
+        try:
+            start_result = self._ledger.start_slot(
+                step.execution_index,
+                started_monotonic_ns=start,
+                recorded_at_utc=start_recorded_at,
+            )
+        except Stage4LedgerError:
+            return _SlotExecution(None, False, "LEDGER_START_UNAVAILABLE", None)
+        if (
+            not isinstance(start_result, Stage4LedgerStartResult)
+            or not start_result.accepted
+            or not isinstance(start_result.start_sha256, str)
+        ):
+            # No durable STARTED marker exists for this slot -- the search
+            # port must not be invoked.  Zero dispatch, whatever the reason.
+            reason = (
+                start_result.reason_code
+                if isinstance(start_result, Stage4LedgerStartResult) and start_result.reason_code
+                else "LEDGER_START_REFUSED"
+            )
+            return _SlotExecution(None, False, reason, None)
+        started_record_sha256 = start_result.start_sha256
+
         try:
             vector = self._source.vector_for_step(step)
         except Exception:
-            return self._failure(step, start, "QUERY_SOURCE_FAILURE", dispatched=False)
+            return self._failure(
+                step, start, "QUERY_SOURCE_FAILURE", dispatched=False,
+                started_record_sha256=started_record_sha256,
+            )
 
         before = self._safety()
         if before is None or not before.health_ok or not before.identity_ok:
@@ -407,35 +443,44 @@ class Stage4LiveRunner:
                 before.reason_code if before is not None else "SLOT_PREFLIGHT_UNAVAILABLE",
                 before=before,
                 dispatched=False,
+                started_record_sha256=started_record_sha256,
             )
         if step.kind is Stage4ScheduleStepKind.ROUTING and not self._claim_matches(step):
             return self._failure(
-                step, start, "ROUTE_CLAIM_REFUSED", before=before, dispatched=False
+                step, start, "ROUTE_CLAIM_REFUSED", before=before, dispatched=False,
+                started_record_sha256=started_record_sha256,
             )
 
         try:
             request = self._range_request(step, vector)
         except Exception:
             return self._failure(
-                step, start, "SERVING_REQUEST_INVALID", before=before, dispatched=False
+                step, start, "SERVING_REQUEST_INVALID", before=before, dispatched=False,
+                started_record_sha256=started_record_sha256,
             )
         try:
             started = self._clock()
         except Exception:
             return self._failure(
-                step, start, "CLOCK_START_INVALID", before=before, dispatched=False
+                step, start, "CLOCK_START_INVALID", before=before, dispatched=False,
+                started_record_sha256=started_record_sha256,
             )
+        # The search port cannot be reached above this line: every early
+        # return so far carries dispatched=False.  start_slot's durable
+        # commit above is the only thing that made even this point reachable.
         try:
             outcome = self._serving.execute(request)
         except Exception:
             return self._failure(
-                step, started, "SERVING_EXCEPTION", before=before, dispatched=True
+                step, started, "SERVING_EXCEPTION", before=before, dispatched=True,
+                started_record_sha256=started_record_sha256,
             )
         try:
             finished = self._clock()
         except Exception:
             return self._failure(
-                step, started, "CLOCK_FINISH_INVALID", before=before, dispatched=True
+                step, started, "CLOCK_FINISH_INVALID", before=before, dispatched=True,
+                started_record_sha256=started_record_sha256,
             )
         after = self._safety()
         if not isinstance(outcome, ServedQueryOutcome):
@@ -446,6 +491,7 @@ class Stage4LiveRunner:
                 before=before,
                 after=after,
                 dispatched=True,
+                started_record_sha256=started_record_sha256,
             )
         if not outcome.success or outcome.timed_out:
             return self._failure(
@@ -459,6 +505,7 @@ class Stage4LiveRunner:
                 finished=finished,
                 result_count=outcome.result_count,
                 timed_out=outcome.timed_out,
+                started_record_sha256=started_record_sha256,
             )
         if after is None or not after.health_ok or not after.identity_ok:
             return self._failure(
@@ -470,6 +517,7 @@ class Stage4LiveRunner:
                 dispatched=True,
                 finished=finished,
                 result_count=outcome.result_count,
+                started_record_sha256=started_record_sha256,
             )
         try:
             observation = Stage4SlotObservation(
@@ -490,8 +538,12 @@ class Stage4LiveRunner:
                 reason_code=None,
             )
         except Exception:
-            return _SlotExecution(None, True, "UTC_CLOCK_INVALID")
-        return _SlotExecution(observation, True, None)
+            # A durable STARTED marker is left orphaned here deliberately --
+            # this boundary must not fabricate a terminal record it cannot
+            # trust its own inputs enough to build.  progress() will report
+            # AMBIGUOUS; no automatic recovery is attempted.
+            return _SlotExecution(None, True, "UTC_CLOCK_INVALID", started_record_sha256)
+        return _SlotExecution(observation, True, None, started_record_sha256)
 
     @staticmethod
     def _failure_code(value: str | None) -> str | None:
@@ -590,6 +642,7 @@ class Stage4LiveRunner:
         finished: int | None = None,
         result_count: int = 0,
         timed_out: bool = False,
+        started_record_sha256: str,
     ) -> _SlotExecution:
         try:
             end = self._clock() if finished is None else finished
@@ -611,8 +664,10 @@ class Stage4LiveRunner:
                 reason_code=reason,
             )
         except Exception:
-            return _SlotExecution(None, dispatched, "CLOCK_OR_TIMESTAMP_INVALID")
-        return _SlotExecution(observation, dispatched, reason)
+            # Same deliberate orphan-on-untrustworthy-input rule as the
+            # success path in _execute_slot: no fabricated terminal record.
+            return _SlotExecution(None, dispatched, "CLOCK_OR_TIMESTAMP_INVALID", started_record_sha256)
+        return _SlotExecution(observation, dispatched, reason, started_record_sha256)
 
     def _clock(self) -> int:
         value = self._monotonic_ns()

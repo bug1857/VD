@@ -4,22 +4,43 @@ Purpose:
     Record an attempted immutable 1,200-slot Stage-4 schedule in strict order
     without dispatching, retrying, or interpreting any query.
 Inputs:
-    A validated ``Stage4ExecutionSchedule``, a canonical run ID, and compact
-    non-sensitive per-slot observations supplied by a later serial runner.
+    A validated ``Stage4ExecutionSchedule``, a canonical run ID, one durable
+    STARTED marker per slot committed before dispatch, and compact
+    non-sensitive per-slot terminal observations supplied by a later serial
+    runner.
 Outputs:
-    Immutable hash-chained records, restart-safe progress, and explicit
-    fail-closed refusals for invalid continuation attempts.
+    Immutable hash-chained STARTED and terminal records, restart-safe
+    progress (including an explicit AMBIGUOUS status for an orphaned STARTED
+    marker with no terminal outcome), and explicit fail-closed refusals for
+    invalid continuation attempts.
 Dependencies:
     The standard-library SQLite implementation and the pure schedule values.
     This module has no Milvus, serving executor, approval, route authority,
     query-source, policy, or activation dependency.
 Complexity:
-    Each append revalidates at most 1,200 records, so this bounded reference
-    contract is O(1,200) time and O(1,200) storage per run.
+    Each append revalidates at most 1,200 starts plus 1,200 records, so this
+    bounded reference contract is O(1,200) time and O(1,200) storage per run.
 Failure modes:
     Corrupt/unavailable storage raises ``Stage4LedgerError``.  Invalid next
-    observations receive stable refusal codes and are not persisted.  A safely
-    persisted failed outcome terminally blocks further slots.
+    starts/observations receive stable refusal codes and are not persisted.  A
+    safely persisted failed outcome terminally blocks further slots.  A
+    durable STARTED marker with no matching terminal record (a crash between
+    dispatch and append) makes the ledger AMBIGUOUS: no further start or
+    append is accepted until the ambiguity is resolved by separate, explicit,
+    governed recovery -- this boundary never resolves it automatically.
+
+Schema history:
+    v1 (superseded): terminal-only records; a crash between a dispatched
+    search and its terminal append left no durable evidence the slot was ever
+    attempted, so a restart could see an empty ledger and appear fresh even
+    though a live candidate search had already been dispatched. v2 (current):
+    adds an independently hash-chained ``execution_starts`` table and
+    requires every terminal record to bind the exact STARTED record it
+    closes. v1 database files are not migrated or reinterpreted -- schema
+    verification refuses to open them under v2 code (``LEDGER_SCHEMA_MISMATCH``);
+    they remain untouched, historical-only evidence on disk. This repository
+    has not produced any real governed live Stage-4 evidence under v1, so no
+    migration path is required or provided.
 """
 
 from __future__ import annotations
@@ -49,15 +70,19 @@ __all__ = [
     "Stage4LedgerAppendResult",
     "Stage4LedgerError",
     "Stage4LedgerProgress",
+    "Stage4LedgerStartResult",
     "Stage4LedgerStatus",
     "Stage4SlotObservation",
+    "Stage4SlotStartRecord",
 ]
 
 
-_SCHEMA_VERSION = 1
-_RECORD_SCHEMA_VERSION = "exp009-stage4-execution-record-v1"
-_GENESIS_DOMAIN = b"vdbench.exp009.stage4-ledger-genesis/v1\0"
-_RECORD_DOMAIN = b"vdbench.exp009.stage4-ledger-record/v1\0"
+_SCHEMA_VERSION = 2
+_RECORD_SCHEMA_VERSION = "exp009-stage4-execution-record-v2"
+_START_RECORD_SCHEMA_VERSION = "exp009-stage4-execution-start-record-v1"
+_GENESIS_DOMAIN = b"vdbench.exp009.stage4-ledger-genesis/v2\0"
+_RECORD_DOMAIN = b"vdbench.exp009.stage4-ledger-record/v2\0"
+_START_DOMAIN = b"vdbench.exp009.stage4-ledger-start/v1\0"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _UTC_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z"
@@ -66,11 +91,27 @@ _CODE_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}\Z")
 _EXPECTED_SCHEMA_OBJECTS = frozenset(
     {
         "execution_run",
+        "execution_starts",
         "execution_records",
         "execution_run_no_delete",
         "execution_run_no_update",
+        "execution_starts_no_delete",
+        "execution_starts_no_update",
         "execution_records_no_delete",
         "execution_records_no_update",
+    }
+)
+_START_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "schedule_sha256",
+        "execution_index",
+        "expected_ef",
+        "expected_kind",
+        "started_monotonic_ns",
+        "recorded_at_utc",
+        "previous_start_sha256",
     }
 )
 _RECORD_FIELDS = frozenset(
@@ -93,6 +134,7 @@ _RECORD_FIELDS = frozenset(
         "result_count",
         "latency_ms",
         "reason_code",
+        "started_record_sha256",
     }
 )
 
@@ -102,11 +144,39 @@ class Stage4LedgerError(RuntimeError):
 
 
 class Stage4LedgerStatus(StrEnum):
-    """The only derived statuses of one immutable schedule ledger."""
+    """The only derived statuses of one immutable schedule ledger.
+
+    AMBIGUOUS means a durable STARTED marker exists with no matching terminal
+    record -- a crash between dispatch and terminal append.  It is a fail-
+    closed terminal condition of the ledger itself: no further ``start_slot``
+    or ``complete_slot`` call is accepted while it holds.  Automatic recovery
+    is deliberately not provided by this boundary.
+    """
 
     IN_PROGRESS = "IN_PROGRESS"
     FAILED = "FAILED"
     COMPLETE = "COMPLETE"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+@dataclass(frozen=True, slots=True)
+class Stage4SlotStartRecord:
+    """One immutable durable STARTED marker, committed before dispatch."""
+
+    execution_index: int
+    started_monotonic_ns: int
+    recorded_at_utc: str
+    previous_start_sha256: str
+    start_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class Stage4LedgerStartResult:
+    """A start outcome; a refusal has no durable record and permits no dispatch."""
+
+    accepted: bool
+    reason_code: str | None
+    start_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +210,7 @@ class Stage4ExecutionRecord:
     observation: Stage4SlotObservation
     previous_record_sha256: str
     record_sha256: str
+    started_record_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +224,13 @@ class Stage4LedgerAppendResult:
 
 @dataclass(frozen=True, slots=True)
 class Stage4LedgerProgress:
-    """Restart-safe derived status of one bounded serial schedule."""
+    """Restart-safe derived status of one bounded serial schedule.
+
+    ``chain_head_sha256`` is the terminal-record chain head for IN_PROGRESS,
+    FAILED, and COMPLETE.  For AMBIGUOUS it is instead the orphaned STARTED
+    record's digest -- the exact pending marker a governed recovery decision
+    must resolve.
+    """
 
     status: Stage4LedgerStatus
     record_count: int
@@ -191,11 +268,22 @@ class Stage4ExecutionLedger:
             raise TypeError("schedule must be a Stage4ExecutionSchedule")
         self._schedule = schedule
         self._lock_timeout_seconds = _lock_timeout(lock_timeout_seconds)
+        # In-process session continuity for the one outstanding STARTED
+        # marker this exact instance most recently committed.  A durable
+        # on-disk digest match alone cannot distinguish "this instance is
+        # about to legitimately complete the slot it just started" from "a
+        # freshly reopened instance is being used to silently resolve an
+        # orphan left by a crash" -- only the former is permitted, and this
+        # attribute is what tells them apart.  It is never persisted and
+        # never survives a reopen.
+        self._pending_start_execution_index: int | None = None
+        self._pending_start_sha256: str | None = None
         self._validate_path()
         try:
             with self._session() as connection:
                 self._initialize_schema(connection)
                 self._bind_or_validate_run(connection)
+                self._load_verified_starts(connection)
                 self._load_verified_records(connection)
             self._enforce_private_database_mode()
         except Stage4LedgerError:
@@ -207,16 +295,150 @@ class Stage4ExecutionLedger:
         except (OSError, UnicodeError) as exc:
             raise _ledger_error("LEDGER_STORE_UNAVAILABLE", exc) from exc
 
-    def append(self, observation: object) -> Stage4LedgerAppendResult:
-        """Append exactly one safe next slot, or refuse without a write.
+    def start_slot(
+        self,
+        execution_index: object,
+        *,
+        started_monotonic_ns: object,
+        recorded_at_utc: object,
+    ) -> Stage4LedgerStartResult:
+        """Durably commit exactly one STARTED marker before any dispatch.
 
-        A persisted failed observation is retained as evidence but leaves the
-        run terminally failed.  The caller cannot use this boundary to retry,
-        skip, reorder, or resume the schedule.
+        The caller must not invoke the search port until this returns an
+        accepted result.  Refuses (no write) if the run is not active, the
+        index is not the exact next expected slot, the ledger is already
+        AMBIGUOUS, or the request is malformed.
+        """
+
+        try:
+            index = _nonnegative_integer(execution_index, field="execution_index")
+            monotonic_value = _nonnegative_integer(
+                started_monotonic_ns, field="started_monotonic_ns"
+            )
+            timestamp = _timestamp(recorded_at_utc)
+        except ValueError:
+            return Stage4LedgerStartResult(False, "START_REQUEST_INVALID", None)
+        try:
+            with self._session() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._require_current_schema(connection)
+                self._require_matching_run(connection)
+                records, genesis = self._load_verified_records(connection)
+                starts, start_genesis = self._load_verified_starts(connection)
+                if len(starts) != len(records):
+                    connection.commit()
+                    return Stage4LedgerStartResult(
+                        False, "LEDGER_AMBIGUOUS_ORPHAN_START", None
+                    )
+                progress = _terminal_progress(records, genesis, len(self._schedule.steps))
+                if progress.status is not Stage4LedgerStatus.IN_PROGRESS:
+                    connection.commit()
+                    return Stage4LedgerStartResult(False, "RUN_NOT_ACTIVE", None)
+                if index >= len(self._schedule.steps):
+                    connection.commit()
+                    return Stage4LedgerStartResult(
+                        False, "EXECUTION_INDEX_UNEXPECTED", None
+                    )
+                expected_index = len(records)
+                if index != expected_index:
+                    connection.commit()
+                    return Stage4LedgerStartResult(
+                        False, "EXECUTION_INDEX_UNEXPECTED", None
+                    )
+                if starts and monotonic_value <= starts[-1].started_monotonic_ns:
+                    connection.commit()
+                    return Stage4LedgerStartResult(
+                        False, "MONOTONIC_START_VIOLATION", None
+                    )
+                expected_step = self._schedule.steps[expected_index]
+                previous = starts[-1].start_sha256 if starts else start_genesis
+                payload = {
+                    "schema_version": _START_RECORD_SCHEMA_VERSION,
+                    "run_id": self._run_id,
+                    "schedule_sha256": self._schedule.schedule_sha256,
+                    "execution_index": index,
+                    "expected_ef": expected_step.expected_ef,
+                    "expected_kind": expected_step.kind.value,
+                    "started_monotonic_ns": monotonic_value,
+                    "recorded_at_utc": timestamp,
+                    "previous_start_sha256": previous,
+                }
+                start_sha256 = _start_sha256(previous, payload)
+                connection.execute(
+                    """
+                    INSERT INTO execution_starts(
+                        execution_index, previous_start_sha256, start_sha256, start_json
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        index,
+                        previous,
+                        start_sha256,
+                        json.dumps(
+                            payload,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        ),
+                    ),
+                )
+                connection.commit()
+                self._pending_start_execution_index = index
+                self._pending_start_sha256 = start_sha256
+                return Stage4LedgerStartResult(True, None, start_sha256)
+        except Stage4LedgerError:
+            raise
+        except sqlite3.OperationalError as exc:
+            raise _ledger_error("LEDGER_STORE_UNAVAILABLE", exc) from exc
+        except sqlite3.DatabaseError as exc:
+            raise _ledger_error("LEDGER_STORE_CORRUPTED", exc) from exc
+
+    def complete_slot(
+        self, observation: object, *, started_record_sha256: object
+    ) -> Stage4LedgerAppendResult:
+        """Append exactly one safe next slot's terminal outcome, or refuse.
+
+        Requires a durable STARTED record already committed for this exact
+        slot; a terminal write is refused for a missing, mismatched, or
+        already-closed STARTED record.  A persisted failed observation is
+        retained as evidence but leaves the run terminally failed.  The
+        caller cannot use this boundary to retry, skip, reorder, or resume
+        the schedule.
         """
 
         if not isinstance(observation, Stage4SlotObservation):
             return Stage4LedgerAppendResult(False, "OBSERVATION_INVALID", None)
+        if not _sha256(started_record_sha256):
+            return Stage4LedgerAppendResult(
+                False, "STARTED_RECORD_SHA256_INVALID", None
+            )
+        if (
+            self._pending_start_execution_index != observation.execution_index
+            or self._pending_start_sha256 != started_record_sha256
+        ):
+            # A durable digest match on disk is not enough: only the exact
+            # in-process instance that itself just committed this STARTED
+            # marker may close it.  A freshly reopened instance -- including
+            # one reopened after a crash, holding the identical digest --
+            # has no such session and is refused here, before it can touch
+            # the ambiguity at all.  Resolving a real orphan is a separate,
+            # explicit, governed recovery action, never an ordinary
+            # complete_slot call.
+            return Stage4LedgerAppendResult(False, "STARTED_SESSION_MISMATCH", None)
+        try:
+            return self._complete_slot_locked(observation, started_record_sha256)
+        finally:
+            # This session's one matching start is consumed by this single
+            # complete_slot attempt regardless of outcome -- success or
+            # refusal -- matching the existing no-retry contract for the
+            # terminal ledger.
+            self._pending_start_execution_index = None
+            self._pending_start_sha256 = None
+
+    def _complete_slot_locked(
+        self, observation: Stage4SlotObservation, started_record_sha256: str
+    ) -> Stage4LedgerAppendResult:
         try:
             _observation_document(observation)
             with self._session() as connection:
@@ -224,7 +446,11 @@ class Stage4ExecutionLedger:
                 self._require_current_schema(connection)
                 self._require_matching_run(connection)
                 records, genesis = self._load_verified_records(connection)
-                progress = _progress(records, genesis, len(self._schedule.steps))
+                starts, _ = self._load_verified_starts(connection)
+                # Deliberately terminal-only progress: this call's whole job
+                # is to resolve the one outstanding STARTED marker below, so
+                # its presence must not itself be read as ambiguous here.
+                progress = _terminal_progress(records, genesis, len(self._schedule.steps))
                 if progress.status is not Stage4LedgerStatus.IN_PROGRESS:
                     connection.commit()
                     return Stage4LedgerAppendResult(False, "RUN_NOT_ACTIVE", None)
@@ -234,10 +460,32 @@ class Stage4ExecutionLedger:
                     return Stage4LedgerAppendResult(
                         False, "EXECUTION_INDEX_UNEXPECTED", None
                     )
+                if len(starts) != expected_index + 1:
+                    connection.commit()
+                    return Stage4LedgerAppendResult(
+                        False, "STARTED_RECORD_MISSING", None
+                    )
+                matching_start = starts[expected_index]
+                if matching_start.start_sha256 != started_record_sha256:
+                    connection.commit()
+                    return Stage4LedgerAppendResult(
+                        False, "STARTED_RECORD_MISMATCH", None
+                    )
                 expected_step = self._schedule.steps[expected_index]
                 if observation.observed_ef != expected_step.expected_ef:
                     connection.commit()
                     return Stage4LedgerAppendResult(False, "OBSERVED_EF_MISMATCH", None)
+                if observation.started_monotonic_ns < matching_start.started_monotonic_ns:
+                    # A caller may legitimately take a tighter, later clock
+                    # reading around the dispatch itself than the one durably
+                    # committed by start_slot (e.g. to exclude preflight/claim
+                    # time from a measured latency interval), so exact
+                    # equality is not required -- but the measured dispatch
+                    # can never predate the durably committed start.
+                    connection.commit()
+                    return Stage4LedgerAppendResult(
+                        False, "STARTED_TIMING_INVALID", None
+                    )
                 if records and observation.started_monotonic_ns <= records[-1].observation.finished_monotonic_ns:
                     connection.commit()
                     return Stage4LedgerAppendResult(
@@ -248,6 +496,7 @@ class Stage4ExecutionLedger:
                     run_id=self._run_id,
                     schedule_sha256=self._schedule.schedule_sha256,
                     observation=observation,
+                    started_record_sha256=matching_start.start_sha256,
                 )
                 record_sha256 = _record_sha256(previous, payload)
                 serialized = json.dumps(
@@ -287,7 +536,24 @@ class Stage4ExecutionLedger:
                 self._require_current_schema(connection)
                 self._require_matching_run(connection)
                 records, genesis = self._load_verified_records(connection)
-                return _progress(records, genesis, len(self._schedule.steps))
+                starts, _ = self._load_verified_starts(connection)
+                return _progress(records, starts, genesis, len(self._schedule.steps))
+        except Stage4LedgerError:
+            raise
+        except sqlite3.OperationalError as exc:
+            raise _ledger_error("LEDGER_STORE_UNAVAILABLE", exc) from exc
+        except sqlite3.DatabaseError as exc:
+            raise _ledger_error("LEDGER_STORE_CORRUPTED", exc) from exc
+
+    def starts(self) -> tuple[Stage4SlotStartRecord, ...]:
+        """Return the validated immutable STARTED-marker history in order."""
+
+        try:
+            with self._session() as connection:
+                self._require_current_schema(connection)
+                self._require_matching_run(connection)
+                starts, _ = self._load_verified_starts(connection)
+                return starts
         except Stage4LedgerError:
             raise
         except sqlite3.OperationalError as exc:
@@ -410,6 +676,16 @@ class Stage4ExecutionLedger:
                 )
                 connection.execute(
                     """
+                    CREATE TABLE execution_starts (
+                        execution_index INTEGER PRIMARY KEY NOT NULL,
+                        previous_start_sha256 TEXT NOT NULL,
+                        start_sha256 TEXT UNIQUE NOT NULL,
+                        start_json TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
                     CREATE TABLE execution_records (
                         execution_index INTEGER PRIMARY KEY NOT NULL,
                         previous_record_sha256 TEXT NOT NULL,
@@ -430,6 +706,20 @@ class Stage4ExecutionLedger:
                     CREATE TRIGGER execution_run_no_delete
                     BEFORE DELETE ON execution_run
                     BEGIN SELECT RAISE(ABORT, 'execution run is append-only'); END
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER execution_starts_no_update
+                    BEFORE UPDATE ON execution_starts
+                    BEGIN SELECT RAISE(ABORT, 'execution starts are append-only'); END
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TRIGGER execution_starts_no_delete
+                    BEFORE DELETE ON execution_starts
+                    BEGIN SELECT RAISE(ABORT, 'execution starts are append-only'); END
                     """
                 )
                 connection.execute(
@@ -515,6 +805,45 @@ class Stage4ExecutionLedger:
         ):
             raise _ledger_error("LEDGER_SCHEDULE_MISMATCH")
 
+    def _load_verified_starts(
+        self, connection: sqlite3.Connection
+    ) -> tuple[tuple[Stage4SlotStartRecord, ...], str]:
+        row = connection.execute(
+            "SELECT schema_version, run_id, schedule_sha256, genesis_record_sha256 FROM execution_run"
+        ).fetchone()
+        if row is None:
+            raise _ledger_error("LEDGER_STORE_CORRUPTED")
+        self._validate_run_row(row)
+        genesis = row[3]
+        if not _sha256(genesis):
+            raise _ledger_error("LEDGER_STORE_CORRUPTED")
+        rows = connection.execute(
+            """
+            SELECT execution_index, previous_start_sha256, start_sha256, start_json
+            FROM execution_starts ORDER BY execution_index ASC
+            """
+        ).fetchall()
+        if len(rows) > len(self._schedule.steps):
+            raise _ledger_error("LEDGER_HISTORY_INVALID")
+        previous = genesis
+        starts: list[Stage4SlotStartRecord] = []
+        for expected_index, row_value in enumerate(rows):
+            expected_step = self._schedule.steps[expected_index]
+            start = _start_from_row(
+                row_value,
+                run_id=self._run_id,
+                schedule_sha256=self._schedule.schedule_sha256,
+                expected_index=expected_index,
+                previous=previous,
+                expected_ef=expected_step.expected_ef,
+                expected_kind=expected_step.kind.value,
+            )
+            if starts and start.started_monotonic_ns <= starts[-1].started_monotonic_ns:
+                raise _ledger_error("LEDGER_HISTORY_INVALID")
+            starts.append(start)
+            previous = start.start_sha256
+        return tuple(starts), genesis
+
     def _load_verified_records(
         self, connection: sqlite3.Connection
     ) -> tuple[tuple[Stage4ExecutionRecord, ...], str]:
@@ -527,12 +856,19 @@ class Stage4ExecutionLedger:
         genesis = row[3]
         if not _sha256(genesis):
             raise _ledger_error("LEDGER_STORE_CORRUPTED")
+        starts, _ = self._load_verified_starts(connection)
         rows = connection.execute(
             """
             SELECT execution_index, previous_record_sha256, record_sha256, record_json
             FROM execution_records ORDER BY execution_index ASC
             """
         ).fetchall()
+        if len(rows) > len(starts):
+            # A terminal record can never durably exist without its STARTED
+            # marker already committed first; more terminals than starts is
+            # only reachable through tamper, not through this class's own
+            # write paths.
+            raise _ledger_error("LEDGER_ATOMICITY_INVALID")
         previous = genesis
         records: list[Stage4ExecutionRecord] = []
         for expected_index, row_value in enumerate(rows):
@@ -553,6 +889,17 @@ class Stage4ExecutionLedger:
                 raise _ledger_error("LEDGER_HISTORY_INVALID")
             if not _observation_safe(record.observation) and expected_index != len(rows) - 1:
                 raise _ledger_error("LEDGER_HISTORY_INVALID")
+            matching_start = starts[expected_index]
+            if (
+                record.started_record_sha256 != matching_start.start_sha256
+                or record.observation.started_monotonic_ns
+                < matching_start.started_monotonic_ns
+            ):
+                # Mirrors complete_slot's own write-time rule exactly: the
+                # measured dispatch clock may legitimately be a later, tighter
+                # reading than the durably committed start time, never an
+                # earlier one.
+                raise _ledger_error("LEDGER_ATOMICITY_INVALID")
             records.append(record)
             previous = record.record_sha256
         if len(records) > len(self._schedule.steps):
@@ -591,6 +938,13 @@ def _schema_matches(connection: sqlite3.Connection) -> bool:
             ("schedule_sha256", "TEXT", 1, 0),
             ("genesis_record_sha256", "TEXT", 1, 0),
         )
+        and columns("execution_starts")
+        == (
+            ("execution_index", "INTEGER", 1, 1),
+            ("previous_start_sha256", "TEXT", 1, 0),
+            ("start_sha256", "TEXT", 1, 0),
+            ("start_json", "TEXT", 1, 0),
+        )
         and columns("execution_records")
         == (
             ("execution_index", "INTEGER", 1, 1),
@@ -598,6 +952,61 @@ def _schema_matches(connection: sqlite3.Connection) -> bool:
             ("record_sha256", "TEXT", 1, 0),
             ("record_json", "TEXT", 1, 0),
         )
+    )
+
+
+def _start_from_row(
+    row: object,
+    *,
+    run_id: str,
+    schedule_sha256: str,
+    expected_index: int,
+    previous: str,
+    expected_ef: int,
+    expected_kind: str,
+) -> Stage4SlotStartRecord:
+    if not isinstance(row, tuple) or len(row) != 4:
+        raise _ledger_error("LEDGER_STORE_CORRUPTED")
+    execution_index, stored_previous, stored_sha256, serialized = row
+    if (
+        execution_index != expected_index
+        or stored_previous != previous
+        or not _sha256(stored_previous)
+        or not _sha256(stored_sha256)
+        or not isinstance(serialized, str)
+    ):
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
+    try:
+        document = json.loads(serialized, object_pairs_hook=_no_duplicate_fields)
+    except (json.JSONDecodeError, _DuplicateJsonField, TypeError, ValueError) as exc:
+        raise _ledger_error("LEDGER_HISTORY_INVALID", exc) from exc
+    if not isinstance(document, dict) or frozenset(document) != _START_FIELDS:
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
+    if (
+        document["schema_version"] != _START_RECORD_SCHEMA_VERSION
+        or document["run_id"] != run_id
+        or document["schedule_sha256"] != schedule_sha256
+        or document["execution_index"] != expected_index
+        or document["expected_ef"] != expected_ef
+        or document["expected_kind"] != expected_kind
+        or document["previous_start_sha256"] != previous
+    ):
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
+    try:
+        started_monotonic_ns = _nonnegative_integer(
+            document["started_monotonic_ns"], field="started_monotonic_ns"
+        )
+        recorded_at_utc = _timestamp(document["recorded_at_utc"])
+    except ValueError as exc:
+        raise _ledger_error("LEDGER_HISTORY_INVALID", exc) from exc
+    if _start_sha256(previous, document) != stored_sha256:
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
+    return Stage4SlotStartRecord(
+        execution_index=expected_index,
+        started_monotonic_ns=started_monotonic_ns,
+        recorded_at_utc=recorded_at_utc,
+        previous_start_sha256=previous,
+        start_sha256=stored_sha256,
     )
 
 
@@ -624,6 +1033,11 @@ def _record_from_row(
         document = json.loads(serialized, object_pairs_hook=_no_duplicate_fields)
     except (json.JSONDecodeError, _DuplicateJsonField, TypeError, ValueError) as exc:
         raise _ledger_error("LEDGER_HISTORY_INVALID", exc) from exc
+    if not isinstance(document, dict) or "started_record_sha256" not in document:
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
+    started_record_sha256 = document["started_record_sha256"]
+    if not _sha256(started_record_sha256):
+        raise _ledger_error("LEDGER_HISTORY_INVALID")
     observation = _observation_from_document(
         document,
         run_id=run_id,
@@ -633,10 +1047,11 @@ def _record_from_row(
         run_id=run_id,
         schedule_sha256=schedule_sha256,
         observation=observation,
+        started_record_sha256=started_record_sha256,
     )
     if document != expected_document or _record_sha256(previous, document) != stored_sha256:
         raise _ledger_error("LEDGER_HISTORY_INVALID")
-    return Stage4ExecutionRecord(observation, stored_previous, stored_sha256)
+    return Stage4ExecutionRecord(observation, stored_previous, stored_sha256, started_record_sha256)
 
 
 def _observation_from_document(
@@ -680,12 +1095,16 @@ def _record_document(
     run_id: str,
     schedule_sha256: str,
     observation: Stage4SlotObservation,
+    started_record_sha256: str,
 ) -> dict[str, object]:
+    if not _sha256(started_record_sha256):
+        raise ValueError("started_record_sha256 is invalid")
     values = _observation_document(observation)
     return {
         "schema_version": _RECORD_SCHEMA_VERSION,
         "run_id": run_id,
         "schedule_sha256": schedule_sha256,
+        "started_record_sha256": started_record_sha256,
         **values,
     }
 
@@ -762,9 +1181,20 @@ def _observation_safe(observation: Stage4SlotObservation) -> bool:
     )
 
 
-def _progress(
+def _terminal_progress(
     records: tuple[Stage4ExecutionRecord, ...], genesis: str, expected_count: int
 ) -> Stage4LedgerProgress:
+    """Records-only progress (blind to any in-flight STARTED marker).
+
+    Used internally by ``start_slot``/``complete_slot`` to gate a specific
+    slot's own start/complete transaction: a slot being completed always has
+    exactly one outstanding STARTED marker (its own), and resolving that
+    marker is precisely what the in-flight ``complete_slot`` call is for --
+    it must not be refused as ambiguous merely because it has not resolved
+    yet.  External callers must use ``_progress`` instead, which layers the
+    ambiguity check on top of this.
+    """
+
     if not records:
         return Stage4LedgerProgress(Stage4LedgerStatus.IN_PROGRESS, 0, None, genesis)
     last = records[-1]
@@ -790,6 +1220,28 @@ def _progress(
     )
 
 
+def _progress(
+    records: tuple[Stage4ExecutionRecord, ...],
+    starts: tuple[Stage4SlotStartRecord, ...],
+    genesis: str,
+    expected_count: int,
+) -> Stage4LedgerProgress:
+    """External, restart-safe progress: an outstanding STARTED marker with no
+    terminal record is indistinguishable from a crash to any caller other
+    than the in-flight ``complete_slot`` call that owns it, so this reports
+    AMBIGUOUS rather than assuming the run is still cleanly in progress.
+    """
+
+    if len(starts) > len(records):
+        return Stage4LedgerProgress(
+            Stage4LedgerStatus.AMBIGUOUS,
+            len(records),
+            "ORPHAN_STARTED_NO_TERMINAL",
+            starts[-1].start_sha256,
+        )
+    return _terminal_progress(records, genesis, expected_count)
+
+
 def _genesis_sha256(*, run_id: str, schedule_sha256: str) -> str:
     return hashlib.sha256(
         _GENESIS_DOMAIN
@@ -806,6 +1258,12 @@ def _genesis_sha256(*, run_id: str, schedule_sha256: str) -> str:
 def _record_sha256(previous: str, document: dict[str, object]) -> str:
     return hashlib.sha256(
         _RECORD_DOMAIN + previous.encode("ascii") + b"\0" + canonical_json_bytes(document)
+    ).hexdigest()
+
+
+def _start_sha256(previous: str, document: dict[str, object]) -> str:
+    return hashlib.sha256(
+        _START_DOMAIN + previous.encode("ascii") + b"\0" + canonical_json_bytes(document)
     ).hexdigest()
 
 

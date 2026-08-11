@@ -1627,6 +1627,37 @@ zero real candidate-route enablement/claims. This is VERIFIED fake-only
 composition evidence; ADR-008 remains **Proposed**, and it neither authorizes
 nor substitutes for the required human-granted controlled live canary.
 
+**Implementation/evidence update — 2026-08-11 (durability remediation).** A
+required-before-live durability gap was found by direct call-chain review:
+`Stage4LiveRunner` dispatched a candidate search before any per-slot durable
+record existed, so a crash between search dispatch and the terminal ledger
+append could leave zero durable evidence that the slot was attempted, and a
+restart could see an empty ledger and appear fresh. `canary_execution_ledger.py`'s
+`Stage4ExecutionLedger` was versioned from schema v1 (terminal-only records)
+to v2: a new, independently hash-chained `execution_starts` table records one
+durable STARTED marker, committed via a new `start_slot` method, strictly
+before any search dispatch; the existing terminal-record method was renamed
+`complete_slot` and now requires and binds the exact `started_record_sha256`
+it closes. A new `Stage4LedgerStatus.AMBIGUOUS` status is reported whenever a
+durable STARTED marker has no matching terminal record; `start_slot` and
+`complete_slot` both refuse while it holds, and only the exact in-process
+`Stage4ExecutionLedger` instance that itself committed a STARTED marker may
+close it -- a freshly reopened instance, including one reopened after a crash
+and holding the identical digest, is refused (`STARTED_SESSION_MISMATCH`).
+`Stage4LiveRunner._execute_slot` now calls `start_slot` before any
+preflight/claim/dispatch step, so the search port is unreachable without a
+prior durable commit. `Stage4SerialRunner` (the offline preflight composition
+root; no Milvus import, injected-executor only) was updated identically for
+consistency, since it shares the same ledger primitive, though it remains
+structurally incapable of live dispatch. v1 database files are not migrated
+or reinterpreted: schema verification refuses to open them under v2 code
+(`LEDGER_SCHEMA_MISMATCH`); this repository has not produced any real
+governed live Stage-4 evidence under v1, so no migration path was required or
+provided. Existing 600/60 schedule cardinality, admission/route/grant
+lineage, `Stage4EvidenceBinding` binding, and rollback trigger semantics are
+unchanged. This does not change ADR-008's own **Proposed** status above, and
+it still authorizes no live candidate route.
+
 **Stage-4 runtime-probe adapter implementation convention (proposed).** The
 live root intentionally accepts a small `preflight(binding) ->
 Stage4RuntimeReadiness` / `slot_safety(binding) -> Stage4SlotSafety` port, while

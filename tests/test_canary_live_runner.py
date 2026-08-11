@@ -225,14 +225,18 @@ class _Serving:
         failure_at_call: int | None = None,
         failure_code: str = "MILVUS_SEARCH_FAILED",
         timed_out: bool = False,
+        order: list[str] | None = None,
     ) -> None:
         self.calls = []
         self._failure_at_call = failure_at_call
         self._failure_code = failure_code
         self._timed_out = timed_out
+        self._order = order
 
     def execute(self, request):
         self.calls.append(request)
+        if self._order is not None:
+            self._order.append(f"serving.execute:{request.request_id}")
         if len(self.calls) == self._failure_at_call:
             return ServedQueryOutcome(False, self._timed_out, 0, 1.0, self._failure_code)
         return ServedQueryOutcome(True, False, 2, 1.0)
@@ -336,17 +340,44 @@ class _AdmissionEvaluator:
 class _FailingAppendLedger(Stage4ExecutionLedger):
     """Test-only durable ledger that refuses its first post-search append."""
 
-    def append(self, observation: object):
-        del observation
+    def complete_slot(self, observation: object, *, started_record_sha256: object):
+        del observation, started_record_sha256
         raise Stage4LedgerError("simulated ledger unavailable")
 
 
 class _InvalidAppendLedger(Stage4ExecutionLedger):
     """Test-only port violation: a ledger append has no usable receipt."""
 
-    def append(self, observation: object):
-        del observation
+    def complete_slot(self, observation: object, *, started_record_sha256: object):
+        del observation, started_record_sha256
         return object()
+
+
+class _FailingStartLedger(Stage4ExecutionLedger):
+    """Test-only durable ledger that refuses every start_slot commit."""
+
+    def start_slot(self, execution_index: object, **kwargs: object):
+        del execution_index, kwargs
+        raise Stage4LedgerError("simulated ledger start unavailable")
+
+
+class _RecordingSlotOrderLedger(Stage4ExecutionLedger):
+    """Test-only ledger recording call order to prove STARTED precedes dispatch."""
+
+    def __init__(self, *args: object, order: list[str], **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.order = order
+
+    def start_slot(self, execution_index: object, **kwargs: object):
+        self.order.append(f"start_slot:{execution_index}")
+        return super().start_slot(execution_index, **kwargs)
+
+    def complete_slot(self, observation: object, *, started_record_sha256: object):
+        index = getattr(observation, "execution_index", None)
+        self.order.append(f"complete_slot:{index}")
+        return super().complete_slot(
+            observation, started_record_sha256=started_record_sha256
+        )
 
 
 class CanaryLiveRunnerTests(unittest.TestCase):
@@ -906,7 +937,13 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ledger = self._ledger(root)
-            ledger.append(Stage4SlotObservation(0, 400, 1, 2, "2026-08-04T20:00:00Z", True, False, True, True, True, True, True, 0, 0.001, None))
+            start = ledger.start_slot(0, started_monotonic_ns=1, recorded_at_utc="2026-08-04T20:00:00Z")
+            assert start.accepted and start.start_sha256 is not None
+            completed = ledger.complete_slot(
+                Stage4SlotObservation(0, 400, 1, 2, "2026-08-04T20:00:00Z", True, False, True, True, True, True, True, 0, 0.001, None),
+                started_record_sha256=start.start_sha256,
+            )
+            assert completed.accepted
             runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(root, ledger=ledger)
             result = runner.run()
             self.assertEqual(result.reason_codes, ("LEDGER_NOT_FRESH",))
@@ -933,6 +970,137 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             "vdbench.lkg_qualification_evaluation_ledger",
         }
         self.assertTrue(forbidden.isdisjoint(imported), imported)
+
+    def test_started_marker_is_committed_before_serving_execute_is_ever_called(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            order: list[str] = []
+            ledger = _RecordingSlotOrderLedger(
+                private / "stage4.sqlite3",
+                run_id="exp009-live-runner-test",
+                schedule=self.schedule,
+                order=order,
+            )
+            provider = _FreshAuthorityProvider((self.lkg_pair, self.lkg_pair))
+            evaluator = _AdmissionEvaluator()
+            activation = _Activation(binding=self.binding, plan_sha256=self.plan.plan_sha256)
+            authority = _Authority(self.plan)
+            runtime = _RuntimeProbe(self.binding)
+            serving = _Serving(order=order)
+            rollback = _Rollback()
+            request = self._live_request()
+            runner = Stage4LiveRunner(
+                request=request,
+                activation=activation,
+                authority=authority,
+                runtime_probe=runtime,
+                serving=serving,
+                vector_source=Dataset002ScheduleVectorSource(_Source()),
+                ledger=ledger,
+                rollback=rollback,
+                lkg_authority_provider=provider,
+                admission_evaluator=evaluator,
+                monotonic_ns=_Clock(),
+                utc_now=lambda: "2026-08-04T20:00:04Z",
+            )
+            result = runner.run()
+            self.assertEqual(result.dispatched_slot_count, 1200)
+            self.assertEqual(len(order), 3600)
+            triples = [order[i : i + 3] for i in range(0, len(order), 3)]
+            for index, triple in enumerate(triples):
+                self.assertEqual(
+                    triple,
+                    [
+                        f"start_slot:{index}",
+                        f"serving.execute:{index}",
+                        f"complete_slot:{index}",
+                    ],
+                )
+
+    def test_start_commit_failure_dispatches_zero_searches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            ledger = _FailingStartLedger(
+                private / "stage4.sqlite3",
+                run_id="exp009-live-runner-test",
+                schedule=self.schedule,
+            )
+            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+                root, ledger=ledger
+            )
+            result = runner.run()
+            self.assertEqual(result.reason_codes, ("LEDGER_START_UNAVAILABLE",))
+            self.assertEqual(len(serving.calls), 0)
+            self.assertEqual(len(rollback.calls), 1)
+            self.assertIs(rollback.calls[0].trigger, RollbackTrigger.SLOT_SAFETY_FAILURE)
+
+    def test_preexisting_orphan_started_blocks_a_fresh_runner_with_zero_dispatch(self) -> None:
+        """Covers both crash timings (before AND after the search itself):
+        both leave an identical durable orphan STARTED marker with no
+        terminal record, which is indistinguishable to any later reader --
+        so one scenario suffices to prove the restart contract for both."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed_ledger = self._ledger(root)
+            seed_start = seed_ledger.start_slot(
+                0, started_monotonic_ns=1, recorded_at_utc="2026-08-04T20:00:00Z"
+            )
+            self.assertTrue(seed_start.accepted)
+            del seed_ledger  # simulate the crash: no complete_slot ever called
+
+            fresh_ledger = Stage4ExecutionLedger(
+                root / "private" / "stage4.sqlite3",
+                run_id="exp009-live-runner-test",
+                schedule=self.schedule,
+            )
+            self.assertEqual(fresh_ledger.progress().status, Stage4LedgerStatus.AMBIGUOUS)
+            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+                root, ledger=fresh_ledger
+            )
+            result = runner.run()
+            self.assertEqual(result.reason_codes, ("LEDGER_NOT_FRESH",))
+            self.assertEqual(len(activation.calls), 0)
+            self.assertEqual(serving.calls, [])
+            self.assertEqual(authority.calls, [])
+            self.assertEqual(rollback.calls, [])
+            self.assertEqual(actual_ledger.progress().status, Stage4LedgerStatus.AMBIGUOUS)
+
+    def test_orphan_started_refusal_is_consistent_across_repeated_restart_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed_ledger = self._ledger(root)
+            seed_start = seed_ledger.start_slot(
+                0, started_monotonic_ns=1, recorded_at_utc="2026-08-04T20:00:00Z"
+            )
+            self.assertTrue(seed_start.accepted)
+            del seed_ledger
+
+            for attempt in range(3):
+                with self.subTest(attempt=attempt):
+                    attempt_ledger = Stage4ExecutionLedger(
+                        root / "private" / "stage4.sqlite3",
+                        run_id="exp009-live-runner-test",
+                        schedule=self.schedule,
+                    )
+                    runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+                        root, ledger=attempt_ledger
+                    )
+                    result = runner.run()
+                    self.assertEqual(result.reason_codes, ("LEDGER_NOT_FRESH",))
+                    self.assertEqual(serving.calls, [])
+
+            final_ledger = Stage4ExecutionLedger(
+                root / "private" / "stage4.sqlite3",
+                run_id="exp009-live-runner-test",
+                schedule=self.schedule,
+            )
+            self.assertEqual(final_ledger.progress().status, Stage4LedgerStatus.AMBIGUOUS)
+            self.assertEqual(len(final_ledger.records()), 0)
 
 
 if __name__ == "__main__":

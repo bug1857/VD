@@ -145,7 +145,8 @@ class CanaryScheduleEvaluationTests(unittest.TestCase):
                 reason_code=None,
             )
             digest = _sha(f"record-{step.execution_index}")
-            result.append(Stage4ExecutionRecord(observation, previous, digest))
+            start_digest = _sha(f"start-{step.execution_index}")
+            result.append(Stage4ExecutionRecord(observation, previous, digest, start_digest))
             previous = digest
         return tuple(result)
 
@@ -228,7 +229,17 @@ class CanaryScheduleEvaluationTests(unittest.TestCase):
                 schedule=self.schedule,
             )
             observation = self._records()[0].observation
-            self.assertTrue(ledger.append(observation).accepted)
+            start_result = ledger.start_slot(
+                observation.execution_index,
+                started_monotonic_ns=observation.started_monotonic_ns,
+                recorded_at_utc="2026-08-04T15:01:00Z",
+            )
+            self.assertTrue(start_result.accepted)
+            self.assertTrue(
+                ledger.complete_slot(
+                    observation, started_record_sha256=start_result.start_sha256
+                ).accepted
+            )
 
             result = evaluate_stage4_execution_ledger(
                 schedule=self.schedule,
