@@ -3489,6 +3489,181 @@ historical audit record is reinterpreted as carrying response-profile lineage.
 
 ---
 
+### ADR-011: Signed-lineage v2 for response-profile candidate authority (design only)
+
+Status: Proposed — design sketch only; no implementation authorized by this document
+
+Risk level: CRITICAL
+
+Evidence status: none. This ADR authorizes no code. It exists to satisfy ADR-010's
+explicit deferral ("Signed grant, activation, route-state, lifecycle, and
+execution-ledger v2 propagation are deliberately deferred to ADR-011") with a
+concrete design proposal, so a future, separately reviewed implementation
+session has a governed starting point rather than an unstated intent.
+
+#### Context and decision drivers
+
+ADR-010 defines exact detector-lineage compatibility evidence
+(`FreshResponseProfileEvidence`) but is explicit that this evidence is
+historical and non-authorizing, and that it "cannot establish qualification,
+policy, admission, grant, activation, routing, or execution authority." The
+B-001 interlock in `policy.py` remains an unconditional refusal
+(`RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE = False`, no import of any
+`response_profile*` module) with no dynamic evidence-consumption path to
+migrate. Before that interlock can be lifted for any real candidate use, the
+project needs a governed answer to a second, independent question ADR-010
+deliberately does not answer: once freshness evidence is real and accepted,
+how does the exact admitted decision remain the exact signed, activated, and
+executed decision, with no substitution possible at any step?
+
+A mature answer to that question already exists for the unrelated ADR-008
+canary track: `canary_approval.py` (real Ed25519 signer/verifier against an
+injected trust store), `canary_admission.py` (`Stage4AdmissionRequest`/
+`Result`), `canary_grant_store.py` (`CanaryGrantUseStore`, one-time grant
+reservation), `canary_activation.py` (`CanaryActivationCoordinator`,
+`ActiveCanaryContext`), `canary_route_state.py` (`RouteState`/
+`RouteStateBinding`, restart-to-LKG-only default), `canary_live_runner.py`
+(`Stage4LiveRunner`), and `canary_execution_ledger.py`
+(`Stage4ExecutionLedger`, atomic idempotent-resume append). These modules have
+zero import relationship with any `response_profile*` module today. The
+question this ADR must answer is not "do we build something new," but
+precisely which of these primitives generalize by mechanism and which are
+bound to canary/`ef`-routing semantics specific enough that reusing them
+as-is would silently blur two separate authority domains.
+
+Decision drivers:
+
+- Preserve the required invariant `ADMITTED == SIGNED == ACTIVATED == EXECUTED`
+  as a mechanically checked property, not a documentation claim: the exact
+  `PolicyDecision` digest an admission step approved must equal the digest a
+  human-signed grant covers, must equal the digest the activation coordinator
+  reads when installing a route, must equal the digest the execution ledger
+  records for that live run. Any substitution at any step must fail closed.
+- Reuse proven ADR-008 machinery wherever its actual transaction/cryptographic
+  semantics match, per the "better-option" discipline already applied
+  elsewhere in this document — but do not declare a primitive sufficient by
+  resemblance alone; a per-primitive fit check is required (below).
+- Keep the two authority domains (ADR-008 canary/`ef`-routing grants and any
+  future response-profile candidate grants) in separate schemas and separate
+  storage, so a response-profile grant can never be read as, or substituted
+  for, a canary grant or vice versa.
+- Do not create a real signer, a real grant, or any code path that could issue
+  candidate authority in this pass or in this document.
+
+#### Options considered
+
+1. **Build new response-profile-specific signer, grant, and ledger primitives
+   from scratch.** Rejected: duplicates already-proven ADR-008 cryptographic
+   and transaction machinery for no safety benefit, and multiplies the audit
+   surface that must be independently reviewed.
+2. **Reuse `CanaryApprovalGrant`, `Stage4ExecutionLedger`, and
+   `canary_route_state.py` unmodified, overloading their existing fields to
+   also carry response-profile identities.** Rejected: `CanaryApprovalGrant`
+   binds fields specific to the 600/60 finite-manifest canary contract
+   (candidate/last-known-good `ef`, eligible-workload manifest digest,
+   canonical candidate-selection-record digest, maximum traffic fraction);
+   none of these have a response-profile analogue, and overloading them would
+   let a reviewer mistake a response-profile grant for a canary grant (or the
+   reverse) — exactly the kind of authority-domain collapse this project's
+   governance discipline exists to prevent.
+3. **Define new response-profile-specific types that reuse ADR-008's proven
+   mechanisms (signer, ledger transaction pattern, route-state state machine)
+   without reusing its canary-specific schemas.** Chosen.
+
+#### Per-primitive fit (informs the future implementation, not this document)
+
+| ADR-008 primitive | Mechanism | Fit for response-profile reuse |
+|---|---|---|
+| `canary_approval.py`'s Ed25519 signer/verifier + injected trust store | Domain-agnostic cryptographic verification of an immutable signed document | Reuse the mechanism directly; do not reuse `CanaryApprovalGrant`'s schema |
+| `CanaryApprovalGrant` dataclass | Canary/`ef`-routing-specific field set | Do not reuse as-is; define a new `ResponseProfileGrant` type binding the identities listed below, verified with the same discipline (immutable, signed, one-time, exact-digest bound, private keys never in the repository) |
+| `canary_grant_store.py`'s `CanaryGrantUseStore` | One-time SQLite reservation ledger, domain-agnostic shape | Reuse the pattern; separate table/store instance, never shared rows with canary grants |
+| `canary_execution_ledger.py`'s `Stage4ExecutionLedger` | Atomic append, idempotent resume via durable-row inventory | Reuse the pattern if a response-profile execution row's schema fits this shape; otherwise a schema-compatible sibling table under the same transaction discipline, not a new persistence framework |
+| `canary_route_state.py`'s `RouteState`/`RouteStateBinding` | Bounded state machine, restart-to-LKG-only default | Reuse the state-machine shape; a response-profile route state is a separate instance, never sharing storage with canary route state |
+| `canary_activation.py`'s `CanaryActivationCoordinator` | Validates grant/gates/health/identity before atomically installing a route | Reuse the coordination pattern; the concrete gate checks differ (response-profile lineage instead of canary workload/selection-record checks) |
+
+#### Bound identities (candidate list; confirm before implementation)
+
+A `ResponseProfileGrant` and its downstream signed lineage must bind, where
+applicable: the policy decision digest; response-profile candidate authority
+digest; R2-C raw evidence root; R2-D root-pinned capability digest; R2-E
+projected profile digest; `response-profile-control-v1` digest; ADR-010
+freshness/invalidation evidence digest; the exact detector-head digest; the
+durable detector-head record sequence and digest; the issuing store's
+binding/identity; configuration, data, index (FLAT/HNSW), and environment
+identity; source revision; workload identity; execution-schedule identity;
+the Stage-4 evidence binding (if a response-profile candidate route composes
+with the existing Stage-4 live path rather than replacing it — an open
+question for the implementation session, not resolved here); admission
+receipt; route plan; route-state binding; runtime readiness; grant identity;
+active-canary context (only if composition with the existing canary path is
+chosen); live request identity; and rollback/failback lineage. This list is a
+starting point derived from ADR-010's own bound-identity set plus
+`CanaryApprovalGrant`'s field set; the implementation session must confirm
+each field against the concrete `ResponseProfileGrant` schema it defines, not
+treat this list as already authoritative.
+
+#### Required invariant
+
+`ADMITTED == SIGNED == ACTIVATED == EXECUTED`. Mechanically: the admission
+step's approved `PolicyDecision` digest must equal the digest embedded in the
+`ResponseProfileGrant` a human operator key signs, must equal the digest the
+activation coordinator reads when it installs a route, and must equal the
+digest the execution ledger records for the resulting live run. A stale
+detector-head record, a historical `FreshResponseProfileEvidence` wrapper, a
+changed data/index/environment/source-revision/schedule identity, a changed
+`Stage4EvidenceBinding`, a changed admission receipt, a changed route
+binding, or a replayed prior signed lineage must each independently cause
+verification to fail closed at whichever step first detects the mismatch —
+never at a later step, and never silently.
+
+#### Explicit prerequisites before any implementation session
+
+1. Accepted freshness/invalidation governance: ADR-010 must move from
+   Proposed to Accepted (or be superseded) on the strength of real, reviewed
+   evidence — this ADR does not itself accept ADR-010.
+2. Real EXP-011 prospective evidence: the structural/offline scenario
+   coverage produced under this same effort (labeled
+   `STRUCTURAL_OFFLINE_NOT_PROSPECTIVE_EVIDENCE`) is explicitly insufficient;
+   a real, read-only-Milvus, elapsed-prospective-window run is required and
+   must be independently reviewed.
+3. An accepted invalidation policy answering the empirical question ADR-010
+   leaves open: whether, and under what conditions, a later detector head
+   preserves or invalidates a profile's predictive validity.
+4. Until 1–3 are satisfied, `policy.py`'s B-001 interlock remains closed
+   exactly as implemented today. This ADR does not authorize touching
+   `policy.py`, and no code in this campaign does.
+5. This ADR itself requires a dedicated review and acceptance cycle, separate
+   from and after the above, before any `ResponseProfileGrant`/ledger/route-
+   state code is written. Drafting this document is not equivalent to
+   authorizing that code.
+
+#### Consequences
+
+No code is authorized by this document. The existing ADR-008 canary/`ef`-
+routing authority track (signer, grant store, route authority, activation,
+execution ledger, rollback) is completely unaffected and unmodified by this
+proposal. No existing v1 grant, route-state record, or execution-ledger row
+is reinterpreted as carrying response-profile lineage, now or by a future
+implementation of this ADR. If prerequisites 1–3 are never satisfied, this ADR
+remains Proposed indefinitely and `START_CANARY` remains unavailable for
+response-profile-derived candidates; that is a correct safety outcome, not a
+defect to be worked around.
+
+#### Verification plan (required once accepted, not run by this document)
+
+Adversarial coverage must include at minimum: profile A paired with lineage
+signature B; freshness evidence A paired with decision B; admission A paired
+with signature B; route A paired with grant B; a stale or superseded
+detector-head record; a historical `FreshResponseProfileEvidence` wrapper
+presented as current; changed data/index/environment/source-revision/
+schedule identity; a changed `Stage4EvidenceBinding`; a changed admission
+receipt or route binding; a changed active-canary context; replay of a prior
+valid signed lineage; an incomplete signed-lineage document; and an
+object-forged instance of any bound-identity value. None of this is
+implemented by this document.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |

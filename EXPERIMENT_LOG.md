@@ -2384,3 +2384,43 @@ accepted ADR-010 status change and signed-lineage propagation. Real collection
 requires the committed offline producer package and, where Milvus replay is
 needed, a separately authorized read-only live command. No result is claimed by
 this preregistration.
+
+#### Structural implementation and unit-verification status (addendum, offline, not a run)
+
+This addendum records that `src/vdbench/exp011_offline_acquisition.py` and its
+accompanying `tests/test_exp011_offline_acquisition.py` now exist and that
+their unit tests pass. The module exercises the real
+`ResponseProfileMonitorStateStore`, the real `bind_fresh_response_profile_evidence`/
+`verify_fresh_response_profile_evidence` boundary, and the real R2-C/R2-D/R2-E
+verification chain (`verify_response_profile_semantic_bundle`,
+`issue_root_pinned_response_profile_evidence`,
+`project_root_pinned_response_profile`) against a hand-built, fully real,
+internally consistent 1,200-observation calibration fixture — no fake or
+dummy evidence stands in for any of that boundary's own logic. It covers the
+preregistered adversarial scenarios that are offline-composable without a live
+Milvus connection: canonical pre-result control binding, atomic monitor
+state/detector-head append, monitor-store restart and hash-chain replay, stale/
+superseded detector-head refusal, forged detector-head-wrapper refusal,
+concurrent-open-vs-refresh refusal, schema-tamper (append-only trigger
+bypass) refusal, bare-profile and bare-root-capability refusal, canary
+rollback's structural independence from any response-profile import, and an
+eleven-axis mismatch matrix (window sequence, detector provenance window ID,
+detector provenance manifest, metric, threshold stratum, configuration
+identity, data identity, FLAT identity, HNSW identity, environment-manifest
+digest, source revision) confirming each axis is independently refused with
+the correct real error code.
+
+Every artifact this module can produce, and every scenario result object it
+returns, carries `evidence_status: "STRUCTURAL_OFFLINE_NOT_PROSPECTIVE_EVIDENCE"`.
+This addendum, and the module it describes, do **not** change the `Status:
+PREREGISTERED — NOT RUN` line above, do **not** constitute an EXP-011 run, do
+**not** supply real prospective evidence toward the "Prospective evidence
+protocol required before Action 7B," and do **not** touch, import, or in any
+way lift the B-001 interlock (`RESPONSE_PROFILE_CANDIDATE_CAPABILITY_AVAILABLE`
+in `policy.py` remains `False`, unmodified, and unimported by this module —
+mechanically confirmed by a dedicated adversarial test). It never opens a
+Milvus connection and never produces a value that could be mistaken for
+calibrated, live, or prospective evidence. Promotion of EXP-011 to a run
+status still requires the full pre-registered protocol above, executed for
+real against a live, read-only-authorized Milvus stack, and independently
+reviewed — nothing in this addendum shortens that requirement.
