@@ -127,6 +127,7 @@ __all__ = [
     "load_vector_material_artifact",
     "load_run_binding_artifact",
     "load_oracle_manifest_artifact",
+    "validate_exp011_governed_inputs",
     "main",
 ]
 
@@ -407,7 +408,7 @@ def load_oracle_manifest_artifact(
         raise Exp011LiveAcquisitionError(f"oracle_manifest_json: {path} is invalid: {exc}") from exc
 
 
-def _cross_validate_governed_inputs(
+def validate_exp011_governed_inputs(
     *,
     run_binding: ResponseProfileRunBinding,
     static_identity: ResponseProfileStaticIdentity,
@@ -570,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     oracle_manifest = load_oracle_manifest_artifact(
         args.oracle_manifest_json, vector_material=vector_material
     )
-    _cross_validate_governed_inputs(
+    validate_exp011_governed_inputs(
         run_binding=run_binding,
         static_identity=static_identity,
         control=control,
