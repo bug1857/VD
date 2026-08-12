@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import fields
 import unittest
 
@@ -9,6 +10,8 @@ from vdbench.response_profile_control import (
     ResponseProfileControl,
     ResponseProfileControlError,
     build_response_profile_control,
+    response_profile_control_document,
+    response_profile_control_from_document,
     response_profile_control_payload,
     verify_response_profile_control,
 )
@@ -130,6 +133,108 @@ class ResponseProfileControlTests(unittest.TestCase):
             )
         with self.assertRaises(ResponseProfileControlError):
             _control(stream_key=forged_stream)
+
+
+class ResponseProfileControlDocumentTests(unittest.TestCase):
+    """Coverage for response_profile_control_document/_from_document."""
+
+    def test_canonical_round_trip_is_exact(self) -> None:
+        value = _control()
+        document = response_profile_control_document(value)
+        rebuilt = response_profile_control_from_document(document)
+        self.assertEqual(rebuilt, value)
+        self.assertEqual(response_profile_control_document(rebuilt), document)
+
+    def test_missing_top_level_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        del document["control_profile_sha256"]
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_unknown_top_level_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["extra"] = "x"
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_missing_payload_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        del document["control_payload"]["source_revision"]
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_wrong_schema_version_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["schema_version"] = "response-profile-control-v0"
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_bool_as_int_for_trigger_window_sequence_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["trigger_window_sequence"] = True
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_malformed_stream_metric_enum_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["stream"]["metric"] = "NOT_A_METRIC"
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_malformed_sha256_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["detector_head_sha256"] = "not-a-digest"
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_malformed_timestamp_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["frozen_at_utc"] = "2026-13-40T00:00:00Z"
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_tampered_provenance_digest_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_payload"]["detector_provenance"]["sha256"] = _digest("9")
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_tampered_outer_digest_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_control_document(_control()))
+        document["control_profile_sha256"] = _digest("0")
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(document)
+
+    def test_wrong_type_document_rejected(self) -> None:
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document("not a dict")
+        with self.assertRaises(ResponseProfileControlError):
+            response_profile_control_from_document(None)
+
+    # -- cross-object substitution (§16 of the governing task) -----------
+
+    def test_control_from_a_different_stream_is_not_equal(self) -> None:
+        """A structurally valid control document bound to a *different*
+        stream lineage must never be silently accepted as interchangeable
+        with the original -- proven here by exact non-equality of the
+        reconstructed object and its digest, which is what any downstream
+        cross-object equality check in the CLI/producer composition relies
+        on to reject a substituted lineage."""
+
+        original = _control()
+        other_stream_control = _control(
+            stream_key=MonitorStreamKey(
+                "other-stream", Metric.L2, "target-075", "cfg", "data", "flat", "hnsw"
+            ),
+            detector_provenance=_provenance(configuration_identity="cfg"),
+        )
+        self.assertNotEqual(
+            original.control_profile_sha256, other_stream_control.control_profile_sha256
+        )
+        rebuilt = response_profile_control_from_document(
+            response_profile_control_document(other_stream_control)
+        )
+        self.assertNotEqual(rebuilt.control_profile_sha256, original.control_profile_sha256)
 
 
 if __name__ == "__main__":

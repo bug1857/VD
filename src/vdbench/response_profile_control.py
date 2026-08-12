@@ -9,6 +9,7 @@ import re
 import unicodedata
 
 from .artifacts import canonical_json_bytes
+from .config import Metric
 from .drift import EvidenceProvenance, build_evidence_provenance, evidence_provenance_valid
 from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
 from .shadow_event_types import MonitorStreamKey
@@ -26,6 +27,8 @@ __all__ = [
     "build_response_profile_control",
     "verify_response_profile_control",
     "response_profile_control_payload",
+    "response_profile_control_document",
+    "response_profile_control_from_document",
 ]
 
 
@@ -306,3 +309,153 @@ def response_profile_control_payload(value: ResponseProfileControl) -> dict[str,
         source_revision=verified.source_revision,
         frozen_at_utc=verified.frozen_at_utc,
     )
+
+
+def response_profile_control_document(value: ResponseProfileControl) -> dict[str, object]:
+    """Self-verifying document: payload plus the control's own outer digest.
+
+    Mirrors ``response_profile_detector_head_document``'s exact two-level
+    shape (payload + digest) even though this module previously only
+    exposed the inner ``response_profile_control_payload``.
+    """
+
+    verified = verify_response_profile_control(value)
+    return {
+        "control_payload": response_profile_control_payload(verified),
+        "control_profile_sha256": verified.control_profile_sha256,
+    }
+
+
+def response_profile_control_from_document(value: object) -> ResponseProfileControl:
+    """Strictly reconstruct one ``ResponseProfileControl`` from its canonical
+    document -- the exact inverse of ``response_profile_control_document``.
+
+    Every nested identity (``MonitorStreamKey``, ``EvidenceProvenance``) is
+    rebuilt through its own real contract factory, never through
+    ``object.__new__``; the final digest comparison against
+    ``control_profile_sha256`` is the canonical round-trip proof. No field is
+    defaulted, inferred, or repaired -- an unexpected or missing field, a
+    malformed enum, or a mismatched digest at any nesting level fails closed.
+    """
+
+    try:
+        if type(value) is not dict or frozenset(value) != {
+            "control_payload",
+            "control_profile_sha256",
+        }:
+            raise ValueError("document fields differ")
+        payload = value["control_payload"]
+        if type(payload) is not dict or frozenset(payload) != {
+            "schema_version",
+            "stream",
+            "detector_provenance",
+            "trigger_window_sequence",
+            "detector_head_sha256",
+            "detector_head_record_sequence",
+            "detector_head_record_sha256",
+            "detector_head_persisted_at_utc",
+            "calibration_population_sha256",
+            "warmup_role_manifest_sha256",
+            "ordered_query_payload_sha256",
+            "replay_schedule_sha256",
+            "environment_manifest_sha256",
+            "source_revision",
+            "frozen_at_utc",
+        }:
+            raise ValueError("payload fields differ")
+        if payload["schema_version"] != CONTROL_SCHEMA_VERSION:
+            raise ValueError("schema differs")
+        stream = payload["stream"]
+        if type(stream) is not dict or frozenset(stream) != {
+            "stream_id",
+            "metric",
+            "threshold_stratum",
+            "configuration_identity",
+            "data_identity",
+            "flat_binding_id",
+            "hnsw_binding_id",
+        }:
+            raise ValueError("stream fields differ")
+        provenance = payload["detector_provenance"]
+        if type(provenance) is not dict or frozenset(provenance) != {
+            "schema_version",
+            "metric",
+            "threshold_stratum",
+            "reference_window_id",
+            "current_window_id",
+            "reference_manifest_sha256",
+            "current_manifest_sha256",
+            "configuration_identity",
+            "data_identity",
+            "flat_binding_id",
+            "hnsw_binding_id",
+            "reference_audit_ids",
+            "reference_audit_rank_digests",
+            "current_audit_ids",
+            "current_audit_rank_digests",
+            "sha256",
+        }:
+            raise ValueError("provenance fields differ")
+        trigger_window_sequence = payload["trigger_window_sequence"]
+        if isinstance(trigger_window_sequence, bool) or not isinstance(trigger_window_sequence, int):
+            raise ValueError("trigger_window_sequence must be an integer")
+        detector_head_record_sequence = payload["detector_head_record_sequence"]
+        if isinstance(detector_head_record_sequence, bool) or not isinstance(
+            detector_head_record_sequence, int
+        ):
+            raise ValueError("detector_head_record_sequence must be an integer")
+
+        stream_key = MonitorStreamKey(
+            stream_id=stream["stream_id"],
+            metric=Metric(stream["metric"]),
+            threshold_stratum=stream["threshold_stratum"],
+            configuration_identity=stream["configuration_identity"],
+            data_identity=stream["data_identity"],
+            flat_binding_id=stream["flat_binding_id"],
+            hnsw_binding_id=stream["hnsw_binding_id"],
+        )
+        rebuilt_provenance = build_evidence_provenance(
+            metric=Metric(provenance["metric"]),
+            threshold_stratum=provenance["threshold_stratum"],
+            reference_window_id=provenance["reference_window_id"],
+            current_window_id=provenance["current_window_id"],
+            reference_manifest_sha256=provenance["reference_manifest_sha256"],
+            current_manifest_sha256=provenance["current_manifest_sha256"],
+            configuration_identity=provenance["configuration_identity"],
+            data_identity=provenance["data_identity"],
+            flat_binding_id=provenance["flat_binding_id"],
+            hnsw_binding_id=provenance["hnsw_binding_id"],
+            reference_audit_ids=tuple(provenance["reference_audit_ids"]),
+            reference_audit_rank_digests=tuple(provenance["reference_audit_rank_digests"]),
+            current_audit_ids=tuple(provenance["current_audit_ids"]),
+            current_audit_rank_digests=tuple(provenance["current_audit_rank_digests"]),
+        )
+        if (
+            provenance["schema_version"] != rebuilt_provenance.schema_version
+            or provenance["sha256"] != rebuilt_provenance.sha256
+        ):
+            raise ValueError("provenance digest differs")
+
+        result = build_response_profile_control(
+            stream_key=stream_key,
+            detector_provenance=rebuilt_provenance,
+            trigger_window_sequence=trigger_window_sequence,
+            detector_head_sha256=payload["detector_head_sha256"],
+            detector_head_record_sequence=detector_head_record_sequence,
+            detector_head_record_sha256=payload["detector_head_record_sha256"],
+            detector_head_persisted_at_utc=payload["detector_head_persisted_at_utc"],
+            calibration_population_sha256=payload["calibration_population_sha256"],
+            warmup_role_manifest_sha256=payload["warmup_role_manifest_sha256"],
+            ordered_query_payload_sha256=payload["ordered_query_payload_sha256"],
+            replay_schedule_sha256=payload["replay_schedule_sha256"],
+            environment_manifest_sha256=payload["environment_manifest_sha256"],
+            source_revision=payload["source_revision"],
+            frozen_at_utc=payload["frozen_at_utc"],
+        )
+        if value["control_profile_sha256"] != result.control_profile_sha256:
+            raise ValueError("control digest differs")
+        return result
+    except ResponseProfileControlError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise _error("CONTROL_DOCUMENT_INVALID", "control document is invalid") from exc

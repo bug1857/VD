@@ -59,6 +59,7 @@ from .response_profile_lifecycle import (
 )
 from .search_configuration_digest import (
     search_configuration_document,
+    search_configuration_from_document,
     search_configuration_sha256,
 )
 
@@ -85,6 +86,8 @@ __all__ = [
     "build_response_profile_oracle_record",
     "build_response_profile_oracle_manifest",
     "build_response_profile_static_identity",
+    "response_profile_static_identity_document",
+    "response_profile_static_identity_from_document",
     "build_response_profile_identity_from_static",
     "build_response_profile_semantic_encoder",
     "build_response_profile_semantic_encoder_from_static",
@@ -797,6 +800,84 @@ def _static_identity_payload(
         "environment_manifest_sha256": identity.environment_manifest_sha256,
         "source_revision": identity.source_revision,
     }
+
+
+def response_profile_static_identity_document(
+    identity: ResponseProfileStaticIdentity,
+) -> dict[str, object]:
+    """Canonical document for one ``ResponseProfileStaticIdentity``.
+
+    Unlike the other governed types in this module, a static identity
+    carries no digest of its own (it is a pre-result identity that later
+    feeds into ``control_profile_sha256``, not the reverse), so this
+    document's round-trip proof is full payload equality rather than a
+    single hash comparison.
+    """
+
+    return {"static_identity_payload": _static_identity_payload(identity)}
+
+
+def response_profile_static_identity_from_document(
+    value: object,
+) -> ResponseProfileStaticIdentity:
+    """Strictly reconstruct one ``ResponseProfileStaticIdentity`` from its
+    canonical document -- the exact inverse of
+    ``response_profile_static_identity_document``.
+
+    Each nested ``SearchConfiguration`` is rebuilt through
+    ``search_configuration_from_document`` (that type's own real contract
+    factory + validator), never through ``object.__new__``. The canonical
+    round-trip proof is full payload equality against the freshly recomputed
+    document, since this type has no self-digest to compare directly.
+    """
+
+    try:
+        if type(value) is not dict or frozenset(value) != {"static_identity_payload"}:
+            raise ValueError("document fields differ")
+        payload = value["static_identity_payload"]
+        if type(payload) is not dict or frozenset(payload) != {
+            "metric",
+            "threshold_stratum",
+            "search_configurations",
+            "hnsw_index_identity",
+            "data_identity",
+            "workload_manifest_sha256",
+            "ordered_query_payload_sha256",
+            "replay_schedule_sha256",
+            "control_profile_sha256",
+            "environment_manifest_sha256",
+            "source_revision",
+        }:
+            raise ValueError("payload fields differ")
+        metric = Metric(payload["metric"])
+        configurations_field = payload["search_configurations"]
+        if type(configurations_field) is not list:
+            raise ValueError("search_configurations must be a list")
+        search_configurations = tuple(
+            search_configuration_from_document(item) for item in configurations_field
+        )
+        result = build_response_profile_static_identity(
+            metric=metric,
+            threshold_stratum=payload["threshold_stratum"],
+            search_configurations=search_configurations,
+            hnsw_index_identity=payload["hnsw_index_identity"],
+            data_identity=payload["data_identity"],
+            workload_manifest_sha256=payload["workload_manifest_sha256"],
+            ordered_query_payload_sha256=payload["ordered_query_payload_sha256"],
+            replay_schedule_sha256=payload["replay_schedule_sha256"],
+            control_profile_sha256=payload["control_profile_sha256"],
+            environment_manifest_sha256=payload["environment_manifest_sha256"],
+            source_revision=payload["source_revision"],
+        )
+        if _static_identity_payload(result) != payload:
+            raise ValueError("static identity document is not byte-identical to its canonical reconstruction")
+        return result
+    except ResponseProfileSemanticError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise _error(
+            "PROFILE_IDENTITY_DOCUMENT_INVALID", "static identity document is invalid"
+        ) from exc
 
 
 def _verify_static_identity(

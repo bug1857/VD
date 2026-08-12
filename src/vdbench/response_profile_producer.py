@@ -143,10 +143,15 @@ class ResponseProfileClock(Protocol):
 
 class _SystemClock:
     def utc_now(self) -> str:
+        # response_profile_lifecycle.py's strict RFC3339 validator accepts at
+        # most 6 fractional digits; a 9-digit nanosecond fraction is rejected
+        # outright, so this truncates to microsecond precision rather than
+        # emitting a timestamp the ledger itself refuses.
         nanoseconds = time.time_ns()
-        seconds, fraction = divmod(nanoseconds, 1_000_000_000)
+        seconds, fraction_ns = divmod(nanoseconds, 1_000_000_000)
+        microseconds = fraction_ns // 1_000
         base = datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        return f"{base}.{fraction:09d}Z"
+        return f"{base}.{microseconds:06d}Z"
 
     def monotonic_ns(self) -> int:
         return time.monotonic_ns()

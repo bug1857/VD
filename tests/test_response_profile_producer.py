@@ -32,6 +32,7 @@ from vdbench.response_profile_lifecycle_ledger import ResponseProfileLifecycleLe
 from vdbench.response_profile_producer import (
     ResponseProfileExecutionQuery,
     ResponseProfileProducer,
+    _SystemClock,
     build_response_profile_runtime_readiness,
     build_response_profile_search_result,
 )
@@ -357,6 +358,24 @@ class ResponseProfileProducerTests(unittest.TestCase):
             item for item in imported
             if any(item == name or item.endswith(f".{name}") for name in forbidden)
         })
+
+    def test_default_system_clock_produces_strict_rfc3339_timestamps(self) -> None:
+        """Regression test: the default clock's own timestamps must satisfy
+        `response_profile_lifecycle.py`'s strict RFC3339 validator (at most 6
+        fractional digits), found and fixed while building the EXP-011 live
+        acquisition composition root -- any real (clock=None) producer run
+        previously failed on its very first durable event with
+        TIMESTAMP_INVALID because the default clock emitted 9 fractional
+        (nanosecond) digits."""
+
+        value = _SystemClock().utc_now()
+        self.assertRegex(
+            value,
+            r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{1,6}Z\Z",
+        )
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed.utcoffset(), timezone.utc.utcoffset(parsed))
 
 
 if __name__ == "__main__":

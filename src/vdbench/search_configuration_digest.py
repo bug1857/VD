@@ -50,7 +50,7 @@ import hashlib
 import math
 
 from .artifacts import canonical_json_bytes
-from .config import ContractViolation, SearchConfiguration
+from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 
 
 __all__ = [
@@ -58,6 +58,7 @@ __all__ = [
     "SEARCH_CONFIGURATION_HASH_DOMAIN",
     "search_configuration_document",
     "search_configuration_sha256",
+    "search_configuration_from_document",
 ]
 
 
@@ -136,3 +137,71 @@ def search_configuration_sha256(configuration: SearchConfiguration) -> str:
     return hashlib.sha256(
         SEARCH_CONFIGURATION_HASH_DOMAIN + canonical_json_bytes(document)
     ).hexdigest()
+
+
+def search_configuration_from_document(document: object) -> SearchConfiguration:
+    """Strictly reconstruct one ``SearchConfiguration`` from its canonical
+    document (the exact inverse of ``search_configuration_document``).
+
+    Delegates all real validation to ``SearchConfiguration.validate()`` --
+    the type's own root gate -- rather than re-implementing it; this
+    function's own job is limited to strict document-shape/primitive-type
+    checking (no bool-as-int, no string-to-number coercion, exact key set)
+    and the canonical round-trip proof: the reconstructed object's own
+    freshly computed ``search_configuration_document()`` must equal the
+    input byte-for-byte, including the derived ``range_filter`` field no
+    constructor argument can directly set.
+    """
+
+    if type(document) is not dict or frozenset(document) != {
+        "schema_version",
+        "metric",
+        "threshold_label",
+        "radius",
+        "range_filter",
+        "index_track",
+        "ef",
+        "limit",
+        "consistency_level",
+    }:
+        raise ContractViolation("search configuration document fields differ")
+    if document["schema_version"] != SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION:
+        raise ContractViolation("search configuration document schema differs")
+    try:
+        metric = Metric(document["metric"])
+        index_track = IndexTrack(document["index_track"])
+    except ValueError as exc:
+        raise ContractViolation("search configuration enum field is invalid") from exc
+    threshold_label = document["threshold_label"]
+    if not isinstance(threshold_label, str):
+        raise ContractViolation("threshold_label must be a string")
+    radius = document["radius"]
+    if isinstance(radius, bool) or not isinstance(radius, (int, float)):
+        raise ContractViolation("radius must be a real number")
+    ef = document["ef"]
+    if ef is not None and (isinstance(ef, bool) or not isinstance(ef, int)):
+        raise ContractViolation("ef must be an integer or null")
+    limit = document["limit"]
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ContractViolation("limit must be an integer")
+    consistency_level = document["consistency_level"]
+    if not isinstance(consistency_level, str):
+        raise ContractViolation("consistency_level must be a string")
+
+    configuration = SearchConfiguration(
+        metric=metric,
+        threshold_label=threshold_label,
+        radius=float(radius),
+        index_track=index_track,
+        ef=ef,
+        limit=limit,
+        consistency_level=consistency_level,
+    )
+    configuration.validate()
+    reconstructed_document = search_configuration_document(configuration)
+    if reconstructed_document != document:
+        raise ContractViolation(
+            "search configuration document is not byte-identical to its "
+            "canonical reconstruction"
+        )
+    return configuration

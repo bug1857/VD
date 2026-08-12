@@ -11,6 +11,7 @@ from vdbench.search_configuration_digest import (
     SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION,
     SEARCH_CONFIGURATION_HASH_DOMAIN,
     search_configuration_document,
+    search_configuration_from_document,
     search_configuration_sha256,
 )
 
@@ -210,6 +211,76 @@ class SearchConfigurationDigestTests(unittest.TestCase):
             alternate_domain + canonical_json_bytes(search_configuration_document(_BASE))
         ).hexdigest()
         self.assertNotEqual(real_digest, alternate_digest)
+
+    # -- search_configuration_from_document (governed reconstruction) ----
+
+    def test_canonical_round_trip_is_exact(self) -> None:
+        for configuration in (_BASE, _COSINE_BASE):
+            with self.subTest(configuration=configuration):
+                document = search_configuration_document(configuration)
+                rebuilt = search_configuration_from_document(document)
+                self.assertEqual(rebuilt, configuration)
+                self.assertEqual(search_configuration_document(rebuilt), document)
+
+    def test_missing_field_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        del document["ef"]
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_unknown_field_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["unexpected"] = "x"
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_wrong_schema_version_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["schema_version"] = "search-configuration-document-v0"
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_malformed_metric_enum_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["metric"] = "NOT_A_METRIC"
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_malformed_index_track_enum_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["index_track"] = "NOT_A_TRACK"
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_bool_as_int_rejected_for_limit(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["limit"] = True
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_bool_as_int_rejected_for_ef(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["ef"] = True
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_nan_radius_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["radius"] = float("nan")
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_infinite_radius_rejected(self) -> None:
+        document = dict(search_configuration_document(_BASE))
+        document["radius"] = float("inf")
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(document)
+
+    def test_wrong_type_document_rejected(self) -> None:
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document("not a dict")
+        with self.assertRaises(ContractViolation):
+            search_configuration_from_document(None)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 import ast
+import copy
 from pathlib import Path
 import tempfile
 import unittest
@@ -53,6 +54,8 @@ from vdbench.response_profile_semantic import (
     build_response_profile_semantic_encoder,
     build_response_profile_semantic_encoder_from_static,
     build_response_profile_static_identity,
+    response_profile_static_identity_document,
+    response_profile_static_identity_from_document,
     semantic_report_payload,
     verify_response_profile_semantic_bundle,
 )
@@ -688,6 +691,121 @@ class ResponseProfileSemanticTests(unittest.TestCase):
                 if any(item == name or item.endswith(f".{name}") for name in forbidden)
             }
         )
+
+
+class ResponseProfileStaticIdentityDocumentTests(unittest.TestCase):
+    """Coverage for response_profile_static_identity_document/_from_document."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fixture = _SemanticFixture()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.fixture.close()
+
+    def _static(self, **changes: object):
+        identity = self.fixture.identity
+        values = {
+            "metric": identity.metric,
+            "threshold_stratum": identity.threshold_stratum,
+            "search_configurations": identity.search_configurations,
+            "hnsw_index_identity": identity.hnsw_index_identity,
+            "data_identity": identity.data_identity,
+            "workload_manifest_sha256": identity.workload_manifest_sha256,
+            "ordered_query_payload_sha256": identity.ordered_query_payload_sha256,
+            "replay_schedule_sha256": identity.replay_schedule_sha256,
+            "control_profile_sha256": identity.control_profile_sha256,
+            "environment_manifest_sha256": identity.environment_manifest_sha256,
+            "source_revision": identity.source_revision,
+        }
+        values.update(changes)
+        return build_response_profile_static_identity(**values)
+
+    def test_canonical_round_trip_is_exact(self) -> None:
+        static = self._static()
+        document = response_profile_static_identity_document(static)
+        rebuilt = response_profile_static_identity_from_document(document)
+        self.assertEqual(rebuilt, static)
+        self.assertEqual(response_profile_static_identity_document(rebuilt), document)
+
+    def test_missing_top_level_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        del document["static_identity_payload"]
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_unknown_top_level_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["extra"] = "x"
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_missing_payload_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        del document["static_identity_payload"]["source_revision"]
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_unknown_payload_field_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["extra"] = "x"
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_malformed_metric_enum_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["metric"] = "NOT_A_METRIC"
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_wrong_search_configuration_count_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["search_configurations"] = document[
+            "static_identity_payload"
+        ]["search_configurations"][:-1]
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_malformed_nested_search_configuration_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["search_configurations"][0]["ef"] = True
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_search_configurations_must_be_a_list(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["search_configurations"] = "not-a-list"
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_malformed_sha256_rejected(self) -> None:
+        document = copy.deepcopy(response_profile_static_identity_document(self._static()))
+        document["static_identity_payload"]["workload_manifest_sha256"] = "not-a-digest"
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(document)
+
+    def test_wrong_type_document_rejected(self) -> None:
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document("not a dict")
+        with self.assertRaises(ResponseProfileSemanticError):
+            response_profile_static_identity_from_document(None)
+
+    # -- cross-object substitution (§16 of the governing task) -----------
+
+    def test_static_identity_from_a_different_data_identity_is_not_equal(self) -> None:
+        """A structurally valid static-identity document bound to a
+        *different* data lineage must never be silently accepted as
+        interchangeable with the original."""
+
+        original = self._static()
+        other = self._static(data_identity="a-different-data-identity")
+        self.assertNotEqual(original, other)
+        rebuilt = response_profile_static_identity_from_document(
+            response_profile_static_identity_document(other)
+        )
+        self.assertNotEqual(rebuilt, original)
+        self.assertEqual(rebuilt, other)
 
 
 if __name__ == "__main__":
