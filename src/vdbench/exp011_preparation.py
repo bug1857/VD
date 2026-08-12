@@ -39,6 +39,10 @@ from .response_profile_lifecycle import (
     response_profile_run_binding_document,
 )
 from .response_profile_monitor_store import ResponseProfileMonitorStateStore
+from .host_window_detector_v2 import (
+    SQLiteHostWindowDetectorV2Store,
+    VerifiedLatestV2DetectorHead,
+)
 from .response_profile_semantic import (
     ResponseProfileOracleManifest,
     ResponseProfileOracleRecord,
@@ -100,7 +104,7 @@ def _fsync_directory(path: Path) -> None:
 def prepare_exp011_acquisition_inputs(
     *,
     output_dir: Path,
-    monitor_store: ResponseProfileMonitorStateStore,
+    monitor_store: ResponseProfileMonitorStateStore | SQLiteHostWindowDetectorV2Store,
     stream_key: MonitorStreamKey,
     population: CalibrationPopulationManifest,
     warmup_role_manifest: ResponseProfileRoleManifest,
@@ -126,7 +130,10 @@ def prepare_exp011_acquisition_inputs(
     target = Path(output_dir)
     if target.exists():
         raise _error("PREPARATION_OUTPUT_EXISTS", "output directory already exists")
-    if type(monitor_store) is not ResponseProfileMonitorStateStore:
+    if type(monitor_store) not in {
+        ResponseProfileMonitorStateStore,
+        SQLiteHostWindowDetectorV2Store,
+    }:
         raise _error("PREPARATION_STORE_INVALID", "monitor store must be concrete")
     if type(stream_key) is not MonitorStreamKey:
         raise _error("PREPARATION_STREAM_INVALID", "stream key must be concrete")
@@ -150,6 +157,12 @@ def prepare_exp011_acquisition_inputs(
                 "PREPARATION_DETECTOR_HEAD_REQUIRED",
                 "a verified latest detector head is required",
             )
+        if type(monitor_store) is SQLiteHostWindowDetectorV2Store:
+            if type(latest) is not VerifiedLatestV2DetectorHead:
+                raise _error(
+                    "PREPARATION_DETECTOR_HEAD_INVALID",
+                    "v2 detector head must be store-issued",
+                )
         head = latest.head
         control = build_response_profile_control(
             stream_key=stream_key,

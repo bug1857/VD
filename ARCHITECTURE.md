@@ -3695,6 +3695,304 @@ implemented by this document.
 
 ---
 
+### ADR-012: Shared durable host-window lineage v2 for future detector and genuine-workload evidence
+
+Status: Accepted — human approved 2026-08-12; offline implementation complete in the current worktree, external review pending
+
+Risk level: CRITICAL
+
+#### Context
+
+The current host path records a genuine completed served request at
+`ReferenceRangeGateway.execute()` before shadow filtering, but the current
+detector `window_sequence` is assigned later by `BackgroundShadowWorker` from
+successful, post-filtered shadow traces: four successful 50-query traces form
+one 200-query detector window. Volatile buffering, stale/failed/timed-out
+filtering, trace capture, and restart recovery can therefore omit or reorder
+the relationship between the original served population and a v1 detector
+window. A v1 detector window cannot mechanically prove that it is the same
+200-request population required by EXP-010. Reusing trace or detector-outbox
+order as the EXP-010 source would silently post-select the workload and is
+prohibited.
+
+Historical v1 evidence, manifests, hashes, window numbers, detector heads,
+EXP-008/009/010 artifacts, and their interpretation remain immutable
+historical evidence. This proposal does not validate them retroactively or
+change their semantics.
+
+#### Decision
+
+For future, explicitly v2 streams only, introduce the versioned contract
+`response-profile-host-window-lineage-v2`. It owns one append-only durable
+canonical source sequence at the genuine host post-response boundary, before
+any shadow buffering or filtering. The sequence is per exact governed stream
+identity; it is not global across arbitrary host deployments.
+
+Each governed eligible completed served observation receives one immutable
+event identity and a contiguous non-negative `source_sequence`. The canonical
+window mapping is mechanically derived only within that exact stream:
+
+```
+window_sequence = source_sequence // 200
+within_window_index = source_sequence % 200
+```
+
+The v2 record binds at minimum its event identity; source/window/index
+positions; canonical query identity; canonical vector binding and vector
+digest; stream and workload identity; source revision; environment digest;
+completion timestamp; exact search configuration; and the serving outcome
+needed by downstream host logic. The v2 ledger must be append-only,
+integrity-protected, restart-reconstructible, and reject gaps, reorderings,
+duplicates, or schema/path/hash tampering. Its append must commit before an
+observation is offered to any shadow/filtering path. It neither generates a
+query nor mutates serving configuration.
+
+Source population membership is determined only by these durable host records.
+Shadow and detector evaluation eligibility is a separate, explicitly recorded
+property. A filtered, failed, stale, or otherwise unsuitable downstream
+evaluation preserves its v2 source position and cannot renumber later
+observations, collapse a window, or create a post-selected detector window.
+
+For a future v2 detector path, each shadow-evidence item must bind its exact
+v2 source event/position and source-window digest. A detector v2 head must
+bind that same host-window identity/digest. Exact value equality is not a
+substitute for identity binding. Subject to the unresolved decision below,
+the intended equality is:
+
+```
+host source window N
+  == shadow evidence bound to source window N
+  == detector-v2 head bound to source window N
+  == EXP-010 capture source window N
+```
+
+The EXP-010 v2 adapter is an independent, at-least-once, acknowledged reader
+of the host-window ledger. It must not consume detector or shadow outbox
+delivery state. Its governed sequence is trigger detector source window `N`,
+warm-up source window `N + 1`, and calibration source windows `N + 2` through
+`N + 7`; this consumes the same canonical served population without generating
+queries or using post-selected shadow traces.
+
+#### Canonical-window and detector progression semantics
+
+`WINDOW_INCOMPLETE` is transient only. It means fewer than 200 contiguous,
+durably committed source positions exist for a canonical v2 window. It may
+not produce detector evidence, a detector decision, a detector head, a
+reference-state update, or an EXP-010 trigger. The v2 ledger derives this
+state from the source sequence; no caller-supplied counter or timestamp may
+declare it complete.
+
+Once all 200 positions exist, a window remains pending evaluation until every
+position has either supplied the required, source-bound shadow evidence or a
+durable terminal evaluation-eligibility result. A fully bounded window with
+one or more terminally unsuitable positions is `WINDOW_UNEVALUABLE`. This is
+terminal and fail closed for that canonical window: it binds all original
+positions and their exact ineligibility reasons; produces no DRIFT or
+NO_DRIFT decision, detector head, reference/current evidence update, or
+EXP-010 trigger; and cannot be repaired by omitting, replacing, or renumbering
+a position.
+
+Source progression is independent of evaluability. Every later genuine source
+observation retains its natural `N + 1`, `N + 2`, and later window identities
+even after an earlier window is unevaluable. A v2 stream records the resulting
+evaluation gap durably. It must not silently compare a later window against a
+reference across that gap. Instead, the first later fully evaluable v2 window
+is a fail-closed rebaseline/reference-establishment window: it may establish a
+new reference only, emits neither DRIFT nor NO_DRIFT, creates no detector head,
+and cannot trigger EXP-010. Only the next fully evaluable canonical window may
+be compared against that newly established reference. A future detector
+algorithm that can prove a different nonconsecutive comparison rule requires a
+new versioned detector contract; it may not reinterpret this rule.
+
+Only a successful comparison of a fully evaluated v2 current window against a
+valid v2 reference may emit a v2 DRIFT or NO_DRIFT decision and persist a v2
+detector head. A v2 head binds the exact canonical host-window digest, source
+window sequence, reference window digest/sequence, current window
+digest/sequence, and the complete source-bound detector provenance. Only a
+persisted v2 **DRIFT** head from such a successful comparison may trigger
+EXP-010. `WINDOW_INCOMPLETE`, pending evaluation, `WINDOW_UNEVALUABLE`, and
+rebaseline windows never do.
+
+Restart reconstructs source positions, window completeness, terminal
+eligibility outcomes, evaluation gaps, and reference eligibility exclusively
+from the v2 append-only ledger and source-bound shadow evidence. It must never
+retry a source position as a new member, renumber a source window, promote an
+incomplete/unevaluable/rebaseline window, or let a seal/audit assertion repair
+derived state.
+
+#### Migration and non-authority constraints
+
+v1 and v2 schemas must be disjoint and exact-schema verified. A v2 record or
+head may never masquerade as v1, and a v1 artifact may never be upgraded by
+interpretation. Any future v2 components are evidence/provenance mechanisms;
+they create no qualification, policy, grant, routing, actuation, or candidate
+authority. They require no live service action for offline structural tests.
+
+#### Detector-v2 evaluator trust boundary
+
+`SQLiteHostWindowDetectorV2Store.process_window` accepts a **caller-supplied**
+`evaluator` callable and durably persists whatever `DriftDecision` it returns.
+The store validates only that the decision's `EvidenceProvenance` binds the
+exact reference and current source windows being processed; it never invokes
+`vdbench.drift.evaluate_drift` and performs no statistical computation.
+
+A `V2DetectorHead` therefore proves exactly three things:
+
+1. its reference/current source windows are the durably committed ADR-013
+   windows it names;
+2. its provenance and shadow-window digests bind those exact windows;
+3. the reference/gap/rebaseline progression recorded around it is internally
+   consistent and reconstructs identically after restart.
+
+A head **does not** prove that a real governed statistical detector executed.
+A head minted from a structural or deterministic-fake evaluator is
+indistinguishable by type or field from one minted by a real detector.
+Structural/fake-evaluator heads are consequently authorized for **offline
+structural use only**, which is the entire scope this ADR grants.
+
+A real EXP-010 trigger will additionally require a **separately governed
+real-detector attestation** binding the head to an actual ADR-002/ADR-003
+evaluation. That attestation does not exist in this ADR or its implementation,
+and until it is separately accepted no v2 head may be treated as real detector
+evidence. Consistent with the constraint above, no qualification, policy,
+grant, routing, admission, activation, actuation, or candidate authority is
+created by a v2 detector head under any circumstances.
+
+#### Expected implementation impact after acceptance
+
+The expected future implementation surface is limited to: a durable genuine
+host tee at `host_observation.py`/`ReferenceRangeGateway`; a versioned host
+source ledger/store and its tests; source-position bindings in the background
+shadow worker and shadow-trace artifact/event contracts; v2 monitor state and
+detector-head schemas in `workload_monitor.py`,
+`response_profile_detector_head.py`, and
+`response_profile_monitor_store.py`; an independent
+`GenuineWorkloadObservationSource` adapter in
+`response_profile_workload_capture.py`; and an injected offline
+`ReadOnlyCaptureMetadataProvider` composition boundary. Related host, shadow,
+monitor, detector-head/store, capture, and restart/adversarial tests must be
+updated. Existing v1 schemas and loaders remain historical compatibility paths
+only; no migration rewrites their records.
+
+#### Required acceptance and verification before implementation
+
+Human acceptance was recorded on 2026-08-12. Implementation must prove:
+pre-filter sequence assignment; no
+renumbering after filtering; restart-stable 200-position windows; exact
+source-to-shadow-to-head bindings; incomplete, pending, unevaluable, and
+rebaseline behavior; v1 compatibility; v2/v1 non-substitution; independent
+detector/shadow outbox delivery; at-least-once EXP-010 reading; tamper/path/
+concurrency failure closure; and the exact N, N+1, N+2..N+7 EXP-010 relation.
+No real workload, Milvus service, vector search, grant, routing activation,
+EXP-011 run, or live canary is authorized by this ADR.
+
+---
+
+### ADR-013: Commit v2 host-window membership atomically with host response completion
+
+Status: Accepted — human approved 2026-08-12 for the future v2 reference host; offline implementation complete in the current worktree, external review pending
+
+Risk level: CRITICAL
+
+#### Context
+
+ADR-007 deliberately defines `HostObservationRecorder.offer()` as a
+constant-time, nonblocking, no-I/O best-effort monitoring notification.
+ADR-012 requires canonical v2 source membership to be durable before shadow
+post-selection can affect that membership. The current path has no durable
+host request/response transaction: `MilvusRangeServingExecutor.execute()`
+performs a search and returns an in-memory `ServedQueryOutcome`;
+`ReferenceRangeGateway.execute()` then constructs an observation and calls the
+volatile recorder. Existing durable Stage-4 and response-profile ledgers record
+experiment/canary lifecycle steps, not host-served requests. The ADR-006 trace
+outbox persists only after background shadow capture and is therefore too late
+to establish the genuine source population.
+
+Writing a SQLite/file record in `offer()` would violate ADR-007. A volatile
+queue before later durability leaves membership ambiguous when a process
+crashes after a served response but before the worker persists it. Neither may
+be treated as an ADR-012 v2 source boundary.
+
+#### Decision
+
+Introduce a future host-owned **response-commit boundary**, separate from
+`HostObservationRecorder`, for explicitly configured v2 streams. The serving
+application, not the generic recorder, owns this boundary. It atomically
+commits a completed-response record and a v2 host-window outbox record before
+the application makes that response externally complete/visible. The commit is
+part of a host operation already responsible for response durability; it must
+not be hidden as monitoring I/O under `offer()` or added to the generic
+ADR-007 reference gateway.
+
+The v2 source record contains the completed request's exact query/configuration
+identity, outcome, stream binding, and a per-stream monotonic
+`source_sequence` allocated by the same durable transaction. It derives:
+
+```
+window_sequence = source_sequence // 200
+within_window_index = source_sequence % 200
+```
+
+The transaction writes an append-only, integrity-protected source record and a
+separate pending v2 handoff record. A background v2 dispatcher verifies and
+delivers only committed source records to the shadow worker. It is the sole
+path by which a v2 observation can reach shadow processing. `offer()` may
+continue as an optional volatile ADR-007/v1 notification, but may not create,
+advance, acknowledge, or gate a v2 canonical source position. V1 remains
+unchanged.
+
+This is not an authorization to delay arbitrary responses for monitoring. A
+host that lacks a mandatory durable response-commit operation cannot claim v2
+membership and must use v1 best-effort monitoring only. Any future deployment
+must separately demonstrate that its response-visible commit and v2 source
+outbox share one atomic durability domain; a generic in-process gateway,
+ordinary async queue, external best-effort logger, or timestamp reconciliation
+does not satisfy this contract.
+
+#### Crash semantics
+
+| Boundary failure | v2 membership result |
+|---|---|
+| Before search dispatch | Definitely excluded; no completed response exists. |
+| After dispatch, before a result | Definitely excluded; no completed response commit exists. |
+| After result, before response-commit transaction | Definitely excluded; the response must not become externally complete. |
+| During response-commit transaction | Definitely excluded unless the host can prove transaction commit; on uncertainty the host must fail the request/response rather than expose ambiguous v2 membership. |
+| After committed response/source outbox, before `offer()` | Definitely included; dispatcher can recover it; `offer()` is irrelevant to v2. |
+| After `offer()`, before shadow processing | Definitely included; v2 dispatcher reconstructs the committed pending record. |
+| During shadow processing or after acknowledgement | Membership remains definitely included; only evaluation eligibility/delivery is pending or terminal under ADR-012. |
+
+Thus no served response may be both externally complete and membership-ambiguous
+for a v2 stream. If a host cannot enforce that rule, it is not a v2 host.
+
+#### Relationship to ADR-007 and ADR-012
+
+ADR-007 is preserved: `HostObservationRecorder.offer()` remains nonblocking,
+no-I/O, and best effort; its queue-full/drop outcome does not affect serving or
+v2 lineage. ADR-012 is preserved scientifically: source population membership
+is durable before any shadow consumer may filter/evaluate it, and the durable
+source ledger—not a trace/outbox sequence—defines canonical windows. The
+durability point is the host response-commit transaction, not `offer()`.
+
+#### Migration and verification after acceptance
+
+Implementation would add a host-owned response-commit/outbox port and a
+hardened v2 source ledger/dispatcher; bind source event/position/window digest
+into v2 shadow artifacts/events, a v2 detector state/head/store path, and the
+independent EXP-010 source adapter. `ReferenceRangeGateway`, ADR-007's
+recorder, v1 worker, v1 traces, v1 detector heads, and historical evidence
+remain unchanged. Required adversarial tests include commit-before-visible
+ordering, commit ambiguity refusal, crash/restart at each table boundary,
+outbox/source independence, no source consumption from `offer()`, and exact
+v2 source-to-shadow-to-head-to-EXP-010 binding.
+
+Human acceptance names `SQLiteHostResponseCommitStore` as the reference v2
+host response-durability mechanism. This authorizes its offline structural
+implementation and verification only. It does not claim an external production
+host deployment and authorizes no live service, workload, search, grant,
+routing, EXP-011, or canary action.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
