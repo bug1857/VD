@@ -4177,6 +4177,94 @@ not produce an acceptable head at all.
    `VerifiedRealDetectorHead` with `detector_state == DRIFT` is trigger
    eligible.
 
+#### Clarification — governed v2 serving-configuration identity and durable query-id uniqueness (operator-directed 2026-08-13)
+
+Preparing the real application ingress exposed two gaps. Both are recorded here
+rather than by editing any earlier decision.
+
+Approval status, stated precisely: on 2026-08-13 the operator was presented with
+the blocker and a set of options, and directed that the identity be **derived**
+(rather than declared as an opaque operator literal) and that request-id
+uniqueness be made **durable** (rather than held in memory). That direction is
+what is approved here. The specific field set, schema strings, and digests below
+are the implementation of that direction and have not separately been through a
+line-by-line human sign-off.
+
+**A. `configuration_identity` in v2.** The only derivation in the repository was
+`exp005_acquisition._derived_identities`, whose schema
+`exp005-shadow-configuration-v1` binds `candidate_ef` and
+`last_known_good_ef` — candidate/canary concepts absent from a v2 serving path,
+which serves exactly one `served_ef`. Reusing it would fabricate candidate state
+or silently redefine an accepted schema, and leaving the value an opaque
+operator literal would bind no configuration facts at all.
+
+1. `configuration_identity` for a v2 host is now derived by
+   `exp010_serving_configuration.derive_serving_configuration_identity`, as
+   `exp010-serving-config-v1:sha256:<64 hex>` over a domain-separated SHA-256 of
+   the canonical payload, matching the repository's existing
+   `<name>-v1:sha256:<hex>` convention.
+2. It binds **serving/query semantics only**, under schema
+   `exp010-serving-configuration-v1`: `metric`, `threshold_stratum`,
+   `threshold_radius`, `range_filter`, `limit`, `served_ef`, `dimensions`, and
+   `consistency_level`. The field set is closed; missing, unknown, bool-as-int,
+   non-finite, off-ladder, and non-governed values all fail closed, and key
+   order cannot affect the digest.
+3. It deliberately **excludes** `data_identity` and the dataset manifest digest,
+   `flat_binding_id`/`hnsw_binding_id`, `environment_manifest_sha256`,
+   `deployment_identity`, `source_revision`, `stream_id`, `detector_seed`, and
+   `observed_at_utc`, because each belongs to a separate authority domain.
+   Collapsing them would let one digest stand in for evidence it does not cover.
+4. It also excludes `sentinel_ef`, which is already governed twice elsewhere: by
+   `real_detector_attestation.detector_contract_identity` and by every
+   `ShadowAuditTrace` (and hence the assembled manifest and provenance). It is
+   not duplicated into the serving domain.
+5. EXP-005's configuration identity and all historical evidence are unchanged
+   and are never retrospectively rewritten.
+
+**B. Durable query-id uniqueness.** The v2 source ledger derived `event_id` from
+`{stream, source_sequence, query_id, committed_at_utc}`, so a repeated
+application request id produced a *different* `event_id` and was accepted, while
+`build_calibration_population_manifest` rejects duplicate `query_id_sha256`.
+A duplicate admitted at serve time therefore became a latent EXP-010 capture
+failure up to 1,400 observations later.
+
+6. `source_records` now carries `query_id_sha256 TEXT NOT NULL UNIQUE`, making
+   canonical query-id uniqueness a durable, transactional invariant of source
+   membership itself rather than a mutable dedup side table. The check runs
+   inside the same `BEGIN IMMEDIATE` transaction as the source commit, so it is
+   concurrency-safe and restart-safe, and a duplicate rolls the transaction back
+   without consuming a `source_sequence` — contiguity is preserved.
+7. A duplicate fails closed with the stable code
+   `HOST_SOURCE_QUERY_ID_DUPLICATE` and is never silently remapped to a fresh
+   id. Append-only triggers and every other v2 store property are unchanged.
+8. The relational column is a uniqueness *mechanism* and never an authority.
+   The canonical source record remains the sole authority, so every
+   verification — including every reopen — requires
+   `source_records.query_id_sha256` to equal the value reconstructed from
+   `source_json` (which `source_sha256` covers) and carried on
+   `CommittedHostObservation`. A record whose column was altered independently
+   fails closed with `HOST_SOURCE_CHAIN_INVALID`, so the column cannot become an
+   unverified side-channel. Source digest verification is unchanged and
+   unweakened.
+9. This requires source-store schema version **2**. Compatibility rule for older
+   stores: a version-1 database is **rejected** with
+   `HOST_SOURCE_SCHEMA_INVALID` on open. It is never migrated, rewritten,
+   truncated, or altered — the rejection happens before any DDL or DML, and the
+   file is left byte-identical, so it remains available to a future dedicated
+   reader. Rejection is a refusal to *append* under v2 semantics, not a
+   retrospective rewrite of evidence. As of this entry no version-1 (or any
+   other) `SQLiteHostResponseCommitStore` database exists in the repository or
+   in runtime evidence — no such store has ever been persisted outside
+   temporary test directories — so no historical evidence is affected. Because
+   nothing would be served by it today, no in-process v1 read path is
+   implemented: adding one would duplicate the exact-set schema check and the
+   source-loading path, which are the two most safety-critical parts of the
+   store. The ADR-012 detector store, the attestation store, and the ADR-007 v1
+   host path are untouched.
+
+Neither clarification creates policy, admission, grant, routing, activation,
+actuation, or candidate authority, and B-001 is unchanged.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX

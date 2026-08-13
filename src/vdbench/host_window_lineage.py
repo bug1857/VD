@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 HOST_WINDOW_LINEAGE_SCHEMA_VERSION = "response-profile-host-window-lineage-v2"
-_DB_VERSION = 1
+_DB_VERSION = 2
 _SOURCE_DOMAIN = b"VD::HOST_RESPONSE_SOURCE::V2\x00"
 _OUTBOX_DOMAIN = b"VD::HOST_RESPONSE_SOURCE_OUTBOX::V2\x00"
 _ACK_DOMAIN = b"VD::HOST_RESPONSE_SOURCE_ACK::V2\x00"
@@ -385,7 +385,13 @@ def verify_committed_host_observation(
 
 _SCHEMA_SQL = (
     "CREATE TABLE store_binding (singleton INTEGER PRIMARY KEY CHECK(singleton=1), binding_json BLOB NOT NULL, binding_sha256 TEXT NOT NULL CHECK(length(binding_sha256)=64)) STRICT",
-    "CREATE TABLE source_records (source_sequence INTEGER PRIMARY KEY CHECK(source_sequence>=0), event_id TEXT NOT NULL UNIQUE, source_json BLOB NOT NULL, previous_source_sha256 TEXT, source_sha256 TEXT NOT NULL UNIQUE CHECK(length(source_sha256)=64)) STRICT",
+    # `query_id_sha256 UNIQUE` (schema v2) makes canonical query-id uniqueness a
+    # durable, transactional invariant of source membership itself, rather than
+    # a mutable side table. Without it the ledger accepted a repeated request id
+    # (event_id differs because source_sequence differs), and the duplicate only
+    # surfaced up to 1,400 observations later when
+    # `build_calibration_population_manifest` raised CALIBRATION_QUERY_ID_DUPLICATE.
+    "CREATE TABLE source_records (source_sequence INTEGER PRIMARY KEY CHECK(source_sequence>=0), event_id TEXT NOT NULL UNIQUE, query_id_sha256 TEXT NOT NULL UNIQUE CHECK(length(query_id_sha256)=64), source_json BLOB NOT NULL, previous_source_sha256 TEXT, source_sha256 TEXT NOT NULL UNIQUE CHECK(length(source_sha256)=64)) STRICT",
     "CREATE TABLE source_outbox (source_sequence INTEGER PRIMARY KEY CHECK(source_sequence>=0), event_id TEXT NOT NULL UNIQUE, source_sha256 TEXT NOT NULL UNIQUE CHECK(length(source_sha256)=64), previous_outbox_sha256 TEXT, outbox_sha256 TEXT NOT NULL UNIQUE CHECK(length(outbox_sha256)=64), FOREIGN KEY(source_sequence) REFERENCES source_records(source_sequence)) STRICT",
     "CREATE TABLE consumer_acknowledgements (consumer_id TEXT NOT NULL, ack_sequence INTEGER NOT NULL CHECK(ack_sequence>=0), source_sequence INTEGER NOT NULL CHECK(source_sequence>=0), event_id TEXT NOT NULL, acknowledged_at_utc TEXT NOT NULL, previous_ack_sha256 TEXT, ack_sha256 TEXT NOT NULL UNIQUE CHECK(length(ack_sha256)=64), PRIMARY KEY(consumer_id,ack_sequence), UNIQUE(consumer_id,source_sequence), FOREIGN KEY(source_sequence) REFERENCES source_records(source_sequence)) STRICT",
     "CREATE TRIGGER store_binding_no_update BEFORE UPDATE ON store_binding BEGIN SELECT RAISE(ABORT,'append-only'); END",
@@ -581,7 +587,7 @@ class SQLiteHostResponseCommitStore:
         previous = None
         for expected, row in enumerate(
             self._connection.execute(
-                "SELECT source_sequence,event_id,source_json,previous_source_sha256,source_sha256 FROM source_records ORDER BY source_sequence"
+                "SELECT source_sequence,event_id,source_json,previous_source_sha256,source_sha256,query_id_sha256 FROM source_records ORDER BY source_sequence"
             )
         ):
             try:
@@ -591,9 +597,17 @@ class SQLiteHostResponseCommitStore:
             if canonical_json_bytes(document) != bytes(row[2]):
                 raise _error("HOST_SOURCE_RECORD_INVALID")
             record = _source_from_document(document, expected_sequence=expected)
+            # The relational `query_id_sha256` column is a uniqueness mechanism,
+            # never an authority. The canonical source record stays the sole
+            # authority, so on every verification the column must equal the
+            # value reconstructed from source_json (which source_sha256 covers).
+            # Without this, the column could be tampered independently while the
+            # digests stayed valid, turning uniqueness into an unverified
+            # side-channel.
             if (
                 row[0] != expected or row[1] != record.event_id
                 or row[3] != previous or row[4] != record.source_sha256
+                or row[5] != record.query_id_sha256
                 or record.previous_source_sha256 != previous
                 or record.stream_key != self.stream_key
                 or record.source_revision != self.source_revision
@@ -745,11 +759,23 @@ class SQLiteHostResponseCommitStore:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 self._verify_cached_source_head()
+                # Durable, transactional query-id uniqueness. The explicit
+                # SELECT yields the stable reason code; the UNIQUE constraint
+                # below is the concurrency-safe backstop that makes the
+                # invariant hold even under a race. A duplicate rolls the whole
+                # transaction back, so no source_sequence is consumed and
+                # contiguity is preserved.
+                if self._connection.execute(
+                    "SELECT 1 FROM source_records WHERE query_id_sha256=? LIMIT 1",
+                    (record.query_id_sha256,),
+                ).fetchone() is not None:
+                    raise _error("HOST_SOURCE_QUERY_ID_DUPLICATE")
                 self._connection.execute(
-                    "INSERT INTO source_records VALUES(?,?,?,?,?)",
+                    "INSERT INTO source_records VALUES(?,?,?,?,?,?)",
                     (
-                        sequence, record.event_id, canonical_json_bytes(document),
-                        previous, record.source_sha256,
+                        sequence, record.event_id, record.query_id_sha256,
+                        canonical_json_bytes(document), previous,
+                        record.source_sha256,
                     ),
                 )
                 self._connection.execute(
@@ -766,6 +792,14 @@ class SQLiteHostResponseCommitStore:
                 except sqlite3.Error:
                     pass
                 raise
+            except sqlite3.IntegrityError as exc:
+                try:
+                    self._connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                if "query_id_sha256" in str(exc):
+                    raise _error("HOST_SOURCE_QUERY_ID_DUPLICATE") from exc
+                raise _error("HOST_RESPONSE_DURABILITY_FAILED") from exc
             except sqlite3.Error as exc:
                 try:
                     self._connection.execute("ROLLBACK")
