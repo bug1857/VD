@@ -1,0 +1,188 @@
+@import "tailwindcss" source(none);
+@source "../src";
+
+/*
+ * VD Control Center — design system.
+ * Warm-neutral graphite canvas, mineral-indigo product accent.
+ * All colors defined once here; components never hardcode color values.
+ */
+
+@theme inline {
+  --font-sans:
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --color-canvas: var(--canvas);
+  --color-navbar: var(--navbar);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-primary);
+
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-3: var(--text-tertiary);
+  --color-ink-4: var(--text-disabled);
+
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-verified: var(--verified);
+  --color-attention: var(--attention);
+  --color-blocked: var(--blocked);
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+:root {
+  color-scheme: dark;
+
+  --canvas: oklch(0.185 0.004 60);
+  --navbar: oklch(0.222 0.004 60);
+  --surface: oklch(0.238 0.005 60);
+  --raised: oklch(0.268 0.005 60);
+  --hover: oklch(0.298 0.005 60);
+
+  --text-primary: oklch(0.955 0.008 80);
+  --text-secondary: oklch(0.767 0.008 70);
+  --text-tertiary: oklch(0.616 0.008 70);
+  --text-disabled: oklch(0.455 0.006 70);
+
+  --border-subtle: oklch(1 0 0 / 7%);
+  --border-strong: oklch(1 0 0 / 11%);
+
+  --accent: oklch(0.612 0.062 285);
+  --accent-dim: oklch(0.612 0.062 285 / 35%);
+
+  --verified: oklch(0.688 0.078 158);
+  --attention: oklch(0.782 0.098 78);
+  --blocked: oklch(0.648 0.126 24);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    background-color: var(--canvas);
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings:
+      "cv11" 1,
+      "ss01" 1;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.011em;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 40%, transparent);
+  }
+}
+
+@utility mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "zero" 1;
+  letter-spacing: -0.02em;
+}
+
+/* A quiet inset surface used instead of card borders */
+@utility tonal {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--surface) 100%, transparent) 0%,
+      color-mix(in oklab, var(--canvas) 55%, var(--surface)) 100%
+    );
+}
+
+@utility hairline-t {
+  border-top: 1px solid var(--border-subtle);
+}
+
+@utility flow-line {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--accent) 70%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: vd-flow 5.5s linear infinite;
+}
+
+@keyframes vd-flow {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes vd-settle {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility settle-in {
+  animation: vd-settle 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes vd-verify-pulse {
+  0% {
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+@utility verify-pulse {
+  animation: vd-verify-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vd-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility panel-in {
+  animation: vd-panel-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
