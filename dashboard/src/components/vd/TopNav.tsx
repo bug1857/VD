@@ -31,9 +31,7 @@ export function TopNav() {
             SIMULATED DATA
           </span>
           <span className="h-4 w-px bg-line" />
-          <span className="whitespace-nowrap text-[13px] text-ink-3">
-            prod-conservative
-          </span>
+          <span className="whitespace-nowrap text-[13px] text-ink-3">prod-conservative</span>
         </div>
       </div>
       <div className="h-px w-full bg-line-strong" />

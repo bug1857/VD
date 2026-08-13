@@ -4,9 +4,7 @@ export function RecentActivity() {
   return (
     <section aria-label="Recent activity">
       <div className="flex items-baseline justify-between">
-        <h2 className="text-[13.5px] font-medium tracking-[-0.01em] text-ink-2">
-          Activity stream
-        </h2>
+        <h2 className="text-[13.5px] font-medium tracking-[-0.01em] text-ink-2">Activity stream</h2>
         <span className="flex items-baseline gap-2 text-[12.5px] text-ink-4">
           <span className="verify-pulse relative -mb-px inline-block h-1 w-1 rounded-full bg-verified" />
           append-only · last 90 minutes
@@ -31,10 +29,9 @@ export function RecentActivity() {
               {e.time}
             </span>
             <span
-              className={[
-                "text-[13.5px]",
-                e.tone === "blocked" ? "text-ink" : "text-ink-2",
-              ].join(" ")}
+              className={["text-[13.5px]", e.tone === "blocked" ? "text-ink" : "text-ink-2"].join(
+                " ",
+              )}
             >
               {e.title}
             </span>

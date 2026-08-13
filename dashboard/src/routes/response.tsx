@@ -67,13 +67,7 @@ function ResponsePage() {
             >
               {[0.85, 0.9, 0.95, 1.0].map((r) => (
                 <g key={r}>
-                  <line
-                    x1={60}
-                    x2={W - 40}
-                    y1={y(r)}
-                    y2={y(r)}
-                    stroke="var(--border-subtle)"
-                  />
+                  <line x1={60} x2={W - 40} y1={y(r)} y2={y(r)} stroke="var(--border-subtle)" />
                   <text
                     x={50}
                     y={y(r) + 3.5}
@@ -101,9 +95,7 @@ function ResponsePage() {
               ))}
 
               <polyline
-                points={responseProfile
-                  .map((p) => `${x(p.p95)},${y(p.recall)}`)
-                  .join(" ")}
+                points={responseProfile.map((p) => `${x(p.p95)},${y(p.recall)}`).join(" ")}
                 fill="none"
                 stroke="var(--text-disabled)"
                 strokeWidth={1}
@@ -169,12 +161,7 @@ function ResponsePage() {
                 );
               })}
 
-              <text
-                x={60}
-                y={22}
-                fontSize="11.5"
-                fill="var(--text-disabled)"
-              >
+              <text x={60} y={22} fontSize="11.5" fill="var(--text-disabled)">
                 capped recall ↑ · p95 latency →
               </text>
             </svg>
@@ -190,12 +177,7 @@ function ResponsePage() {
                 <KeyRow k="window closed" v="2026-08-09 13:45:00Z" />
                 <KeyRow k="profile computed" v="2026-08-09 13:46:12Z" />
                 <KeyRow k="evidence age" v="14 min" sub="limit 60 min" />
-                <KeyRow
-                  k="applicability"
-                  v="applicable"
-                  tone="verified"
-                  mono={false}
-                />
+                <KeyRow k="applicability" v="applicable" tone="verified" mono={false} />
                 <KeyRow k="regime at capture" v="L2 · target-075" />
                 <KeyRow k="regime now" v="L2 · target-075" />
                 <KeyRow k="workload identity" v="wl-search-api-r4" />
@@ -204,11 +186,10 @@ function ResponsePage() {
 
             <div className="mt-8">
               <Prose>
-                Applicability means the profile was captured under the regime
-                that is still current. It does not mean the candidate is
-                qualified, admitted, or authorized. Predicted improvement at ef
-                800 is evidence submitted to qualification; activation requires
-                a signed grant that has not been presented.
+                Applicability means the profile was captured under the regime that is still current.
+                It does not mean the candidate is qualified, admitted, or authorized. Predicted
+                improvement at ef 800 is evidence submitted to qualification; activation requires a
+                signed grant that has not been presented.
               </Prose>
             </div>
           </div>

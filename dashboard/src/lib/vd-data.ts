@@ -223,18 +223,114 @@ export interface DriftWindow {
 }
 
 export const driftWindows: DriftWindow[] = [
-  { id: "w-118", time: "13:18", mmd2: 0.0121, threshold: 0.0210, p: 0.412, holm: 1.0, decision: "no breach" },
-  { id: "w-117", time: "13:03", mmd2: 0.0138, threshold: 0.0210, p: 0.301, holm: 1.0, decision: "no breach" },
-  { id: "w-116", time: "12:48", mmd2: 0.0184, threshold: 0.0210, p: 0.104, holm: 0.624, decision: "inconclusive" },
-  { id: "w-115", time: "12:33", mmd2: 0.0092, threshold: 0.0210, p: 0.588, holm: 1.0, decision: "no breach" },
-  { id: "w-114", time: "12:18", mmd2: 0.0231, threshold: 0.0210, p: 0.021, holm: 0.147, decision: "inconclusive" },
-  { id: "w-113", time: "12:03", mmd2: 0.0104, threshold: 0.0210, p: 0.499, holm: 1.0, decision: "no breach" },
-  { id: "w-112", time: "11:48", mmd2: 0.0087, threshold: 0.0210, p: 0.640, holm: 1.0, decision: "no breach" },
-  { id: "w-111", time: "11:33", mmd2: 0.0159, threshold: 0.0210, p: 0.192, holm: 0.960, decision: "no breach" },
-  { id: "w-110", time: "11:18", mmd2: 0.0143, threshold: 0.0210, p: 0.268, holm: 1.0, decision: "no breach" },
-  { id: "w-109", time: "11:03", mmd2: 0.0116, threshold: 0.0210, p: 0.437, holm: 1.0, decision: "no breach" },
-  { id: "w-108", time: "10:48", mmd2: 0.0201, threshold: 0.0210, p: 0.058, holm: 0.406, decision: "inconclusive" },
-  { id: "w-107", time: "10:33", mmd2: 0.0098, threshold: 0.0210, p: 0.551, holm: 1.0, decision: "no breach" },
+  {
+    id: "w-118",
+    time: "13:18",
+    mmd2: 0.0121,
+    threshold: 0.021,
+    p: 0.412,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-117",
+    time: "13:03",
+    mmd2: 0.0138,
+    threshold: 0.021,
+    p: 0.301,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-116",
+    time: "12:48",
+    mmd2: 0.0184,
+    threshold: 0.021,
+    p: 0.104,
+    holm: 0.624,
+    decision: "inconclusive",
+  },
+  {
+    id: "w-115",
+    time: "12:33",
+    mmd2: 0.0092,
+    threshold: 0.021,
+    p: 0.588,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-114",
+    time: "12:18",
+    mmd2: 0.0231,
+    threshold: 0.021,
+    p: 0.021,
+    holm: 0.147,
+    decision: "inconclusive",
+  },
+  {
+    id: "w-113",
+    time: "12:03",
+    mmd2: 0.0104,
+    threshold: 0.021,
+    p: 0.499,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-112",
+    time: "11:48",
+    mmd2: 0.0087,
+    threshold: 0.021,
+    p: 0.64,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-111",
+    time: "11:33",
+    mmd2: 0.0159,
+    threshold: 0.021,
+    p: 0.192,
+    holm: 0.96,
+    decision: "no breach",
+  },
+  {
+    id: "w-110",
+    time: "11:18",
+    mmd2: 0.0143,
+    threshold: 0.021,
+    p: 0.268,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-109",
+    time: "11:03",
+    mmd2: 0.0116,
+    threshold: 0.021,
+    p: 0.437,
+    holm: 1.0,
+    decision: "no breach",
+  },
+  {
+    id: "w-108",
+    time: "10:48",
+    mmd2: 0.0201,
+    threshold: 0.021,
+    p: 0.058,
+    holm: 0.406,
+    decision: "inconclusive",
+  },
+  {
+    id: "w-107",
+    time: "10:33",
+    mmd2: 0.0098,
+    threshold: 0.021,
+    p: 0.551,
+    holm: 1.0,
+    decision: "no breach",
+  },
 ];
 
 /* --------------------------------------------------- lkg qualification */
@@ -251,7 +347,9 @@ export interface QualWindow {
 
 export const qualWindows: QualWindow[] = Array.from({ length: 12 }, (_, i) => {
   const epoch = (i < 6 ? 1 : 2) as 1 | 2;
-  const recallSeq = [0.934, 0.929, 0.938, 0.926, 0.933, 0.931, 0.936, 0.928, 0.941, 0.924, 0.932, 0.935];
+  const recallSeq = [
+    0.934, 0.929, 0.938, 0.926, 0.933, 0.931, 0.936, 0.928, 0.941, 0.924, 0.932, 0.935,
+  ];
   const p95Seq = [17.9, 18.6, 17.4, 19.1, 18.0, 18.3, 17.7, 18.9, 17.2, 19.4, 18.1, 17.8];
   const verdict: QualWindow["verdict"] =
     i === 9 ? "pass (marginal)" : i === 3 ? "pass (marginal)" : "pass";
@@ -279,14 +377,72 @@ export interface EvidenceEntry {
 }
 
 export const evidenceLedger: EvidenceEntry[] = [
-  { seq: 4417, time: "2026-08-09 14:00:03Z", kind: "authorization.evaluated", subject: "candidate ef 800", digest: "9d41ab07…c2", verification: "refused", tone: "blocked" },
-  { seq: 4416, time: "2026-08-09 13:42:07Z", kind: "admission.receipt", subject: "adm-eval 6c22…f1", digest: "6c22e930…f1", verification: "verified" },
-  { seq: 4415, time: "2026-08-09 13:41:58Z", kind: "qualification.completed", subject: "lkg ef 400", digest: "b7714c2e…08", verification: "verified" },
-  { seq: 4414, time: "2026-08-09 13:39:11Z", kind: "activation.refused", subject: "SIGNED_GRANT_REQUIRED", digest: "1f5a8d44…7b", verification: "refused", tone: "blocked" },
-  { seq: 4413, time: "2026-08-09 13:31:44Z", kind: "profile.refreshed", subject: "1,200 observations", digest: "a83e5c17…19", verification: "verified" },
-  { seq: 4412, time: "2026-08-09 13:18:02Z", kind: "drift.evaluated", subject: "regime L2 · target-075", digest: "40cc91ea…d5", verification: "verified" },
-  { seq: 4411, time: "2026-08-09 12:57:36Z", kind: "rollback.path.verified", subject: "restoration target ef 400", digest: "2ee6b013…9a", verification: "verified" },
-  { seq: 4410, time: "2026-08-09 12:44:19Z", kind: "observation.window.closed", subject: "wl-search-api-r4", digest: "77b0d5c8…31", verification: "verified" },
+  {
+    seq: 4417,
+    time: "2026-08-09 14:00:03Z",
+    kind: "authorization.evaluated",
+    subject: "candidate ef 800",
+    digest: "9d41ab07…c2",
+    verification: "refused",
+    tone: "blocked",
+  },
+  {
+    seq: 4416,
+    time: "2026-08-09 13:42:07Z",
+    kind: "admission.receipt",
+    subject: "adm-eval 6c22…f1",
+    digest: "6c22e930…f1",
+    verification: "verified",
+  },
+  {
+    seq: 4415,
+    time: "2026-08-09 13:41:58Z",
+    kind: "qualification.completed",
+    subject: "lkg ef 400",
+    digest: "b7714c2e…08",
+    verification: "verified",
+  },
+  {
+    seq: 4414,
+    time: "2026-08-09 13:39:11Z",
+    kind: "activation.refused",
+    subject: "SIGNED_GRANT_REQUIRED",
+    digest: "1f5a8d44…7b",
+    verification: "refused",
+    tone: "blocked",
+  },
+  {
+    seq: 4413,
+    time: "2026-08-09 13:31:44Z",
+    kind: "profile.refreshed",
+    subject: "1,200 observations",
+    digest: "a83e5c17…19",
+    verification: "verified",
+  },
+  {
+    seq: 4412,
+    time: "2026-08-09 13:18:02Z",
+    kind: "drift.evaluated",
+    subject: "regime L2 · target-075",
+    digest: "40cc91ea…d5",
+    verification: "verified",
+  },
+  {
+    seq: 4411,
+    time: "2026-08-09 12:57:36Z",
+    kind: "rollback.path.verified",
+    subject: "restoration target ef 400",
+    digest: "2ee6b013…9a",
+    verification: "verified",
+  },
+  {
+    seq: 4410,
+    time: "2026-08-09 12:44:19Z",
+    kind: "observation.window.closed",
+    subject: "wl-search-api-r4",
+    digest: "77b0d5c8…31",
+    verification: "verified",
+  },
 ];
 
 /* -------------------------------------------------------------- health */
@@ -300,14 +456,62 @@ export interface HealthItem {
 }
 
 export const healthItems: HealthItem[] = [
-  { component: "Milvus cluster", statement: "Query nodes responding · 4/4", source: "milvus /healthz probe", checked: "14:02:11Z", state: "healthy" },
-  { component: "Index (HNSW · M 32)", statement: "Loaded, no compaction in flight", source: "milvus index status", checked: "14:02:11Z", state: "healthy" },
-  { component: "Telemetry ingestion", statement: "1,200 observations / 15 min", source: "observation collector", checked: "14:01:50Z", state: "healthy" },
-  { component: "Response profile worker", statement: "Last successful run 14 min ago", source: "worker heartbeat", checked: "13:48:02Z", state: "stale" },
-  { component: "Evidence ledger", statement: "Append-only chain intact to seq 4417", source: "ledger self-verification", checked: "14:02:04Z", state: "healthy" },
-  { component: "Authority service", statement: "No signed activation grant available", source: "authority service response", checked: "14:00:03Z", state: "degraded" },
-  { component: "Canary router", statement: "No candidate partition provisioned", source: "router control-plane read", checked: "14:01:22Z", state: "unknown" },
-  { component: "Rollback executor", statement: "Restoration path verified to ef 400", source: "rollback preflight", checked: "12:57:36Z", state: "healthy" },
+  {
+    component: "Milvus cluster",
+    statement: "Query nodes responding · 4/4",
+    source: "milvus /healthz probe",
+    checked: "14:02:11Z",
+    state: "healthy",
+  },
+  {
+    component: "Index (HNSW · M 32)",
+    statement: "Loaded, no compaction in flight",
+    source: "milvus index status",
+    checked: "14:02:11Z",
+    state: "healthy",
+  },
+  {
+    component: "Telemetry ingestion",
+    statement: "1,200 observations / 15 min",
+    source: "observation collector",
+    checked: "14:01:50Z",
+    state: "healthy",
+  },
+  {
+    component: "Response profile worker",
+    statement: "Last successful run 14 min ago",
+    source: "worker heartbeat",
+    checked: "13:48:02Z",
+    state: "stale",
+  },
+  {
+    component: "Evidence ledger",
+    statement: "Append-only chain intact to seq 4417",
+    source: "ledger self-verification",
+    checked: "14:02:04Z",
+    state: "healthy",
+  },
+  {
+    component: "Authority service",
+    statement: "No signed activation grant available",
+    source: "authority service response",
+    checked: "14:00:03Z",
+    state: "degraded",
+  },
+  {
+    component: "Canary router",
+    statement: "No candidate partition provisioned",
+    source: "router control-plane read",
+    checked: "14:01:22Z",
+    state: "unknown",
+  },
+  {
+    component: "Rollback executor",
+    statement: "Restoration path verified to ef 400",
+    source: "rollback preflight",
+    checked: "12:57:36Z",
+    state: "healthy",
+  },
 ];
 
 /* ----------------------------------------------------- control profile */
@@ -320,15 +524,59 @@ export interface ControlValue {
 }
 
 export const controlProfile: ControlValue[] = [
-  { key: "profile.name", value: "prod-conservative", kind: "operator", note: "Selected control profile" },
+  {
+    key: "profile.name",
+    value: "prod-conservative",
+    kind: "operator",
+    note: "Selected control profile",
+  },
   { key: "profile.revision", value: "r14", kind: "operator", note: "Immutable once published" },
-  { key: "recall.floor", value: "0.920", kind: "operator", note: "Capped recall floor for qualification" },
-  { key: "latency.p95.ceiling", value: "24.0 ms", kind: "operator", note: "Ceiling applied to predicted p95" },
-  { key: "ef.search.space", value: "200 · 400 · 800 · 1600", kind: "operator", note: "Permitted ef ladder" },
-  { key: "qualification.epochs", value: "2", kind: "invariant", note: "Protocol invariant — not operator-configurable" },
-  { key: "qualification.windows", value: "12", kind: "invariant", note: "Protocol invariant — not operator-configurable" },
-  { key: "authorization.mode", value: "signed-grant-required", kind: "invariant", note: "Fail-closed; cannot be relaxed" },
-  { key: "rollback.supremacy", value: "enabled", kind: "invariant", note: "Rollback outranks all activation paths" },
-  { key: "frontend.authority", value: "none", kind: "invariant", note: "This interface never establishes authority" },
+  {
+    key: "recall.floor",
+    value: "0.920",
+    kind: "operator",
+    note: "Capped recall floor for qualification",
+  },
+  {
+    key: "latency.p95.ceiling",
+    value: "24.0 ms",
+    kind: "operator",
+    note: "Ceiling applied to predicted p95",
+  },
+  {
+    key: "ef.search.space",
+    value: "200 · 400 · 800 · 1600",
+    kind: "operator",
+    note: "Permitted ef ladder",
+  },
+  {
+    key: "qualification.epochs",
+    value: "2",
+    kind: "invariant",
+    note: "Protocol invariant — not operator-configurable",
+  },
+  {
+    key: "qualification.windows",
+    value: "12",
+    kind: "invariant",
+    note: "Protocol invariant — not operator-configurable",
+  },
+  {
+    key: "authorization.mode",
+    value: "signed-grant-required",
+    kind: "invariant",
+    note: "Fail-closed; cannot be relaxed",
+  },
+  {
+    key: "rollback.supremacy",
+    value: "enabled",
+    kind: "invariant",
+    note: "Rollback outranks all activation paths",
+  },
+  {
+    key: "frontend.authority",
+    value: "none",
+    kind: "invariant",
+    note: "This interface never establishes authority",
+  },
 ];
-

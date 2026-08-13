@@ -123,11 +123,7 @@ function SafetyPage() {
                                 : "text-ink-4",
                           ].join(" ")}
                         >
-                          {a.state === "met"
-                            ? "✓"
-                            : a.state === "blocked"
-                              ? "×"
-                              : "—"}
+                          {a.state === "met" ? "✓" : a.state === "blocked" ? "×" : "—"}
                         </span>
                         <span className="text-[14px] text-ink-2">{a.k}</span>
                       </span>
@@ -145,9 +141,7 @@ function SafetyPage() {
                         <p className="max-w-[76ch] text-[13px] leading-[1.65] text-ink-3">
                           {a.detail}
                         </p>
-                        <p className="mt-2 mono text-[12px] text-ink-4">
-                          source · {a.src}
-                        </p>
+                        <p className="mt-2 mono text-[12px] text-ink-4">source · {a.src}</p>
                       </div>
                     )}
                   </div>
@@ -164,9 +158,8 @@ function SafetyPage() {
                     SIGNED_GRANT_REQUIRED
                   </span>
                   <p className="mt-1.5 text-[12.5px] leading-[1.55] text-ink-3">
-                    Activation refused at stage 05. Routing and execution remain
-                    unreached; serving traffic continues on the last-known-good
-                    configuration.
+                    Activation refused at stage 05. Routing and execution remain unreached; serving
+                    traffic continues on the last-known-good configuration.
                   </p>
                 </div>
                 <div className="mt-3">
@@ -182,10 +175,9 @@ function SafetyPage() {
 
             <div className="mt-8">
               <Prose>
-                Prediction is not authorization. Qualification is not routing.
-                Admission is not a signed grant. A signed grant would not be
-                execution evidence. This interface reports backend-established
-                authority state and never establishes it.
+                Prediction is not authorization. Qualification is not routing. Admission is not a
+                signed grant. A signed grant would not be execution evidence. This interface reports
+                backend-established authority state and never establishes it.
               </Prose>
             </div>
           </div>

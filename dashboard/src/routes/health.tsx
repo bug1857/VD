@@ -14,8 +14,7 @@ export const Route = createFileRoute("/health")({
       { property: "og:title", content: "Health — VD Control Center" },
       {
         property: "og:description",
-        content:
-          "Component health with the exact source and check time behind every statement.",
+        content: "Component health with the exact source and check time behind every statement.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -74,12 +73,8 @@ function HealthPage() {
                 className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)_minmax(0,0.9fr)_120px] items-baseline gap-x-8 border-t border-line py-3.5 transition-colors duration-150 hover:bg-hover/40"
               >
                 <span className="flex items-baseline gap-3">
-                  <span className={`mono text-[12px] ${tone[h.state]}`}>
-                    {glyph[h.state]}
-                  </span>
-                  <span className="text-[13.5px] text-ink-2">
-                    {h.component}
-                  </span>
+                  <span className={`mono text-[12px] ${tone[h.state]}`}>{glyph[h.state]}</span>
+                  <span className="text-[13.5px] text-ink-2">{h.component}</span>
                 </span>
                 <span
                   className={[
@@ -124,11 +119,10 @@ function HealthPage() {
 
           <div>
             <Prose>
-              Health statements describe dependencies, not authority. A fully
-              healthy environment would still leave activation refused while the
-              signed grant is absent, and a degraded environment never relaxes
-              the fail-closed posture. Rollback is verified independently of
-              every component listed here.
+              Health statements describe dependencies, not authority. A fully healthy environment
+              would still leave activation refused while the signed grant is absent, and a degraded
+              environment never relaxes the fail-closed posture. Rollback is verified independently
+              of every component listed here.
             </Prose>
           </div>
         </div>
@@ -151,18 +145,12 @@ function Consequence({
       <p
         className={[
           "text-[13px]",
-          t === "blocked"
-            ? "text-blocked"
-            : t === "attention"
-              ? "text-attention"
-              : "text-ink-3",
+          t === "blocked" ? "text-blocked" : t === "attention" ? "text-attention" : "text-ink-3",
         ].join(" ")}
       >
         {head}
       </p>
-      <p className="mt-1 max-w-[62ch] text-[13px] leading-[1.62] text-ink-3">
-        {body}
-      </p>
+      <p className="mt-1 max-w-[62ch] text-[13px] leading-[1.62] text-ink-3">{body}</p>
     </div>
   );
 }

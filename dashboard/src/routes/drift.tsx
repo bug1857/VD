@@ -93,18 +93,8 @@ function DriftPage() {
               {series.map((d, i) => {
                 const active = d.id === sel;
                 return (
-                  <g
-                    key={d.id}
-                    onMouseEnter={() => setSel(d.id)}
-                    className="cursor-pointer"
-                  >
-                    <rect
-                      x={x(i) - 18}
-                      y={10}
-                      width={36}
-                      height={H - 20}
-                      fill="transparent"
-                    />
+                  <g key={d.id} onMouseEnter={() => setSel(d.id)} className="cursor-pointer">
+                    <rect x={x(i) - 18} y={10} width={36} height={H - 20} fill="transparent" />
                     <line
                       x1={x(i)}
                       x2={x(i)}
@@ -119,9 +109,7 @@ function DriftPage() {
                       cy={y(d.mmd2)}
                       r={active ? 3.4 : 2.2}
                       fill={
-                        d.decision === "inconclusive"
-                          ? "var(--attention)"
-                          : "var(--text-primary)"
+                        d.decision === "inconclusive" ? "var(--attention)" : "var(--text-primary)"
                       }
                       opacity={active ? 1 : 0.7}
                     />
@@ -131,9 +119,7 @@ function DriftPage() {
                       textAnchor="middle"
                       className="mono"
                       fontSize="10.5"
-                      fill={
-                        active ? "var(--text-secondary)" : "var(--text-disabled)"
-                      }
+                      fill={active ? "var(--text-secondary)" : "var(--text-disabled)"}
                     >
                       {d.time}
                     </text>
@@ -182,9 +168,7 @@ function DriftPage() {
                   <span
                     className={[
                       "text-right text-[12.5px]",
-                      d.decision === "inconclusive"
-                        ? "text-attention"
-                        : "text-ink-3",
+                      d.decision === "inconclusive" ? "text-attention" : "text-ink-3",
                     ].join(" ")}
                   >
                     {d.decision}
@@ -200,11 +184,7 @@ function DriftPage() {
               <KeyRow k="MMD² statistic" v={w.mmd2.toFixed(4)} />
               <KeyRow k="regime threshold" v={w.threshold.toFixed(4)} />
               <KeyRow k="raw p-value" v={w.p.toFixed(3)} />
-              <KeyRow
-                k="Holm-adjusted p"
-                v={w.holm.toFixed(3)}
-                sub="family-wise · m 12"
-              />
+              <KeyRow k="Holm-adjusted p" v={w.holm.toFixed(3)} sub="family-wise · m 12" />
               <KeyRow
                 k="decision"
                 v={w.decision}
@@ -215,11 +195,10 @@ function DriftPage() {
             </div>
             <div className="mt-6">
               <Prose>
-                A drift decision is evidence about the workload. It does not
-                qualify a configuration, does not admit a candidate, and does
-                not authorize routing. A Holm-adjusted breach would open a
-                re-qualification path only; activation would still require a
-                signed grant.
+                A drift decision is evidence about the workload. It does not qualify a
+                configuration, does not admit a candidate, and does not authorize routing. A
+                Holm-adjusted breach would open a re-qualification path only; activation would still
+                require a signed grant.
               </Prose>
             </div>
           </Block>

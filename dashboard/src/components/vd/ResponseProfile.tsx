@@ -26,18 +26,8 @@ export function ResponseProfile() {
 
       <div className="mt-6 grid grid-cols-[86px_1fr_1fr] gap-x-10">
         <div />
-        <AxisHead
-          title="Capped recall"
-          left="0.84"
-          right="1.00"
-          note="mean with LCB–UCB"
-        />
-        <AxisHead
-          title="p95 latency"
-          left="0 ms"
-          right="72 ms"
-          note="mean with LCB–UCB"
-        />
+        <AxisHead title="Capped recall" left="0.84" right="1.00" note="mean with LCB–UCB" />
+        <AxisHead title="p95 latency" left="0 ms" right="72 ms" note="mean with LCB–UCB" />
       </div>
 
       <div className="mt-2">
@@ -101,9 +91,9 @@ export function ResponseProfile() {
       </div>
 
       <p className="mt-5 border-t border-line pt-4 text-[13px] leading-[1.6] text-ink-3">
-        ef 400 is the serving and last-known-good configuration. ef 800 shows
-        higher predicted recall at roughly 1.7× predicted p95 latency; that
-        prediction is qualified and admitted, and remains unauthorized.
+        ef 400 is the serving and last-known-good configuration. ef 800 shows higher predicted
+        recall at roughly 1.7× predicted p95 latency; that prediction is qualified and admitted, and
+        remains unauthorized.
       </p>
     </section>
   );
@@ -170,11 +160,7 @@ function Interval({
         <span
           className={[
             "absolute top-1/2 h-[13px] w-px -translate-y-1/2 transition-colors duration-150",
-            role === "candidate"
-              ? "bg-accent"
-              : role === "serving"
-                ? "bg-ink"
-                : "bg-ink-3",
+            role === "candidate" ? "bg-accent" : role === "serving" ? "bg-ink" : "bg-ink-3",
           ].join(" ")}
           style={{ left: `${mean}%` }}
         />

@@ -74,9 +74,7 @@ function AuditPage() {
                     ].join(" ")}
                     style={{ animationDelay: `${i * 40}ms` }}
                   >
-                    <span className="mono text-[12.5px] tabular-nums text-ink-4">
-                      {entry.seq}
-                    </span>
+                    <span className="mono text-[12.5px] tabular-nums text-ink-4">{entry.seq}</span>
                     <span className="relative pl-6">
                       <span
                         aria-hidden="true"
@@ -89,27 +87,19 @@ function AuditPage() {
                               : "bg-ink-4/70",
                         ].join(" ")}
                       />
-                      <span className="mono text-[13px] text-ink-2">
-                        {entry.kind}
-                      </span>
+                      <span className="mono text-[13px] text-ink-2">{entry.kind}</span>
                       <span
                         className={[
                           "ml-3 text-[13px]",
-                          entry.tone === "blocked"
-                            ? "text-blocked"
-                            : "text-ink-3",
+                          entry.tone === "blocked" ? "text-blocked" : "text-ink-3",
                         ].join(" ")}
                       >
                         {entry.subject}
                       </span>
-                      <span className="mt-1 block mono text-[11.5px] text-ink-4">
-                        {entry.time}
-                      </span>
+                      <span className="mt-1 block mono text-[11.5px] text-ink-4">{entry.time}</span>
                     </span>
                     <span className="text-right">
-                      <span className="mono block text-[12px] text-ink-3">
-                        {entry.digest}
-                      </span>
+                      <span className="mono block text-[12px] text-ink-3">{entry.digest}</span>
                       <span
                         className={[
                           "text-[12px]",
@@ -148,12 +138,8 @@ function AuditPage() {
                   mono={false}
                 />
                 <div className="group flex items-baseline gap-6 border-t border-line py-2.5 transition-colors hover:bg-hover/40">
-                  <span className="w-[190px] shrink-0 text-[13px] text-ink-3">
-                    entry digest
-                  </span>
-                  <span className="mono text-[13px] text-ink-2">
-                    {e.digest}
-                  </span>
+                  <span className="w-[190px] shrink-0 text-[13px] text-ink-3">entry digest</span>
+                  <span className="mono text-[13px] text-ink-2">{e.digest}</span>
                   <button
                     onClick={() => copy(e.digest)}
                     className="ml-auto text-[12px] text-ink-4 opacity-0 transition-opacity hover:text-ink-2 group-hover:opacity-100 focus:opacity-100"
@@ -172,22 +158,16 @@ function AuditPage() {
                 <KeyRow k="response profile" v="a83e5c17…19" />
                 <KeyRow k="qualification" v="b7714c2e…08" />
                 <KeyRow k="admission receipt" v="6c22e930…f1" />
-                <KeyRow
-                  k="activation grant"
-                  v="absent"
-                  tone="blocked"
-                  mono={false}
-                />
+                <KeyRow k="activation grant" v="absent" tone="blocked" mono={false} />
                 <KeyRow k="execution evidence" v="none" tone="muted" mono={false} />
               </div>
             </Block>
 
             <div className="mt-8">
               <Prose>
-                Verification status describes the ledger entry, not the outcome
-                it records. A verified refusal is an authentic record that
-                activation was denied. Absence of an execution record is itself
-                evidence: nothing was executed.
+                Verification status describes the ledger entry, not the outcome it records. A
+                verified refusal is an authentic record that activation was denied. Absence of an
+                execution record is itself evidence: nothing was executed.
               </Prose>
             </div>
           </div>

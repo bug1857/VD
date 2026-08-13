@@ -36,20 +36,15 @@ export function AuthorityLineage({
       <p className="mt-4 text-[13.5px] text-ink-2">
         <span className="text-blocked">Reason</span>{" "}
         <span className="text-ink-2">
-          Signed activation grant unavailable — routing and execution remain
-          unreached.
+          Signed activation grant unavailable — routing and execution remain unreached.
         </span>
       </p>
 
       <div className="mt-6 flex items-center gap-4 border-t border-line pt-4">
         <span className="text-[13px] text-ink-3">Rollback / restoration</span>
         <span className="h-px flex-1 bg-line-strong" />
-        <span className="text-[13px] text-verified">
-          Independent safety route ready
-        </span>
-        <span className="mono text-[12.5px] text-ink-3">
-          restoration target ef 400
-        </span>
+        <span className="text-[13px] text-verified">Independent safety route ready</span>
+        <span className="mono text-[12.5px] text-ink-3">restoration target ef 400</span>
       </div>
     </section>
   );
@@ -84,25 +79,16 @@ function StageCell({
       {/* rail */}
       <div className="relative mb-3 h-px w-full">
         <span
-          className={[
-            "absolute inset-0",
-            verifiedFlow ? "bg-line-strong" : "bg-line",
-          ].join(" ")}
+          className={["absolute inset-0", verifiedFlow ? "bg-line-strong" : "bg-line"].join(" ")}
         />
-        {verifiedFlow && (
-          <span className="absolute inset-0 opacity-70 flow-line" />
-        )}
+        {verifiedFlow && <span className="absolute inset-0 opacity-70 flow-line" />}
         {isBlocked && (
           <span className="absolute left-0 top-1/2 h-2.5 w-px -translate-y-1/2 bg-blocked" />
         )}
         <span
           className={[
             "absolute left-0 top-1/2 h-[5px] w-[5px] -translate-y-1/2 rounded-full",
-            isBlocked
-              ? "bg-blocked"
-              : inactive
-                ? "bg-ink-4/60"
-                : "bg-ink-2/70",
+            isBlocked ? "bg-blocked" : inactive ? "bg-ink-4/60" : "bg-ink-2/70",
           ].join(" ")}
         />
       </div>
@@ -129,11 +115,7 @@ function StageCell({
         <span
           className={[
             "text-[13px]",
-            isBlocked
-              ? "text-blocked"
-              : inactive
-                ? "text-ink-4"
-                : "text-verified/80",
+            isBlocked ? "text-blocked" : inactive ? "text-ink-4" : "text-verified/80",
           ].join(" ")}
         >
           {glyph}

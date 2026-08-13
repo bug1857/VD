@@ -14,8 +14,7 @@ export const Route = createFileRoute("/control-profile")({
       { property: "og:title", content: "Control Profile — VD Control Center" },
       {
         property: "og:description",
-        content:
-          "Read-only governed control profile with operator bounds and protocol invariants.",
+        content: "Read-only governed control profile with operator bounds and protocol invariants.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -71,19 +70,32 @@ function ControlProfilePage() {
           <Block title="Revision lineage" note="append-only">
             <div>
               {[
-                { r: "r14", d: "3ab90f6d…4e", t: "2026-08-04 09:12Z", n: "raised p95 ceiling to 24.0 ms", cur: true },
-                { r: "r13", d: "c17e4402…a8", t: "2026-07-21 16:40Z", n: "added ef 1600 to permitted ladder" },
-                { r: "r12", d: "58fa1cd9…22", t: "2026-07-02 11:05Z", n: "recall floor 0.915 → 0.920" },
+                {
+                  r: "r14",
+                  d: "3ab90f6d…4e",
+                  t: "2026-08-04 09:12Z",
+                  n: "raised p95 ceiling to 24.0 ms",
+                  cur: true,
+                },
+                {
+                  r: "r13",
+                  d: "c17e4402…a8",
+                  t: "2026-07-21 16:40Z",
+                  n: "added ef 1600 to permitted ladder",
+                },
+                {
+                  r: "r12",
+                  d: "58fa1cd9…22",
+                  t: "2026-07-02 11:05Z",
+                  n: "recall floor 0.915 → 0.920",
+                },
               ].map((rev) => (
                 <div
                   key={rev.r}
                   className="grid grid-cols-[70px_150px_190px_1fr] items-baseline gap-x-6 border-t border-line py-3 transition-colors hover:bg-hover/40"
                 >
                   <span
-                    className={[
-                      "mono text-[13px]",
-                      rev.cur ? "text-ink" : "text-ink-4",
-                    ].join(" ")}
+                    className={["mono text-[13px]", rev.cur ? "text-ink" : "text-ink-4"].join(" ")}
                   >
                     {rev.r}
                   </span>
@@ -99,7 +111,7 @@ function ControlProfilePage() {
             <Block title="Governed source" note="read-only rendering">
               <div className="tonal -mx-5 rounded-md px-5 py-4">
                 <pre className="mono overflow-x-auto text-[12.5px] leading-[1.75] text-ink-3">
-{`profile: prod-conservative
+                  {`profile: prod-conservative
 revision: r14
 recall:
   floor: 0.920
@@ -118,16 +130,15 @@ rollback:
                 </pre>
               </div>
               <p className="mt-3 text-[12.5px] text-ink-4">
-                Rendering only. This prototype performs no configuration
-                mutation and exposes no editor.
+                Rendering only. This prototype performs no configuration mutation and exposes no
+                editor.
               </p>
             </Block>
 
             <div className="mt-8">
               <Prose>
-                A profile bounds what may be qualified and admitted. It never
-                grants authority: even a profile that permits ef 800 leaves
-                activation dependent on a signed grant.
+                A profile bounds what may be qualified and admitted. It never grants authority: even
+                a profile that permits ef 800 leaves activation dependent on a signed grant.
               </Prose>
             </div>
           </div>
@@ -152,16 +163,13 @@ function ValueRow({
       </div>
       <div className="text-right">
         <span
-          className={[
-            "mono text-[13px] tabular-nums",
-            invariant ? "text-ink-3" : "text-ink",
-          ].join(" ")}
+          className={["mono text-[13px] tabular-nums", invariant ? "text-ink-3" : "text-ink"].join(
+            " ",
+          )}
         >
           {c.value}
         </span>
-        {invariant && (
-          <div className="text-[12px] text-ink-4">protocol invariant</div>
-        )}
+        {invariant && <div className="text-[12px] text-ink-4">protocol invariant</div>}
       </div>
     </div>
   );

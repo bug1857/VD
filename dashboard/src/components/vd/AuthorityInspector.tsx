@@ -26,11 +26,7 @@ export function AuthorityInspector({
         ? "text-ink-4"
         : "text-verified";
   const stateWord =
-    stage.state === "blocked"
-      ? "Blocked"
-      : stage.state === "inactive"
-        ? "Not reached"
-        : "Verified";
+    stage.state === "blocked" ? "Blocked" : stage.state === "inactive" ? "Not reached" : "Verified";
 
   return (
     <aside
@@ -42,9 +38,7 @@ export function AuthorityInspector({
 
       <div className="flex items-start justify-between px-7 pb-5 pt-6">
         <div>
-          <p className="mono text-[11px] tracking-[0.08em] text-ink-4">
-            EVIDENCE RECORD
-          </p>
+          <p className="mono text-[11px] tracking-[0.08em] text-ink-4">EVIDENCE RECORD</p>
           <h3 className="mt-1.5 text-[16.5px] font-medium tracking-[-0.015em] text-ink">
             {stage.label}
           </h3>
@@ -60,9 +54,7 @@ export function AuthorityInspector({
       </div>
 
       <div className="flex-1 overflow-y-auto px-7 pb-10">
-        <p className="text-[13.5px] leading-[1.65] text-ink-2">
-          {stage.detail}
-        </p>
+        <p className="text-[13.5px] leading-[1.65] text-ink-2">{stage.detail}</p>
 
         {stage.dependency && (
           <Section label="Dependency">
@@ -87,34 +79,25 @@ export function AuthorityInspector({
                 {stage.reasonCode}
               </span>
               <p className="mt-1.5 text-[12.5px] leading-[1.55] text-ink-3">
-                Fail-closed. Downstream stages remain unreached until a signed
-                grant is presented.
+                Fail-closed. Downstream stages remain unreached until a signed grant is presented.
               </p>
             </div>
           </Section>
         )}
 
         <p className="mt-10 border-t border-line pt-4 text-[12.5px] leading-[1.6] text-ink-4">
-          SIMULATED DATA. This panel reflects prototype state only and performs
-          no authority evaluation.
+          SIMULATED DATA. This panel reflects prototype state only and performs no authority
+          evaluation.
         </p>
       </div>
     </aside>
   );
 }
 
-function Section({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mt-7 border-t border-line pt-4">
-      <p className="mb-2.5 mono text-[11px] tracking-[0.07em] text-ink-4">
-        {label.toUpperCase()}
-      </p>
+      <p className="mb-2.5 mono text-[11px] tracking-[0.07em] text-ink-4">{label.toUpperCase()}</p>
       {children}
     </div>
   );
@@ -125,9 +108,7 @@ function EvidenceRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="group -mx-2 flex items-baseline gap-3 rounded-xs px-2 py-1 transition-colors hover:bg-hover/70">
       <dt className="w-[132px] shrink-0 text-[12.5px] text-ink-3">{label}</dt>
-      <dd className="mono flex-1 break-all tabular-nums text-[12.5px] text-ink-2">
-        {value}
-      </dd>
+      <dd className="mono flex-1 break-all tabular-nums text-[12.5px] text-ink-2">{value}</dd>
       <button
         onClick={() => {
           navigator.clipboard?.writeText(value);

@@ -58,16 +58,13 @@ function LkgPage() {
                     <span className="mono text-[11px] tracking-[0.08em] text-ink-4">
                       EPOCH {String(epoch).padStart(2, "0")}
                     </span>
-                    <span className="text-[12.5px] text-ink-4">
-                      6 windows · all cleared
-                    </span>
+                    <span className="text-[12.5px] text-ink-4">6 windows · all cleared</span>
                   </div>
                   <div className="mt-5 flex items-end gap-3">
                     {qualWindows
                       .filter((q) => q.epoch === epoch)
                       .map((q) => {
-                        const h =
-                          14 + ((q.recall - floor) / 0.03) * 92;
+                        const h = 14 + ((q.recall - floor) / 0.03) * 92;
                         const active = q.id === sel;
                         return (
                           <button
@@ -108,8 +105,8 @@ function LkgPage() {
               ))}
             </div>
             <p className="mt-6 border-t border-line pt-3 text-[12.5px] text-ink-4">
-              Baseline of each mark is the recall floor 0.920. Amber marks
-              cleared the floor by a margin narrower than 0.005.
+              Baseline of each mark is the recall floor 0.920. Amber marks cleared the floor by a
+              margin narrower than 0.005.
             </p>
           </div>
         </Block>
@@ -150,9 +147,7 @@ function LkgPage() {
                   <span
                     className={[
                       "text-right text-[12.5px]",
-                      q.verdict === "pass (marginal)"
-                        ? "text-attention"
-                        : "text-ink-3",
+                      q.verdict === "pass (marginal)" ? "text-attention" : "text-ink-3",
                     ].join(" ")}
                   >
                     {q.verdict}
@@ -199,9 +194,9 @@ function LkgPage() {
 
             <div className="mt-8">
               <Prose>
-                A qualified configuration is eligible for admission. It is not
-                routed by qualification alone, and re-qualification of the
-                last-known-good does not extend authority to any candidate.
+                A qualified configuration is eligible for admission. It is not routed by
+                qualification alone, and re-qualification of the last-known-good does not extend
+                authority to any candidate.
               </Prose>
             </div>
           </div>

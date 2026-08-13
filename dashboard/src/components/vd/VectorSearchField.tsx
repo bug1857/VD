@@ -41,9 +41,7 @@ export function VectorSearchField() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const reduced = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     let width = 0;
     let height = 0;
@@ -149,18 +147,14 @@ export function VectorSearchField() {
         y: clamp(c[1] + gauss(r) * 0.06, 0.14, 0.86),
       };
       // entry at moderate distance so greedy traversal visibly converges
-      const byDist = nodes
-        .map((n, i) => ({ i, d: d2(n, q) }))
-        .sort((a, b) => a.d - b.d);
+      const byDist = nodes.map((n, i) => ({ i, d: d2(n, q) })).sort((a, b) => a.d - b.d);
       const entry = byDist[Math.floor(N * (0.42 + r() * 0.16))]!.i;
 
       const visited = new Set<number>([entry]);
       const fullOrder = [entry];
       const parent = new Map<number, number>();
       const frontier: { i: number; d: number; from: number }[] = [];
-      adj[entry]!.forEach((j) =>
-        frontier.push({ i: j, d: d2(nodes[j]!, q), from: entry }),
-      );
+      adj[entry]!.forEach((j) => frontier.push({ i: j, d: d2(nodes[j]!, q), from: entry }));
 
       const trueNearest = byDist[0]!.i;
       let nearestAt = -1;
@@ -171,15 +165,16 @@ export function VectorSearchField() {
         visited.add(next.i);
         fullOrder.push(next.i);
         parent.set(next.i, next.from);
-        if (nearestAt < 0 && next.i === trueNearest)
-          nearestAt = fullOrder.length - 1;
+        if (nearestAt < 0 && next.i === trueNearest) nearestAt = fullOrder.length - 1;
         // keep walking a little past the best neighbour so the candidate
         // frontier has room to widen around it
-        if (nearestAt >= 0 && fullOrder.length > nearestAt + (CANDIDATE_VISITS - SERVING_VISITS) + 4)
+        if (
+          nearestAt >= 0 &&
+          fullOrder.length > nearestAt + (CANDIDATE_VISITS - SERVING_VISITS) + 4
+        )
           break;
         adj[next.i]!.forEach((j) => {
-          if (!visited.has(j))
-            frontier.push({ i: j, d: d2(nodes[j]!, q), from: next.i });
+          if (!visited.has(j)) frontier.push({ i: j, d: d2(nodes[j]!, q), from: next.i });
         });
       }
 
@@ -220,8 +215,7 @@ export function VectorSearchField() {
     // uniform projection: one data unit maps to `scale` px in x and
     // `scale * ASPECT` px in y — the same weighting used by d2()
     const projScale = () => Math.min(width - 36, (height - 36) / ASPECT);
-    const px = (n: { x: number; y: number }, _pad: number) =>
-      width / 2 + (n.x - 0.5) * projScale();
+    const px = (n: { x: number; y: number }, _pad: number) => width / 2 + (n.x - 0.5) * projScale();
     const py = (n: { x: number; y: number }, _pad: number) =>
       height / 2 + (n.y - 0.5) * projScale() * ASPECT;
 
@@ -259,9 +253,7 @@ export function VectorSearchField() {
       const servingCount = Math.floor(ease(trav) * SERVING_VISITS);
       const candCount =
         SERVING_VISITS +
-        Math.floor(
-          ease(cand) * (CANDIDATE_VISITS - SERVING_VISITS) * (1 - recede),
-        );
+        Math.floor(ease(cand) * (CANDIDATE_VISITS - SERVING_VISITS) * (1 - recede));
 
       const visitRank = new Map<number, number>();
       search.order.forEach((i, r) => visitRank.set(i, r));
@@ -345,10 +337,8 @@ export function VectorSearchField() {
 
         const rank = visitRank.get(i);
         const inServing = rank !== undefined && rank < servingCount;
-        const inCandidate =
-          rank !== undefined && rank >= SERVING_VISITS && rank < candCount;
-        const isReturned =
-          returnedSet.has(i) && t > P_TRAVERSE * 0.9;
+        const inCandidate = rank !== undefined && rank >= SERVING_VISITS && rank < candCount;
+        const isReturned = returnedSet.has(i) && t > P_TRAVERSE * 0.9;
 
         const active = inServing || inCandidate;
         const dim = active ? 0 : ease(clamp01((t - P_QUERY) / 900)) * 0.45;
@@ -410,8 +400,7 @@ export function VectorSearchField() {
       ctx.fill();
 
       // --- in-field labels: query · visited · top-k ---
-      ctx.font =
-        '11px ui-monospace, "Geist Mono", SFMono-Regular, monospace';
+      ctx.font = '11px ui-monospace, "Geist Mono", SFMono-Regular, monospace';
       ctx.textBaseline = "alphabetic";
       ctx.fillStyle = `rgba(243,240,236,${0.55 * qa})`;
       ctx.fillText("query", qx + 9, qy - 7);
@@ -420,32 +409,19 @@ export function VectorSearchField() {
         const vIdx = search.order[Math.min(servingCount - 1, search.order.length - 1)]!;
         const vn = nodes[vIdx]!;
         ctx.fillStyle = `rgba(226,224,232,${0.42 * ease(trav) * (1 - fadeOut)})`;
-        ctx.fillText(
-          "visited · ef 400",
-          px(vn, pad) + 8,
-          py(vn, pad) - 6,
-        );
+        ctx.fillText("visited · ef 400", px(vn, pad) + 8, py(vn, pad) - 6);
       }
       if (candCount > SERVING_VISITS + 1) {
         const cIdx = search.order[Math.min(candCount - 1, search.order.length - 1)]!;
         const cn = nodes[cIdx]!;
         ctx.fillStyle = `rgba(147,151,196,${0.5 * (1 - recede) * (1 - fadeOut)})`;
-        ctx.fillText(
-          "candidate · ef 800",
-          px(cn, pad) + 8,
-          py(cn, pad) - 6,
-        );
+        ctx.fillText("candidate · ef 800", px(cn, pad) + 8, py(cn, pad) - 6);
       }
       if (t > P_TRAVERSE * 0.9) {
         const g = ease(clamp01((t - P_TRAVERSE * 0.9) / 700));
         ctx.fillStyle = `rgba(243,240,236,${0.45 * g * (1 - fadeOut)})`;
-        ctx.fillText(
-          `top-k ${RETURNED}`,
-          qx - rr - 4,
-          qy + rr * ASPECT + 14,
-        );
+        ctx.fillText(`top-k ${RETURNED}`, qx - rr - 4, qy + rr * ASPECT + 14);
       }
-
 
       // sweep line
       if (recomputing && sweepX > pad && sweepX < width - pad) {
@@ -488,15 +464,13 @@ export function VectorSearchField() {
         <h2 className="text-[13.5px] font-medium tracking-[-0.01em] text-ink-2">
           Vector search field
         </h2>
-        <span className="mono text-[11.5px] tracking-[0.02em] text-ink-4">
-          {phaseLabel}
-        </span>
+        <span className="mono text-[11.5px] tracking-[0.02em] text-ink-4">{phaseLabel}</span>
       </figcaption>
 
       <p className="mt-2 max-w-[54ch] text-[13px] leading-[1.62] text-ink-3">
-        Greedy traversal of the HNSW base layer toward one query vector. The
-        solid frontier is the serving breadth. The dashed indigo expansion is
-        candidate breadth, previewed only — it never reaches a served state.
+        Greedy traversal of the HNSW base layer toward one query vector. The solid frontier is the
+        serving breadth. The dashed indigo expansion is candidate breadth, previewed only — it never
+        reaches a served state.
       </p>
 
       <div className="relative mt-4 h-[286px] w-full overflow-hidden">
@@ -511,9 +485,7 @@ export function VectorSearchField() {
       {/* ef ladder — search breadth, with serving and candidate marked */}
       <div className="mt-4 border-t border-line pt-4">
         <div className="flex items-baseline justify-between">
-          <span className="text-[12.5px] text-ink-4">
-            search breadth · ef ladder
-          </span>
+          <span className="text-[12.5px] text-ink-4">search breadth · ef ladder</span>
           <span className="mono text-[11.5px] text-ink-4">HNSW · M 32</span>
         </div>
         <div className="mt-3 grid grid-cols-4 gap-x-3">
@@ -525,11 +497,7 @@ export function VectorSearchField() {
                 <span
                   className={[
                     "h-[3px] w-full rounded-[1px]",
-                    serving
-                      ? "bg-ink-2"
-                      : candidate
-                        ? "bg-accent/55"
-                        : "bg-ink-4/30",
+                    serving ? "bg-ink-2" : candidate ? "bg-accent/55" : "bg-ink-4/30",
                   ].join(" ")}
                   style={
                     candidate
@@ -544,21 +512,13 @@ export function VectorSearchField() {
                 <span
                   className={[
                     "mono text-[12px] tabular-nums",
-                    serving
-                      ? "text-ink"
-                      : candidate
-                        ? "text-accent"
-                        : "text-ink-4",
+                    serving ? "text-ink" : candidate ? "text-accent" : "text-ink-4",
                   ].join(" ")}
                 >
                   {ef}
                 </span>
                 <span className="text-[11.5px] text-ink-4">
-                  {serving
-                    ? "serving · LKG"
-                    : candidate
-                      ? "candidate"
-                      : "evaluated"}
+                  {serving ? "serving · LKG" : candidate ? "candidate" : "evaluated"}
                 </span>
               </div>
             );
@@ -572,7 +532,6 @@ export function VectorSearchField() {
         <Row k="sampled queries" v="1,200 / 15 min" />
         <Row k="evidence" v="SIMULATED DATA" muted />
       </dl>
-
     </figure>
   );
 }

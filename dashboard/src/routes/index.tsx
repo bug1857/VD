@@ -7,7 +7,6 @@ import { VectorSearchField } from "@/components/vd/VectorSearchField";
 import { ResponseProfile } from "@/components/vd/ResponseProfile";
 import { RecentActivity } from "@/components/vd/RecentActivity";
 
-
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -45,16 +44,15 @@ function Overview() {
               VD is serving ef 400.
             </h1>
             <p className="mt-5 max-w-[62ch] text-[18.5px] leading-[1.58] text-ink-2">
-              Workload remains within the current regime. A candidate transition
-              to ef 800 is qualified and admitted, but cannot execute.
+              Workload remains within the current regime. A candidate transition to ef 800 is
+              qualified and admitted, but cannot execute.
             </p>
             <p className="mt-2.5 max-w-[62ch] text-[18.5px] leading-[1.58] text-blocked">
               Missing signed activation grant.
             </p>
             <p className="mt-6 max-w-[70ch] text-[13.5px] leading-[1.65] text-ink-3">
-              Predictive evidence is applicable — the response profile was
-              refreshed 14 minutes ago from 1,200 observations. Prediction does
-              not authorize execution.
+              Predictive evidence is applicable — the response profile was refreshed 14 minutes ago
+              from 1,200 observations. Prediction does not authorize execution.
             </p>
           </div>
 
@@ -65,9 +63,7 @@ function Overview() {
             <Fact k="rollback" v="ready" tone="verified" />
             <Fact k="evidence age" v="14 min" />
             <div className="pt-2">
-              <span className="mono text-[11px] tracking-[0.06em] text-ink-4">
-                SIMULATED DATA
-              </span>
+              <span className="mono text-[11px] tracking-[0.06em] text-ink-4">SIMULATED DATA</span>
             </div>
           </dl>
         </section>
@@ -93,12 +89,10 @@ function Overview() {
         </div>
 
         <p className="mt-16 max-w-[86ch] text-[12.5px] leading-[1.7] text-ink-4">
-          Prototype. All values are simulated and no connection to Milvus or a
-          VD deployment exists. This interface displays backend-established
-          state only; it never establishes authority, and unresolved states are
-          presented fail-closed.
+          Prototype. All values are simulated and no connection to Milvus or a VD deployment exists.
+          This interface displays backend-established state only; it never establishes authority,
+          and unresolved states are presented fail-closed.
         </p>
-
       </main>
 
       <AuthorityInspector stageId={stage} onClose={() => setStage(null)} />
@@ -106,23 +100,11 @@ function Overview() {
   );
 }
 
-function Fact({
-  k,
-  v,
-  tone,
-}: {
-  k: string;
-  v: string;
-  tone?: "verified";
-}) {
+function Fact({ k, v, tone }: { k: string; v: string; tone?: "verified" }) {
   return (
     <div className="flex items-baseline gap-4 border-b border-line pb-2.5">
       <dt className="w-[104px] shrink-0 text-ink-4">{k}</dt>
-      <dd
-        className={`mono ${tone === "verified" ? "text-verified" : "text-ink-2"}`}
-      >
-        {v}
-      </dd>
+      <dd className={`mono ${tone === "verified" ? "text-verified" : "text-ink-2"}`}>{v}</dd>
     </div>
   );
 }

@@ -85,12 +85,8 @@ function CanaryPage() {
         >
           <div className="tonal -mx-6 rounded-md px-6 py-8">
             <div className="flex items-baseline justify-between">
-              <span className="text-[13px] text-ink-2">
-                serving · last-known-good ef 400
-              </span>
-              <span className="mono text-[13px] tabular-nums text-ink">
-                100.00 %
-              </span>
+              <span className="text-[13px] text-ink-2">serving · last-known-good ef 400</span>
+              <span className="mono text-[13px] tabular-nums text-ink">100.00 %</span>
             </div>
             <div className="mt-2.5 h-[10px] w-full rounded-[2px] bg-ink-2/45" />
 
@@ -98,9 +94,7 @@ function CanaryPage() {
               <span className="text-[13px] text-ink-3">
                 candidate ef 800 — reserved lane, never routed
               </span>
-              <span className="mono text-[13px] tabular-nums text-blocked">
-                0.00 %
-              </span>
+              <span className="mono text-[13px] tabular-nums text-blocked">0.00 %</span>
             </div>
             <div
               className="mt-2.5 h-[10px] w-full rounded-[2px]"
@@ -111,22 +105,15 @@ function CanaryPage() {
               }}
             />
             <p className="mt-3 text-[12.5px] text-ink-4">
-              The hatched lane depicts the shape a canary would take if
-              authorized. It is not a route, and no traffic has ever traversed
-              it.
+              The hatched lane depicts the shape a canary would take if authorized. It is not a
+              route, and no traffic has ever traversed it.
             </p>
 
             <div className="mt-10 flex items-center gap-4 border-t border-line pt-5">
-              <span className="text-[13px] text-ink-3">
-                Rollback / restoration
-              </span>
+              <span className="text-[13px] text-ink-3">Rollback / restoration</span>
               <span className="h-px flex-1 bg-line-strong" />
-              <span className="text-[13px] text-verified">
-                Independent safety route ready
-              </span>
-              <span className="mono text-[12.5px] text-ink-3">
-                restoration target ef 400
-              </span>
+              <span className="text-[13px] text-verified">Independent safety route ready</span>
+              <span className="mono text-[12.5px] text-ink-3">restoration target ef 400</span>
             </div>
           </div>
         </Block>
@@ -181,27 +168,16 @@ function CanaryPage() {
                 <KeyRow k="admitted at" v="2026-08-09 13:42:07Z" />
                 <KeyRow k="predicted recall" v="0.964" sub="LCB 0.951" />
                 <KeyRow k="predicted p95" v="31.7 ms" sub="UCB 34.6 ms" />
-                <KeyRow
-                  k="routing state"
-                  v="not reached"
-                  tone="muted"
-                  mono={false}
-                />
-                <KeyRow
-                  k="execution evidence"
-                  v="none"
-                  tone="muted"
-                  mono={false}
-                />
+                <KeyRow k="routing state" v="not reached" tone="muted" mono={false} />
+                <KeyRow k="execution evidence" v="none" tone="muted" mono={false} />
               </div>
             </Block>
 
             <div className="mt-8">
               <Prose>
-                Admission is not a signed grant. Even with a grant, routing
-                would produce execution evidence only after traffic is served
-                and recorded; a grant alone would never be presented here as a
-                successful run. Rollback remains a higher-priority path and is
+                Admission is not a signed grant. Even with a grant, routing would produce execution
+                evidence only after traffic is served and recorded; a grant alone would never be
+                presented here as a successful run. Rollback remains a higher-priority path and is
                 available independent of any canary state.
               </Prose>
             </div>
