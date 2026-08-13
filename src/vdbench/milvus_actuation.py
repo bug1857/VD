@@ -472,7 +472,10 @@ class MilvusActuationClient:
         *,
         workload: ActuationWorkload,
         routing_seed: int,
-        bound_estimator: CanaryBoundEstimatorLike,
+        # ADR-014: optional so a read-only shadow capture need not fabricate
+        # canary state. It is stored and never used by any capture path; only
+        # a candidate-bound caller supplies one.
+        bound_estimator: CanaryBoundEstimatorLike | None = None,
         stack_health_probe: StackHealthProbeLike,
         initial_ef: int,
         clock_ns: ClockNs = perf_counter_ns,
@@ -985,6 +988,64 @@ class MilvusActuationClient:
             queries=audit_run.query_traces,
             complete=not reasons,
             reason_codes=tuple(dict.fromkeys(reasons)),
+        )
+
+    def capture_readonly_shadow_trace(
+        self,
+        *,
+        context: ShadowActuationContext,
+        served_ef: int,
+    ) -> ShadowAuditTrace:
+        """ADR-014 read-only 50-query capture: exact oracle + FLAT + sentinel.
+
+        This is the already-tested `_run_audit`/`_build_shadow_trace` machinery
+        with `ef_values=()`, so **no candidate and no last-known-good search is
+        issued** -- those concepts are not semantically required by the ADR-002
+        detector, which needs only the exact local oracle, the FLAT result, and
+        the sentinel `ef=100` result per query.
+
+        `ShadowAuditTrace` nevertheless has required `candidate_ef` and
+        `last_known_good_ef` fields that are covered by its canonical digest and
+        must agree across the four traces of a window. Both are set to the
+        stream's real `served_ef`: a true fact about the serving breadth, never
+        a fabricated candidate. No routing, policy, grant, activation, or
+        actuation authority is created or consulted here.
+        """
+
+        try:
+            context = validate_shadow_actuation_context(context)
+        except ValueError as exc:
+            raise ContractViolation(str(exc)) from exc
+        _validate_actuation_ef(served_ef, name="served_ef")
+        metric = self._metric(context)
+        pre_flat = self._capture_identity(
+            metric=metric, track=IndexTrack.FLAT, phase="PRE"
+        )
+        pre_hnsw = self._capture_identity(
+            metric=metric, track=IndexTrack.HNSW, phase="PRE"
+        )
+        audit_run = self._run_audit(
+            context=context,
+            query_ids=context.audited_query_ids,
+            ef_values=(),
+            collect_trace=True,
+        )
+        post_flat = self._capture_identity(
+            metric=metric, track=IndexTrack.FLAT, phase="POST"
+        )
+        post_hnsw = self._capture_identity(
+            metric=metric, track=IndexTrack.HNSW, phase="POST"
+        )
+        return self._build_shadow_trace(
+            context=context,
+            metric=metric,
+            candidate_ef=served_ef,
+            last_known_good_ef=served_ef,
+            audit_run=audit_run,
+            pre_flat=pre_flat,
+            pre_hnsw=pre_hnsw,
+            post_flat=post_flat,
+            post_hnsw=post_hnsw,
         )
 
     def shadow_candidate(
