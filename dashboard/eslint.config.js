@@ -6,7 +6,7 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  { ignores: ["dist", ".output", ".vinxi"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
@@ -35,18 +35,6 @@ export default tseslint.config(
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
       "@typescript-eslint/no-unused-vars": "off",
     },
-  },
-  {
-    // These modules intentionally co-locate a provider/component with its
-    // context hook or formatting helpers. That is safe: Fast Refresh falls
-    // back to a full reload when their non-component exports change.
-    files: [
-      "src/app/App.tsx",
-      "src/app/router.tsx",
-      "src/app/scenario.tsx",
-      "src/components/Indicators.tsx",
-    ],
-    rules: { "react-refresh/only-export-components": "off" },
   },
   eslintPluginPrettier,
 );

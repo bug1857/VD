@@ -1,223 +1,188 @@
 @import "tailwindcss" source(none);
 @source "../src";
-@import "tw-animate-css";
-
-@custom-variant dark (&:is(.dark *));
 
 /*
- * VD Control Center design system.
- * Dark technical control-room aesthetic: near-black navy surfaces, hairline
- * outlines, cyan telemetry accent, green/amber/red operational states.
- * All color values are oklch. Components must use these tokens only.
+ * VD Control Center — design system.
+ * Warm-neutral graphite canvas, mineral-indigo product accent.
+ * All colors defined once here; components never hardcode color values.
  */
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 3px);
-  --radius-md: calc(var(--radius) - 1px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
+  --font-sans:
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
 
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface-1: var(--surface-1);
-  --color-surface-2: var(--surface-2);
-  --color-surface-3: var(--surface-3);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
+  --color-canvas: var(--canvas);
+  --color-navbar: var(--navbar);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-primary);
+
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-3: var(--text-tertiary);
+  --color-ink-4: var(--text-disabled);
+
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-strong);
+
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
+  --color-accent-dim: var(--accent-dim);
+  --color-verified: var(--verified);
+  --color-attention: var(--attention);
+  --color-blocked: var(--blocked);
 
-  --color-telemetry: var(--telemetry);
-  --color-telemetry-dim: var(--telemetry-dim);
-  --color-ok: var(--ok);
-  --color-warn: var(--warn);
-  --color-danger: var(--danger);
-  --color-violet: var(--violet);
-
-  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
 :root {
-  --radius: 0.5rem;
+  color-scheme: dark;
 
-  --background: oklch(0.16 0.021 264);
-  --foreground: oklch(0.95 0.008 250);
-  --surface-1: oklch(0.199 0.023 264);
-  --surface-2: oklch(0.229 0.025 264);
-  --surface-3: oklch(0.27 0.027 264);
-  --card: oklch(0.199 0.023 264);
-  --card-foreground: oklch(0.95 0.008 250);
-  --popover: oklch(0.21 0.024 264);
-  --popover-foreground: oklch(0.95 0.008 250);
+  --canvas: oklch(0.185 0.004 60);
+  --navbar: oklch(0.222 0.004 60);
+  --surface: oklch(0.238 0.005 60);
+  --raised: oklch(0.268 0.005 60);
+  --hover: oklch(0.298 0.005 60);
 
-  --primary: oklch(0.78 0.13 200);
-  --primary-foreground: oklch(0.17 0.02 264);
-  --secondary: oklch(0.27 0.027 264);
-  --secondary-foreground: oklch(0.93 0.008 250);
-  --muted: oklch(0.25 0.024 264);
-  --muted-foreground: oklch(0.68 0.019 255);
-  --accent: oklch(0.3 0.03 264);
-  --accent-foreground: oklch(0.95 0.008 250);
-  --destructive: oklch(0.63 0.19 22);
-  --destructive-foreground: oklch(0.97 0.01 250);
+  --text-primary: oklch(0.955 0.008 80);
+  --text-secondary: oklch(0.767 0.008 70);
+  --text-tertiary: oklch(0.616 0.008 70);
+  --text-disabled: oklch(0.455 0.006 70);
 
-  --border: oklch(0.31 0.026 264);
-  --input: oklch(0.31 0.026 264);
-  --ring: oklch(0.78 0.13 200);
+  --border-subtle: oklch(1 0 0 / 7%);
+  --border-strong: oklch(1 0 0 / 11%);
 
-  --telemetry: oklch(0.82 0.13 199);
-  --telemetry-dim: oklch(0.55 0.09 205);
-  --ok: oklch(0.78 0.16 155);
-  --warn: oklch(0.83 0.15 82);
-  --danger: oklch(0.68 0.2 22);
-  --violet: oklch(0.72 0.14 290);
+  --accent: oklch(0.612 0.062 285);
+  --accent-dim: oklch(0.612 0.062 285 / 35%);
+
+  --verified: oklch(0.688 0.078 158);
+  --attention: oklch(0.782 0.098 78);
+  --blocked: oklch(0.648 0.126 24);
 }
 
 @layer base {
   * {
-    border-color: var(--color-border);
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    background-color: var(--canvas);
   }
 
   body {
-    background-color: var(--color-background);
-    color: var(--color-foreground);
-    font-feature-settings: "cv02", "ss01";
+    background-color: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings:
+      "cv11" 1,
+      "ss01" 1;
     -webkit-font-smoothing: antialiased;
-  }
-
-  h1,
-  h2,
-  h3 {
-    text-wrap: balance;
+    letter-spacing: -0.011em;
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--telemetry) 30%, transparent);
+    background: color-mix(in oklab, var(--accent) 40%, transparent);
   }
 }
 
-@utility grid-backdrop {
-  background-image:
+@utility mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "zero" 1;
+  letter-spacing: -0.02em;
+}
+
+/* A quiet inset surface used instead of card borders */
+@utility tonal {
+  background:
     linear-gradient(
-      to right,
-      color-mix(in oklab, var(--border) 55%, transparent) 1px,
-      transparent 1px
-    ),
-    linear-gradient(
-      to bottom,
-      color-mix(in oklab, var(--border) 55%, transparent) 1px,
-      transparent 1px
-    ),
-    radial-gradient(
-      ellipse 80% 50% at 50% -10%,
-      color-mix(in oklab, var(--telemetry) 12%, transparent),
-      transparent 70%
+      180deg,
+      color-mix(in oklab, var(--surface) 100%, transparent) 0%,
+      color-mix(in oklab, var(--canvas) 55%, var(--surface)) 100%
     );
-  background-size:
-    48px 48px,
-    48px 48px,
-    100% 100%;
 }
 
-@utility panel {
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--surface-1) 88%, transparent),
-    color-mix(in oklab, var(--background) 82%, transparent)
+@utility hairline-t {
+  border-top: 1px solid var(--border-subtle);
+}
+
+@utility flow-line {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--accent) 70%, transparent) 50%,
+    transparent 100%
   );
-  box-shadow:
-    0 1px 0 0 color-mix(in oklab, oklch(1 0 0) 5%, transparent) inset,
-    0 18px 40px -28px oklch(0 0 0 / 0.9);
-  backdrop-filter: blur(14px);
+  background-size: 220% 100%;
+  animation: vd-flow 5.5s linear infinite;
 }
 
-@utility label-mono {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-}
-
-@utility metric-value {
-  font-family: var(--font-mono);
-  font-size: 1.375rem;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
-  color: var(--foreground);
-}
-
-@utility btn-ghost {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
-  padding: 0.4rem 0.7rem;
-  font-size: 12px;
-  color: var(--foreground);
-  transition:
-    background-color 120ms ease,
-    border-color 120ms ease;
-
-  &:hover:not(:disabled) {
-    background: var(--surface-3);
-    border-color: color-mix(in oklab, var(--telemetry) 45%, var(--border));
+@keyframes vd-flow {
+  from {
+    background-position: 120% 0;
   }
-
-  &:disabled {
-    color: var(--muted-foreground);
-    cursor: not-allowed;
-    opacity: 0.75;
-  }
-
-  &:focus-visible {
-    outline: 2px solid color-mix(in oklab, var(--telemetry) 70%, transparent);
-    outline-offset: 2px;
+  to {
+    background-position: -120% 0;
   }
 }
 
-@utility data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-
-  & thead th {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted-foreground);
-    text-align: left;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
+@keyframes vd-settle {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
-
-  & tbody td {
-    padding: 0.6rem 0.75rem;
-    border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
-    vertical-align: middle;
+  to {
+    opacity: 1;
+    transform: none;
   }
+}
 
-  & tbody tr:hover td {
-    background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+@utility settle-in {
+  animation: vd-settle 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes vd-verify-pulse {
+  0% {
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+@utility verify-pulse {
+  animation: vd-verify-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vd-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility panel-in {
+  animation: vd-panel-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
 }
