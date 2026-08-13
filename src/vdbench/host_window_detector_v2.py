@@ -590,6 +590,21 @@ class V2DetectorHead:
         return self.current_window_sequence
 
 
+_HEAD_DETECTOR_STATES = frozenset(
+    {
+        DetectorState.DRIFT,
+        DetectorState.NO_DRIFT,
+        # ADR-014 item 7: evidence-bearing, never trigger-bearing. The first
+        # evaluated comparison under a new reference is necessarily
+        # INSUFFICIENT_EVIDENCE (ADR-002 has no previous WindowEvidence yet),
+        # and must be durable so it can become that reference epoch's attested
+        # previous evidence. `latest_drift_head` and the EXP-010 capture gate
+        # both continue to require DRIFT.
+        DetectorState.INSUFFICIENT_EVIDENCE,
+    }
+)
+
+
 def _head_payload(
     *, reference: V2ShadowWindow, current: V2ShadowWindow,
     decision: DriftDecision,
@@ -600,13 +615,23 @@ def _head_payload(
         or current.status is not HostWindowV2Status.READY
         or reference.stream_key != current.stream_key
         or type(decision) is not DriftDecision
-        or decision.state not in {DetectorState.DRIFT, DetectorState.NO_DRIFT}
+        or decision.state not in _HEAD_DETECTOR_STATES
         or type(decision.classification) is not DriftClassification
+        # ADR-014 item 7: DRIFT iff classified. NO_DRIFT and
+        # INSUFFICIENT_EVIDENCE must both carry NONE. Enforced here, at the
+        # earliest boundary, so an inconsistent pair can never be digested.
+        or (decision.state is DetectorState.DRIFT)
+        != (decision.classification is not DriftClassification.NONE)
         or provenance is None or not evidence_provenance_valid(provenance)
         or provenance.reference_window_id != reference.window_sequence
         or provenance.current_window_id != current.window_sequence
-        or provenance.reference_manifest_sha256 != reference.source_window_sha256
-        or provenance.current_manifest_sha256 != current.source_window_sha256
+        # ADR-014 clarification: `EvidenceProvenance.*_manifest_sha256` is the
+        # AssembledShadowWindow manifest digest, a *different canonical domain*
+        # from `source_window_sha256` (committed-source membership). The head
+        # must not assert equality across those domains. Source and shadow
+        # binding stay below and in the head's own fields; equality of the
+        # provenance manifests against the exact assembled windows is proven by
+        # ADR-014's RealDetectorAttestation instead.
         or provenance.metric is not current.stream_key.metric
         or provenance.threshold_stratum != current.stream_key.threshold_stratum
         or provenance.configuration_identity != current.stream_key.configuration_identity
@@ -670,8 +695,10 @@ def _head_document(value: V2DetectorHead) -> dict[str, object]:
         or not evidence_provenance_valid(provenance)
         or provenance.reference_window_id != value.reference_window_sequence
         or provenance.current_window_id != value.current_window_sequence
-        or provenance.reference_manifest_sha256 != value.reference_source_window_sha256
-        or provenance.current_manifest_sha256 != value.current_source_window_sha256
+        # ADR-014 clarification: distinct digest domains -- see `_head_payload`.
+        # The provenance value itself remains inside the head document and the
+        # head digest, so it is still tamper-evident here; only the invalid
+        # cross-domain equality is gone.
         or provenance.metric is not value.stream_key.metric
         or provenance.threshold_stratum != value.stream_key.threshold_stratum
         or provenance.configuration_identity != value.stream_key.configuration_identity

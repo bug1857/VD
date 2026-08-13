@@ -46,6 +46,7 @@ __all__ = [
     "V2CapturedPopulation",
     "V2PopulationCaptureError",
     "capture_v2_post_trigger_population",
+    "capture_real_v2_post_trigger_population",
 ]
 
 
@@ -96,6 +97,52 @@ def _member(
     )
 
 
+def capture_real_v2_post_trigger_population(
+    *,
+    source: GenuineWorkloadObservationSource,
+    verified_real_head: object,
+    source_workload_manifest_sha256: str,
+    run_id: str,
+    created_at_utc: str,
+    source_revision: str,
+) -> V2CapturedPopulation:
+    """ADR-014 genuine EXP-010 capture: real attested DRIFT trigger required.
+
+    This is a *separate API*, not a mode flag: there is no ``real=True``
+    caller assertion anywhere. A plain ``V2DetectorHead`` cannot reach this
+    path, because only the attestation store can issue a
+    ``VerifiedRealDetectorHead`` and its constructor is token-guarded.
+    Structural/offline callers keep using
+    :func:`capture_v2_post_trigger_population`, which remains
+    ADR-012 offline-only.
+    """
+
+    from .real_detector_attestation_store import VerifiedRealDetectorHead
+
+    if type(verified_real_head) is not VerifiedRealDetectorHead:
+        raise _error("V2_REAL_TRIGGER_REQUIRED")
+    head = verified_real_head.head
+    attestation = verified_real_head.attestation
+    if attestation.detector_head_sha256 != head.detector_head_sha256:
+        raise _error("V2_REAL_TRIGGER_ATTESTATION_MISMATCH")
+    from .drift import DetectorState as _DetectorState
+
+    if head.detector_state is not _DetectorState.DRIFT:
+        raise _error("V2_TRIGGER_NOT_DRIFT")
+    if attestation.detector_state is not _DetectorState.DRIFT:
+        raise _error("V2_REAL_TRIGGER_ATTESTATION_MISMATCH")
+    if attestation.source_revision != source_revision:
+        raise _error("V2_REAL_TRIGGER_SOURCE_REVISION_MISMATCH")
+    return capture_v2_post_trigger_population(
+        source=source,
+        trigger_head=head,
+        source_workload_manifest_sha256=source_workload_manifest_sha256,
+        run_id=run_id,
+        created_at_utc=created_at_utc,
+        source_revision=source_revision,
+    )
+
+
 def capture_v2_post_trigger_population(
     *,
     source: GenuineWorkloadObservationSource,
@@ -105,7 +152,12 @@ def capture_v2_post_trigger_population(
     created_at_utc: str,
     source_revision: str,
 ) -> V2CapturedPopulation:
-    """Read, validate, acknowledge, and freeze exactly 1,400 v2 observations."""
+    """Read, validate, acknowledge, and freeze exactly 1,400 v2 observations.
+
+    ADR-012 scope: structural/offline only. A head reaching this function is
+    not proven to come from the governed statistical detector; genuine EXP-010
+    capture must use :func:`capture_real_v2_post_trigger_population`.
+    """
 
     try:
         trigger_head = verify_v2_detector_head(trigger_head)

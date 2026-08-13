@@ -3993,6 +3993,192 @@ routing, EXP-011, or canary action.
 
 ---
 
+### ADR-014: Governed real-detector attestation, durable previous-window evidence, and production v2 host composition
+
+Status: Accepted — human approved 2026-08-12; offline implementation in progress, external review pending
+Date: 2026-08-12
+Risk level: CRITICAL
+Evidence status: none. This ADR authorizes no live service, workload, search, EXP-010 run, oracle generation, EXP-011 run, grant, routing, activation, actuation, or canary.
+
+Problem:
+
+ADR-012 records that `SQLiteHostWindowDetectorV2Store.process_window` accepts a
+caller-supplied evaluator, so a `V2DetectorHead` proves source-window binding,
+provenance binding, and durable restart-consistent progression — never that the
+accepted ADR-002/ADR-003 statistical detector executed. Two further gaps block a
+genuine EXP-010 trigger. First, ADR-002 does not classify drift from one window:
+it requires two comparisons against one reference, so the *previous*
+`WindowEvidence` needs durable, restart-safe, non-caller-injectable authority.
+Second, a 200-query drift window is assembled from exactly four 50-query
+`ShadowAuditTrace` envelopes, so four envelope digests exist per window, not two
+hundred, and no per-query canonical digest is exported.
+
+Decision:
+
+1. `RealDetectorAttestation` is a private-construction value emitted only by the
+   concrete `GovernedV2DetectorEvaluator`, and only as a by-product of calling
+   the unchanged `shadow_extraction.extract_window_evidence` and
+   `drift.evaluate_drift_decision`. No generic caller-supplied evaluator can
+   issue one. MMD, KS, recall, Holm, audit sampling, and the two-window rule are
+   reused unchanged and are never reimplemented.
+
+2. The detector contract identity is derived mechanically by domain-separated
+   SHA-256 over the governed constants `drift.py` actually uses:
+   `PERMUTATION_COUNT`, `PERMUTATION_DENOMINATOR`, `FAMILY_WISE_ALPHA`,
+   `ELIGIBLE_QUERY_COUNT`, `AUDIT_QUERY_COUNT`, `RESULT_LIMIT`, `SENTINEL_EF`,
+   the per-signal effect floors, and the canonical signal order. A
+   caller-supplied contract digest is never accepted.
+
+3. Previous `WindowEvidence` is never a parameter. The governed evaluator
+   fetches it from the attestation store and accepts it only when the stream,
+   reference window sequence, reference source-window digest, and detector
+   contract identity all match; the attested window is the immediate
+   predecessor; the attested head is still the head the detector store's own
+   reconstruction records for that window; and the persisted evidence decodes
+   under the existing `monitor_evidence.decode_persisted_window_evidence`.
+   `WindowEvidence` is persisted with the existing canonical, digest-bound
+   `encode_persisted_window_evidence` codec; no second codec is introduced.
+
+4. Because both reference identity and sequence adjacency are required,
+   `WINDOW_UNEVALUABLE` and mandatory `REBASELINE` structurally invalidate all
+   evidence from the previous reference epoch. Pre-gap evidence is excluded
+   twice over — wrong reference source-window digest and non-adjacent sequence.
+
+5. Per-position shadow binding uses only fields that already exist. For source
+   position `i` in a 200-source window the position evidence binds
+   `source_sequence`, `window_sequence`, `within_window_index`, `source_sha256`,
+   the containing envelope's `expected_trace_sha256`,
+   `trace_sequence_index = i // 50`, `within_trace_index = i % 50`, and
+   `assembled.query_records[i].query_id`, with
+   `assembled.query_records[i].query_id == committed_sources[i].query_id`
+   required. The v2 shadow worker sets `AssembledShadowWindow.window_id` equal
+   to the v2 `window_sequence`, collapsing the two window-identifier namespaces.
+   No per-query envelope digest is invented.
+
+6. Attestations persist in a separate append-only hardened store keyed by
+   `detector_head_sha256`. The ADR-012 detector-store schema, database version,
+   and detector-event schema are not modified. Heads persist first and
+   attestations second; a head without a matching attestation is simply not
+   real-eligible, so a crash between the two writes fails closed.
+
+7. Admissible detector states for a persisted `V2DetectorHead`. A head may
+   record exactly `DRIFT`, `NO_DRIFT`, or `INSUFFICIENT_EVIDENCE`, with
+   mandatory classification consistency: `DRIFT` iff the classification is not
+   `NONE`; `NO_DRIFT` and `INSUFFICIENT_EVIDENCE` require `NONE`. This requires
+   no change to the ADR-012 detector-event schema, the store schema, or the
+   durable-progression state machine, because `detector_state` is a canonical
+   JSON string inside the event payload and not a typed column.
+
+   Such a head is evidence-bearing but never trigger-bearing. It exists so the
+   first evaluated comparison under a new reference — which ADR-002 necessarily
+   classifies `INSUFFICIENT_EVIDENCE / MISSING_PREVIOUS_WINDOW` because no
+   previous `WindowEvidence` exists under that reference — is durably recorded,
+   restart-reconstructable, and usable as the attested previous evidence for the
+   next adjacent comparison. The first evaluated window after every `REBASELINE`
+   must have state `INSUFFICIENT_EVIDENCE`.
+
+8. `VerifiedRealDetectorHead` is store-issued only when the detector store's own
+   `load_verified_latest` yields a head and a matching attestation binds it
+   exactly, inheriting the ADR-012 gap/rebaseline `latest = None` semantics
+   unchanged. Genuine EXP-010 capture requires such a head with
+   `detector_state == DRIFT`; a plain `V2DetectorHead` never qualifies, and no
+   `real=True` caller assertion exists. Structural/fake-evaluator heads remain
+   offline-only under ADR-012.
+
+9. The production v2 host composition is a sibling of ADR-007's
+   `ReferenceRangeGateway`, not a modification of it.
+   `HostObservationRecorder.offer()` remains nonblocking, I/O-free, and best
+   effort; no synchronous v2 durability is inserted into that path.
+
+10. The composition root derives `data_identity` mechanically as
+    `<dataset version>:sha256:<verified generation manifest digest>` from a
+    `verify_dataset_artifacts`-verified DATASET-001 corpus, and refuses a
+    caller-supplied literal. This keeps a captured population consumable by
+    `response_profile_oracle_producer`.
+
+Explicitly not authorized:
+
+No qualification, policy, grant, routing, admission, activation, actuation, or
+candidate authority is created. B-001 remains in force and `policy.py` is
+unchanged. No live workload, search, EXP-010 run, oracle generation, EXP-011
+run, or canary is authorized by this ADR.
+
+Consequences:
+
+A private construction token, not cryptography, separates real from structural
+heads. This matches every other private-construction authority type in this
+repository (`V2DetectorHead`, `LkgPhase3Authority`, `Stage4AdmissionReceipt`)
+and must never be described as a signature: an actor with arbitrary in-process
+code execution can import the token module. The v2 host places one synchronous
+SQLite commit on the serving response path, which is an accepted ADR-013 cost
+rather than a change to ADR-007. A DRIFT trigger requires at least two evaluable
+windows under one reference, so an unevaluable window measurably delays EXP-010
+eligibility; that delay is intended and fail-closed.
+
+Relationship to ADR-012 and ADR-013:
+
+Additive. ADR-012 already recorded that a real EXP-010 trigger would require a
+separately governed real-detector attestation; this ADR defines it. The ADR-012
+window-status state machine, gap/rebaseline semantics, schema, and database
+version are unchanged, and ADR-013's response-commit boundary is untouched.
+Neither is superseded or amended.
+
+Verification plan:
+
+Offline (performed with this acceptance): the complete forgery matrix including
+forged, stale, non-adjacent, and wrong-reference previous evidence; all
+position-substitution attacks; both progression state machines including
+restart between comparisons; crash between head and attestation persistence;
+attestation-store tamper, restart, and concurrent-writer refusal; DATASET-001
+identity pinning refusal; and oracle-producer compatibility. Live, requiring
+separate explicit operator authorization and not performed here: the first real
+v2-host serving and the first genuine EXP-010 capture.
+
+#### Implementation-discovered clarification — provenance digest domains (human approved 2026-08-12)
+
+Implementing this ADR falsified one of its own premises, and the correction is
+recorded here rather than by editing any earlier decision.
+
+The committed `V2DetectorHead` construction contract required
+`EvidenceProvenance.reference_manifest_sha256 == reference.source_window_sha256`
+and the equivalent current-window equality. That is an **invalid cross-domain
+equality**. The unchanged real detector defines
+`EvidenceProvenance.*_manifest_sha256` as the
+`AssembledShadowWindow.manifest_sha256`, whereas `source_window_sha256` is the
+canonical committed-source membership digest. They are digests over different
+canonical objects and can never be equal, so the original requirement was
+satisfiable only by an evaluator that fabricated provenance echoing the source
+digest — that is, only by a structural fake. The real governed detector could
+not produce an acceptable head at all.
+
+1. `EvidenceProvenance.*_manifest_sha256` and V2 `source_window_sha256` are
+   distinct digest domains, alongside a third: `shadow_window_sha256`.
+2. `V2DetectorHead` must not assert equality between those domains. Exactly the
+   two invalid comparisons are removed from head construction and from the head
+   document check; nothing else in either check is relaxed.
+3. ADR-012's durable source/shadow progression is unchanged. The head still
+   binds `reference_source_window_sha256`, `current_source_window_sha256`, and
+   `current_shadow_window_sha256` in its own fields and its canonical digest,
+   and the provenance value itself remains inside the head document and digest,
+   so it stays tamper-evident.
+4. Real statistical provenance authority belongs to ADR-014's
+   `RealDetectorAttestation`, not to the ADR-012 head.
+5. The attestation binds all three domains rather than conflating any of them,
+   and `GovernedV2DetectorEvaluator` explicitly asserts
+   `provenance.reference_manifest_sha256 == reference AssembledShadowWindow.manifest_sha256`
+   and the current-window equivalent, in the correct domain. The 4x50 -> 200
+   position conservation is what bridges committed source membership to that
+   assembled shadow evidence, so no duplicate identity field is introduced.
+6. This clarification creates no policy, candidate, grant, routing, admission,
+   activation, actuation, or canary authority. B-001 is unchanged.
+7. No `V2ShadowWindow` schema or canonical-digest change, no detector database
+   migration, and no rewrite of historical v1 evidence is required. A plain
+   `V2DetectorHead` remains structurally insufficient for real EXP-010: only a
+   `VerifiedRealDetectorHead` with `detector_state == DRIFT` is trigger
+   eligible.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |

@@ -157,30 +157,176 @@ class HostWindowDetectorV2Tests(unittest.TestCase):
                     window=_window(sources, 0), evaluator=_decision,
                     persisted_at_utc="2026-08-12T00:00:01Z",
                 )
-                def substituted(reference, current):
+                # ADR-014 clarification: the head no longer compares
+                # `provenance.*_manifest_sha256` (the AssembledShadowWindow
+                # manifest domain) against `source_window_sha256` (the
+                # committed-source membership domain) -- that equality was
+                # invalid and only a fabricating evaluator could satisfy it.
+                # Manifest-digest substitution is now proven in the correct
+                # domain by the ADR-014 attestation
+                # (`test_provenance_must_match_the_exact_assembled_manifests`).
+                # What the head still binds is asserted here: provenance window
+                # sequences and stream identity must match the exact windows.
+                def substituted(reference, current, *, changes):
                     decision = _decision(reference, current)
-                    provenance = build_evidence_provenance(
-                        metric=Metric.L2, threshold_stratum="target-075",
-                        reference_window_id=0, current_window_id=1,
-                        reference_manifest_sha256="d" * 64,
-                        current_manifest_sha256=current.source_window_sha256,
-                        configuration_identity="cfg", data_identity="data",
-                        flat_binding_id="flat", hnsw_binding_id="hnsw",
-                        reference_audit_ids=tuple(range(50)),
-                        reference_audit_rank_digests=tuple("b" * 64 for _ in range(50)),
-                        current_audit_ids=tuple(range(50, 100)),
-                        current_audit_rank_digests=tuple("c" * 64 for _ in range(50)),
-                    )
+                    values = {
+                        "metric": Metric.L2, "threshold_stratum": "target-075",
+                        "reference_window_id": reference.window_sequence,
+                        "current_window_id": current.window_sequence,
+                        "reference_manifest_sha256": reference.source_window_sha256,
+                        "current_manifest_sha256": current.source_window_sha256,
+                        "configuration_identity": "cfg", "data_identity": "data",
+                        "flat_binding_id": "flat", "hnsw_binding_id": "hnsw",
+                        "reference_audit_ids": tuple(range(50)),
+                        "reference_audit_rank_digests": tuple("b" * 64 for _ in range(50)),
+                        "current_audit_ids": tuple(range(50, 100)),
+                        "current_audit_rank_digests": tuple("c" * 64 for _ in range(50)),
+                    }
+                    values.update(changes)
                     return DriftDecision(
                         decision.state, decision.classification,
-                        evidence_provenance=provenance,
+                        evidence_provenance=build_evidence_provenance(**values),
                     )
+
+                for label, changes in (
+                    ("reference_window_id", {"reference_window_id": 97}),
+                    ("current_window_id", {"current_window_id": 98}),
+                    ("data_identity", {"data_identity": "other-data"}),
+                    ("hnsw_binding_id", {"hnsw_binding_id": "other-hnsw"}),
+                ):
+                    with self.subTest(substitution=label):
+                        with self.assertRaises(HostWindowDetectorV2Error) as raised:
+                            store.process_window(
+                                window=_window(sources, 1),
+                                evaluator=lambda reference, current, _c=changes: substituted(
+                                    reference, current, changes=_c
+                                ),
+                                persisted_at_utc="2026-08-12T00:00:02Z",
+                            )
+                        self.assertEqual(
+                            raised.exception.code, "DETECTOR_V2_DECISION_INVALID"
+                        )
+
+
+class InsufficientEvidenceHeadTests(unittest.TestCase):
+    """ADR-014 item 7: INSUFFICIENT_EVIDENCE heads are evidence-bearing but
+    never trigger-bearing."""
+
+    def test_insufficient_evidence_head_persists_and_restarts_identically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = _sources(root / "source.sqlite3", 400)
+            path = root / "detector.sqlite3"
+            with SQLiteHostWindowDetectorV2Store(path, stream_key=_stream()) as store:
+                store.process_window(
+                    window=_window(sources, 0), evaluator=_decision,
+                    persisted_at_utc="2026-08-12T00:00:01Z",
+                )
+                result = store.process_window(
+                    window=_window(sources, 1),
+                    evaluator=lambda reference, current: _decision(
+                        reference, current, state=DetectorState.INSUFFICIENT_EVIDENCE
+                    ),
+                    persisted_at_utc="2026-08-12T00:00:02Z",
+                )
+                self.assertEqual(result.status, HostWindowV2Status.EVALUATED)
+                self.assertIsNotNone(result.detector_head)
+                self.assertIs(
+                    result.detector_head.detector_state,
+                    DetectorState.INSUFFICIENT_EVIDENCE,
+                )
+                self.assertIs(
+                    result.detector_head.detector_classification,
+                    DriftClassification.NONE,
+                )
+                digest = result.detector_head.detector_head_sha256
+            with SQLiteHostWindowDetectorV2Store(path, stream_key=_stream()) as reopened:
+                latest = reopened.load_verified_latest(_stream())
+                self.assertIsNotNone(latest)
+                self.assertEqual(latest.head.detector_head_sha256, digest)
+                self.assertIs(
+                    latest.head.detector_state, DetectorState.INSUFFICIENT_EVIDENCE
+                )
+                # Evidence-bearing, never trigger-bearing.
+                self.assertIsNone(reopened.latest_drift_head())
+
+    def test_insufficient_evidence_requires_classification_none(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = _sources(root / "source.sqlite3", 400)
+            with SQLiteHostWindowDetectorV2Store(
+                root / "detector.sqlite3", stream_key=_stream()
+            ) as store:
+                store.process_window(
+                    window=_window(sources, 0), evaluator=_decision,
+                    persisted_at_utc="2026-08-12T00:00:01Z",
+                )
+
+                def inconsistent(reference, current):
+                    base = _decision(
+                        reference, current, state=DetectorState.INSUFFICIENT_EVIDENCE
+                    )
+                    return DriftDecision(
+                        state=DetectorState.INSUFFICIENT_EVIDENCE,
+                        classification=DriftClassification.INPUT_DRIFT,
+                        reason_codes=base.reason_codes,
+                        evidence_provenance=base.evidence_provenance,
+                    )
+
                 with self.assertRaises(HostWindowDetectorV2Error) as raised:
                     store.process_window(
-                        window=_window(sources, 1), evaluator=substituted,
+                        window=_window(sources, 1), evaluator=inconsistent,
                         persisted_at_utc="2026-08-12T00:00:02Z",
                     )
                 self.assertEqual(raised.exception.code, "DETECTOR_V2_DECISION_INVALID")
+
+    def test_no_drift_with_classification_is_rejected_at_earliest_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = _sources(root / "source.sqlite3", 400)
+            with SQLiteHostWindowDetectorV2Store(
+                root / "detector.sqlite3", stream_key=_stream()
+            ) as store:
+                store.process_window(
+                    window=_window(sources, 0), evaluator=_decision,
+                    persisted_at_utc="2026-08-12T00:00:01Z",
+                )
+
+                def inconsistent(reference, current):
+                    base = _decision(reference, current)
+                    return DriftDecision(
+                        state=DetectorState.NO_DRIFT,
+                        classification=DriftClassification.INPUT_DRIFT,
+                        reason_codes=base.reason_codes,
+                        evidence_provenance=base.evidence_provenance,
+                    )
+
+                with self.assertRaises(HostWindowDetectorV2Error) as raised:
+                    store.process_window(
+                        window=_window(sources, 1), evaluator=inconsistent,
+                        persisted_at_utc="2026-08-12T00:00:02Z",
+                    )
+                self.assertEqual(raised.exception.code, "DETECTOR_V2_DECISION_INVALID")
+
+    def test_drift_head_still_reaches_latest_drift_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = _sources(root / "source.sqlite3", 400)
+            with SQLiteHostWindowDetectorV2Store(
+                root / "detector.sqlite3", stream_key=_stream()
+            ) as store:
+                store.process_window(
+                    window=_window(sources, 0), evaluator=_decision,
+                    persisted_at_utc="2026-08-12T00:00:01Z",
+                )
+                store.process_window(
+                    window=_window(sources, 1),
+                    evaluator=lambda reference, current: _decision(
+                        reference, current, state=DetectorState.DRIFT
+                    ),
+                    persisted_at_utc="2026-08-12T00:00:02Z",
+                )
+                self.assertIsNotNone(store.latest_drift_head())
 
 
 if __name__ == "__main__":
