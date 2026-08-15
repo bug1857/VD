@@ -683,7 +683,14 @@ class SQLiteWindowFinalizationStore:
         self._lock_inode = None
         self._lock_path: Path | None = None
         self._db_inode: tuple[int, int] | None = None
-        self._open()
+        # See `SQLiteShadowAttemptStore.__init__`: releasing the flock, lock
+        # descriptor, and process-local inode ownership on every `_open`
+        # failure path keeps a failed construction reopenable.
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
 
     def __enter__(self) -> "SQLiteWindowFinalizationStore":
         return self

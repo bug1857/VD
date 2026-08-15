@@ -54,6 +54,7 @@ __all__ = [
     "ShadowAttemptStoreError",
     "SQLiteShadowAttemptStore",
     "build_shadow_attempt_identity",
+    "expected_shadow_trace_id",
 ]
 
 
@@ -386,6 +387,47 @@ def build_shadow_attempt_identity(
     return identity
 
 
+def expected_shadow_trace_id(
+    *, window_sequence: int, trace_sequence_index: int
+) -> str:
+    """The one canonical trace id for a window/trace slot.
+
+    Derived from the attempt slot alone, never from trace contents, so it is
+    usable as a cross-binding check on any envelope offered as that slot's
+    evidence.  `v2_shadow_worker` builds envelope ids through this same helper,
+    so the format has exactly one definition.
+    """
+
+    return f"v2-window-{window_sequence}-trace-{trace_sequence_index}"
+
+
+def _verify_terminal_envelope_binding(
+    identity: ShadowAttemptIdentity, envelope: PersistedShadowTraceEnvelope
+) -> None:
+    """Prove any attached envelope is evidence for *this* attempt slot.
+
+    A FAILED attempt may legitimately carry a partial, membership-mismatched,
+    or otherwise-invalid trace as forensic evidence, so its *contents* cannot
+    be required to agree with the attempt -- that disagreement is often the
+    very reason for the failure.  Its *slot identity* must still agree.
+    Without this, an envelope captured for a different window or trace index
+    is attachable to this attempt as its failure evidence, and the forensic
+    record would then describe physical work that never belonged to it.
+    """
+
+    if (
+        type(envelope) is not PersistedShadowTraceEnvelope
+        or envelope.trace_id
+        != expected_shadow_trace_id(
+            window_sequence=identity.window_sequence,
+            trace_sequence_index=identity.trace_sequence_index,
+        )
+        or envelope.sequence_index != identity.trace_sequence_index
+        or envelope.declared_observation_count != TRACE_QUERY_COUNT
+    ):
+        raise _error("SHADOW_ATTEMPT_TRACE_BINDING_INVALID")
+
+
 def _verify_completed_envelope_binding(
     identity: ShadowAttemptIdentity,
     envelope: PersistedShadowTraceEnvelope,
@@ -399,7 +441,10 @@ def _verify_completed_envelope_binding(
         type(envelope) is not PersistedShadowTraceEnvelope
         or trace is None
         or envelope.trace_id
-        != f"v2-window-{identity.window_sequence}-trace-{identity.trace_sequence_index}"
+        != expected_shadow_trace_id(
+            window_sequence=identity.window_sequence,
+            trace_sequence_index=identity.trace_sequence_index,
+        )
         or envelope.sequence_index != identity.trace_sequence_index
         or envelope.declared_observation_count != TRACE_QUERY_COUNT
         or envelope.captured_at_utc != terminal_at_utc
@@ -486,7 +531,19 @@ class SQLiteShadowAttemptStore:
         self._lock_inode: tuple[int, int] | None = None
         self._store_token = object()
         self._active_started: dict[str, ShadowAttemptPermit] = {}
-        self._open()
+        # ADR-015 recovery: `_open` registers process-local inode ownership and
+        # an exclusive flock before the remaining steps (database creation,
+        # path re-verification, `sqlite3.connect`) can still fail. Without this
+        # guard such a failure propagates while the ownership entry, flock, and
+        # lock descriptor stay held, and the same process can then never reopen
+        # the store -- a fail-closed availability trap, not a durability
+        # defect. `close()` is idempotent, so the inner `close()` calls in
+        # `_open` remain correct and this is a pure backstop.
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
 
     def __enter__(self) -> "SQLiteShadowAttemptStore":
         return self
@@ -798,6 +855,11 @@ class SQLiteShadowAttemptStore:
             elif kind is ShadowAttemptStatus.FAILED:
                 if failure_code is None:
                     raise _error("SHADOW_ATTEMPT_TRANSITION_INVALID")
+                if envelope is not None:
+                    # FINDING-007 on the read path too, so a cross-bound
+                    # envelope written by any other means is still refused
+                    # rather than replayed as this attempt's evidence.
+                    _verify_terminal_envelope_binding(identity, envelope)
             if envelope is not None:
                 if (
                     envelope.sequence_index != identity.trace_sequence_index
@@ -916,12 +978,20 @@ class SQLiteShadowAttemptStore:
                 raise _error("SHADOW_ATTEMPT_TRACE_INVALID")
             canonical_identity = _identity_from_payload(_identity_document(identity))
             if kind is ShadowAttemptStatus.COMPLETED:
-                assert envelope is not None
+                # Explicit rather than `assert`: the COMPLETED guard above
+                # already establishes this, but an assertion would vanish
+                # under `python -O` and leave the narrowing unproven.
+                if type(envelope) is not PersistedShadowTraceEnvelope:
+                    raise _error("SHADOW_ATTEMPT_TRANSITION_INVALID")
                 _verify_completed_envelope_binding(
                     canonical_identity,
                     envelope,
                     terminal_at_utc=recorded_at_utc,
                 )
+            elif envelope is not None:
+                # FINDING-007: a FAILED attempt's forensic envelope must still
+                # belong to this exact attempt slot.
+                _verify_terminal_envelope_binding(canonical_identity, envelope)
             if (
                 canonical_identity.stream_key != self.stream_key
                 or canonical_identity.source_revision != self.source_revision

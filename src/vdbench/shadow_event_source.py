@@ -404,13 +404,39 @@ class FileShadowTraceEventSource(ShadowTraceEventSource, ShadowTracePublisher):
             for pending, acknowledged in moves:
                 _move_durable(pending, acknowledged)
 
+    def _retained_event_paths(self) -> tuple[Path, ...]:
+        """Every event document that still retains its trace (FINDING-004).
+
+        A quarantined event is not a deleted event: the rejection ledger is
+        authoritative evidence that the trace was produced and exactly why it
+        was refused.  Omitting the rejected directory here reported such a
+        retained trace as unreferenced, which is the wrong classification for
+        anything a retention policy might later act on.  The `.reason.json`
+        sidecars are ledger entries, not events, and are excluded by name.
+        """
+
+        return (
+            *self._pending.glob("*.json"),
+            *self._acknowledged.glob("*.json"),
+            *(
+                path
+                for path in self._rejected.glob("*.json")
+                if not path.name.endswith(".reason.json")
+            ),
+        )
+
     def orphaned_trace_paths(self) -> tuple[Path, ...]:
-        """Return persisted traces not referenced by pending/acknowledged evidence."""
+        """Return persisted traces retained by no pending/acknowledged/rejected event.
+
+        A true orphan is a trace file that no event document of any status
+        still refers to.  This method only reports; it deletes nothing, and no
+        caller in this repository deletes on its behalf.
+        """
 
         self._ensure_secure_layout()
         with self._locked():
             referenced: set[Path] = set()
-            for path in (*self._pending.glob("*.json"), *self._acknowledged.glob("*.json")):
+            for path in self._retained_event_paths():
                 try:
                     event = self._event_from_document(self._load_event_document(path), path=path)
                 except ShadowEventSourceError:

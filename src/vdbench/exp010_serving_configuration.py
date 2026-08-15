@@ -42,6 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
+import re
 from typing import Any, Mapping
 
 from .artifacts import canonical_json_bytes
@@ -61,6 +62,7 @@ __all__ = [
     "Exp010ServingConfiguration",
     "serving_configuration_payload",
     "derive_serving_configuration_identity",
+    "validate_governed_configuration_identity",
 ]
 
 
@@ -211,6 +213,33 @@ def derive_serving_configuration_identity(
         _CONFIGURATION_DOMAIN + canonical_json_bytes(payload)
     ).hexdigest()
     return f"{EXP010_SERVING_CONFIGURATION_PREFIX}:sha256:{digest}"
+
+
+_GOVERNED_IDENTITY = re.compile(
+    rf"{re.escape(EXP010_SERVING_CONFIGURATION_PREFIX)}:sha256:[0-9a-f]{{64}}\Z"
+)
+
+
+def validate_governed_configuration_identity(value: object) -> str:
+    """Require the exact governed EXP-010 serving-identity syntax.
+
+    NEW_OBSERVATION_A: `MonitorStreamKey` cannot itself demand this form,
+    because it is also reconstructed from stored historical evidence and from
+    other identity domains (EXP-005's, for one). This is therefore the
+    new-record boundary check: an operator composing a *new* EXP-010 stream
+    must supply a syntactically governed identity, not merely a non-empty
+    string that would only be caught later by an exact binding comparison.
+
+    Syntax only. It proves nothing about which configuration produced the
+    digest; only `derive_serving_configuration_identity` can do that.
+    """
+
+    if not isinstance(value, str) or _GOVERNED_IDENTITY.fullmatch(value) is None:
+        raise _error(
+            "CONFIGURATION_IDENTITY_SYNTAX_INVALID",
+            f"expected {EXP010_SERVING_CONFIGURATION_PREFIX}:sha256:<64 hex>",
+        )
+    return value
 
 
 def serving_configuration_from_mapping(

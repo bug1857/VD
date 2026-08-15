@@ -49,6 +49,42 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
+def _validate_identity_component(value: object, *, name: str) -> None:
+    """Reject syntactically unusable stream-identity components.
+
+    NEW_OBSERVATION_A: this type previously accepted any non-empty string,
+    so a value containing a control character, surrounding whitespace, or a
+    non-NFC form could be constructed and would then compare unequal to its
+    own normalized spelling in a downstream exact binding check -- failing
+    closed, but only much later and with a confusing reason code.
+
+    Deliberately NOT tightened to the governed `<prefix>:sha256:<64 hex>`
+    form.  `MonitorStreamKey` is reconstructed from *stored* documents by
+    `shadow_attempt_store._stream_from_document` and
+    `shadow_event_source._document_context_key`, so a stricter value type
+    would make historical evidence -- and every legitimate non-EXP-010
+    identity, such as EXP-005's -- undecodable.  Governed-form enforcement
+    therefore belongs at the new-record construction boundary; see
+    `exp010_serving_configuration.validate_governed_configuration_identity`.
+    """
+
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    if value != value.strip():
+        raise ValueError(f"{name} must not have surrounding whitespace")
+    # `str.isprintable` is one C-level scan covering exactly the categories a
+    # stream identity must never contain (Cc/Cf/Cs/Co/Cn, plus Zl/Zp and
+    # non-ASCII spaces). A per-character `unicodedata.category` loop is
+    # equivalent but ~25x slower, and this type is reconstructed on every
+    # store verification pass, so the cost lands on a hot path.
+    if not value.isprintable():
+        raise ValueError(f"{name} must not contain control or unassigned characters")
+    # Every ASCII string is already in NFC, so the normalization is only
+    # meaningful -- and only paid for -- when the value is not pure ASCII.
+    if not value.isascii() and unicodedata.normalize("NFC", value) != value:
+        raise ValueError(f"{name} must be NFC-normalized")
+
+
 @dataclass(frozen=True, slots=True)
 class MonitorStreamKey:
     """Stable stream lineage plus the exact identity snapshot it may use."""
@@ -72,8 +108,7 @@ class MonitorStreamKey:
             "flat_binding_id",
             "hnsw_binding_id",
         ):
-            if not isinstance(getattr(self, field), str) or not getattr(self, field):
-                raise ValueError(f"{field} must be a non-empty string")
+            _validate_identity_component(getattr(self, field), name=field)
 
 
 @dataclass(frozen=True, slots=True)

@@ -58,6 +58,7 @@ from .shadow_attempt_store import (
     ShadowAttemptStoreError,
     SQLiteShadowAttemptStore,
     build_shadow_attempt_identity,
+    expected_shadow_trace_id,
 )
 
 
@@ -291,7 +292,10 @@ class V2ShadowWorker:
             try:
                 terminal_at_utc = self._clock()
                 envelope = PersistedShadowTraceEnvelope(
-                    trace_id=f"v2-window-{window_sequence}-trace-{trace_index}",
+                    trace_id=expected_shadow_trace_id(
+                        window_sequence=window_sequence,
+                        trace_sequence_index=trace_index,
+                    ),
                     captured_at_utc=terminal_at_utc,
                     sequence_index=trace_index,
                     declared_observation_count=TRACE_QUERY_COUNT,

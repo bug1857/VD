@@ -453,7 +453,14 @@ class SQLiteHostResponseCommitStore:
             "environment_manifest_sha256": self.environment_manifest_sha256,
             "consistency_level": self.consistency_level,
         }
-        self._open()
+        # See `SQLiteShadowAttemptStore.__init__`: releasing the flock, lock
+        # descriptor, and process-local inode ownership on every `_open`
+        # failure path keeps a failed construction reopenable.
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
 
     def __enter__(self) -> "SQLiteHostResponseCommitStore":
         return self

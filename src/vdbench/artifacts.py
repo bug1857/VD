@@ -25,12 +25,38 @@ from .config import ENV001_PINS, ContractViolation, derive_seed
 from .dataset import BoundaryFixture, DatasetBundle, FrozenThreshold
 
 
-def canonical_json_bytes(value: object) -> bytes:
-    """Encode JSON deterministically for byte-stable checksums."""
+#: The frozen v1 canonical-JSON contract identifier (FINDING-001).
+CANONICAL_JSON_V1_SCHEMA_VERSION = "vd-canonical-json-v1"
 
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
+
+def canonical_json_bytes(value: object) -> bytes:
+    """Encode JSON deterministically for byte-stable checksums (v1, FROZEN).
+
+    Every digest in every registered artifact and every V1-V4 campaign store is
+    a SHA-256 over these exact bytes, so this function is historical authority
+    and MUST NOT change -- not its separators, not its key order, not its
+    trailing newline, and not `ensure_ascii`/`allow_nan`. Those last two were
+    previously left to `json.dumps` defaults; they are spelled out below purely
+    so the contract is readable here, and the output is byte-identical.
+
+    Known v1 weakness, deliberately retained: `allow_nan=True` means a
+    non-finite float is emitted as the non-JSON token `NaN`/`Infinity` instead
+    of raising. Closing that would alter the function's behaviour, so new
+    schemas use `canonical_serialization.strict_canonical_json_bytes` (v2),
+    which refuses non-finite values outright. `tests/test_canonical_
+    serialization.py` pins this function against golden byte vectors.
+    """
+
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=True,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def sha256_file(path: Path) -> str:

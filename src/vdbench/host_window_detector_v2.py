@@ -837,7 +837,14 @@ class SQLiteHostWindowDetectorV2Store:
         self._pid = os.getpid()
         self._lock_handle = None
         self._lock_inode: tuple[int, int] | None = None
-        self._open()
+        # See `SQLiteShadowAttemptStore.__init__`: releasing the flock, lock
+        # descriptor, and process-local inode ownership on every `_open`
+        # failure path keeps a failed construction reopenable.
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
 
     def __enter__(self) -> "SQLiteHostWindowDetectorV2Store":
         return self

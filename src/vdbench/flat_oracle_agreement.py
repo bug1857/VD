@@ -6,6 +6,33 @@ therefore collapse to the same representable binary32 value.  This module
 keeps exact capped membership mandatory and permits a permutation only inside
 one such deterministic binary32 oracle-score group.  It never applies a free
 tolerance and never replaces ordered agreement with global set equality.
+
+The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
+
+1. Exact capped membership. `set(flat_ids) == set(oracle_ids)` and the two
+   lengths are equal.  At a capped limit there is deliberately NO substitution
+   of an unreturned tied id: a different-but-equally-tied member is a
+   `MEMBERSHIP_MISMATCH`, never an agreement.
+2. Threshold validity.  Both the FLAT scores and the oracle scores must
+   satisfy the metric's range contract.
+3. Raw returned FLAT metric ordering.  The scores Milvus actually returned
+   must themselves be ordered for the metric; a correctly-ordered id list
+   carrying mis-ordered scores is `FLAT_SCORE_ORDER_INVALID`.
+4. Distinguishable oracle score-group order.  Oracle members are bucketed by
+   the exact IEEE-754 binary32 bit pattern of their score, and those buckets
+   must appear in metric order.
+5. Permutation is legal ONLY inside one exact binary32 oracle-score tie group.
+   Reordering across two groups is `NON_TIE_ORDER_MISMATCH`.
+6. No capped-membership substitution (the emphatic restatement of rule 1,
+   because it is the rule most often mistaken for over-strictness).
+
+`NUMERIC_TOLERANCE` (1e-6) is THRESHOLD-ONLY.  It is passed to
+`oracle.threshold_violations` so a score sitting exactly on the radius is not
+rejected for a last-bit representation difference.  It is never applied to a
+FLAT-score-versus-oracle-score comparison, and this module deliberately
+contains no direct score-magnitude equality test: agreement is decided by
+membership and order, not by numeric closeness.  Introducing such a test would
+silently redefine what a Gate-C PASS means.
 """
 
 from __future__ import annotations
