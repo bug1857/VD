@@ -17,10 +17,18 @@ rejects as unsafe *after* it has already claimed ownership.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
+from tests.test_real_detector_attestation import _ENVIRONMENT, _REVISION, _stream
+from vdbench import (
+    host_window_detector_v2,
+    host_window_lineage,
+    real_detector_attestation_store,
+    shadow_attempt_store,
+    window_finalization,
+)
 from vdbench.host_window_detector_v2 import SQLiteHostWindowDetectorV2Store
 from vdbench.host_window_lineage import SQLiteHostResponseCommitStore
 from vdbench.real_detector_attestation_store import (
@@ -28,14 +36,6 @@ from vdbench.real_detector_attestation_store import (
 )
 from vdbench.shadow_attempt_store import SQLiteShadowAttemptStore
 from vdbench.window_finalization import SQLiteWindowFinalizationStore
-import vdbench.host_window_detector_v2 as host_window_detector_v2
-import vdbench.host_window_lineage as host_window_lineage
-import vdbench.real_detector_attestation_store as real_detector_attestation_store
-import vdbench.shadow_attempt_store as shadow_attempt_store
-import vdbench.window_finalization as window_finalization
-
-from tests.test_real_detector_attestation import _ENVIRONMENT, _REVISION, _stream
-
 
 #: `(label, module, path -> store)` for every exclusive-writer store the
 #: Gate-C composition opens. The module is needed for its process-local
@@ -87,49 +87,53 @@ _CASES = (
 class StoreInitFailureReleasesOwnershipTests(unittest.TestCase):
     def test_failure_after_ownership_releases_and_allows_reopen(self) -> None:
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
 
-                    # A world-readable database file: rejected only *after*
-                    # the lock and the ownership entry are already claimed.
-                    path.touch(mode=0o644)
-                    os.chmod(path, 0o644)
+                # A world-readable database file: rejected only *after*
+                # the lock and the ownership entry are already claimed.
+                path.touch(mode=0o644)
+                os.chmod(path, 0o644)
 
-                    before = set(module._OWNED_LOCK_INODES)
-                    with self.assertRaises(Exception) as caught:
-                        factory(path)
-                    self.assertIn("UNSAFE", getattr(caught.exception, "code", ""))
+                before = set(module._OWNED_LOCK_INODES)
+                with self.assertRaises(RuntimeError) as caught:
+                    factory(path)
+                self.assertIn("UNSAFE", getattr(caught.exception, "code", ""))
 
-                    # No ownership-table residue.
-                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+                # No ownership-table residue.
+                self.assertEqual(set(module._OWNED_LOCK_INODES), before)
 
-                    # The same process reopens immediately: never ..._STORE_BUSY.
-                    path.unlink()
-                    store = factory(path)
-                    try:
-                        self.assertFalse(store._closed)
-                    finally:
-                        store.close()
-                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+                # The same process reopens immediately: never ..._STORE_BUSY.
+                path.unlink()
+                store = factory(path)
+                try:
+                    self.assertFalse(store._closed)
+                finally:
+                    store.close()
+                self.assertEqual(set(module._OWNED_LOCK_INODES), before)
 
     def test_repeated_failures_do_not_accumulate_ownership(self) -> None:
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    before = set(module._OWNED_LOCK_INODES)
-                    for _ in range(3):
-                        path.touch(mode=0o644)
-                        os.chmod(path, 0o644)
-                        with self.assertRaises(Exception):
-                            factory(path)
-                        self.assertEqual(set(module._OWNED_LOCK_INODES), before)
-                        path.unlink()
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                before = set(module._OWNED_LOCK_INODES)
+                for _ in range(3):
+                    path.touch(mode=0o644)
+                    os.chmod(path, 0o644)
+                    with self.assertRaises(RuntimeError):
+                        factory(path)
+                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+                    path.unlink()
 
     def test_a_second_distinct_failure_point_also_releases(self) -> None:
         """Injection at `os.open`, not `_verify_path`: same guarantee.
@@ -141,108 +145,118 @@ class StoreInitFailureReleasesOwnershipTests(unittest.TestCase):
         """
 
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                # A first successful open leaves the lock file behind.
+                factory(path).close()
+                path.unlink()
+                before = set(module._OWNED_LOCK_INODES)
+                os.chmod(root, 0o500)
+                try:
+                    with self.assertRaises(OSError):
+                        factory(path)
+                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+                finally:
                     os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    # A first successful open leaves the lock file behind.
-                    factory(path).close()
-                    path.unlink()
-                    before = set(module._OWNED_LOCK_INODES)
-                    os.chmod(root, 0o500)
-                    try:
-                        with self.assertRaises(OSError):
-                            factory(path)
-                        self.assertEqual(set(module._OWNED_LOCK_INODES), before)
-                    finally:
-                        os.chmod(root, 0o700)
-                    reopened = factory(path)
-                    reopened.close()
+                reopened = factory(path)
+                reopened.close()
 
     def test_lock_descriptor_is_not_leaked_on_failure(self) -> None:
         """A leaked descriptor would keep the kernel flock held after failure."""
 
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    path.touch(mode=0o644)
-                    os.chmod(path, 0o644)
-                    with self.assertRaises(Exception):
-                        factory(path)
-                    lock_path = root / "store.sqlite3.lock"
-                    self.assertTrue(lock_path.exists())
-                    # If the flock survived, this exclusive re-lock would fail.
-                    import fcntl
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                path.touch(mode=0o644)
+                os.chmod(path, 0o644)
+                with self.assertRaises(RuntimeError):
+                    factory(path)
+                lock_path = root / "store.sqlite3.lock"
+                self.assertTrue(lock_path.exists())
+                # If the flock survived, this exclusive re-lock would fail.
+                import fcntl
 
-                    fd = os.open(lock_path, os.O_RDWR)
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                    finally:
-                        os.close(fd)
+                fd = os.open(lock_path, os.O_RDWR)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
 
 
 class StoreInitSuccessPathUnchangedTests(unittest.TestCase):
     def test_normal_creation_still_succeeds_and_registers_ownership(self) -> None:
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    before = set(module._OWNED_LOCK_INODES)
-                    store = factory(path)
-                    try:
-                        self.assertGreater(
-                            len(module._OWNED_LOCK_INODES), len(before)
-                        )
-                        self.assertTrue(path.exists())
-                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-                    finally:
-                        store.close()
-                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                before = set(module._OWNED_LOCK_INODES)
+                store = factory(path)
+                try:
+                    self.assertGreater(
+                        len(module._OWNED_LOCK_INODES), len(before)
+                    )
+                    self.assertTrue(path.exists())
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                finally:
+                    store.close()
+                self.assertEqual(set(module._OWNED_LOCK_INODES), before)
 
     def test_existing_store_reopen_is_unchanged(self) -> None:
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    factory(path).close()
-                    before = set(module._OWNED_LOCK_INODES)
-                    store = factory(path)
-                    try:
-                        self.assertFalse(store._closed)
-                    finally:
-                        store.close()
-                    self.assertEqual(set(module._OWNED_LOCK_INODES), before)
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                factory(path).close()
+                before = set(module._OWNED_LOCK_INODES)
+                store = factory(path)
+                try:
+                    self.assertFalse(store._closed)
+                finally:
+                    store.close()
+                self.assertEqual(set(module._OWNED_LOCK_INODES), before)
 
     def test_concurrent_same_process_open_is_still_refused(self) -> None:
         """The fix must not weaken exclusive-writer enforcement."""
 
         for name, module, factory in _CASES:
-            with self.subTest(store=name):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    os.chmod(root, 0o700)
-                    path = root / "store.sqlite3"
-                    store = factory(path)
-                    try:
-                        with self.assertRaises(Exception) as caught:
-                            factory(path)
-                        self.assertIn(
-                            "BUSY", getattr(caught.exception, "code", "")
-                        )
-                    finally:
-                        store.close()
-                    # And the refused second open left no residue of its own.
-                    reopened = factory(path)
-                    reopened.close()
+            with (
+                self.subTest(store=name),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                os.chmod(root, 0o700)
+                path = root / "store.sqlite3"
+                store = factory(path)
+                try:
+                    with self.assertRaises(RuntimeError) as caught:
+                        factory(path)
+                    self.assertIn(
+                        "BUSY", getattr(caught.exception, "code", "")
+                    )
+                finally:
+                    store.close()
+                # And the refused second open left no residue of its own.
+                reopened = factory(path)
+                reopened.close()
 
 
 if __name__ == "__main__":  # pragma: no cover

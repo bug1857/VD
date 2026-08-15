@@ -15,10 +15,18 @@ here so the fix cannot be mistaken for a change in terminal semantics.
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
+from tests.test_real_detector_attestation import (
+    _ENVIRONMENT,
+    _REVISION,
+    _commit_sources,
+    _stream,
+    _trace_for,
+)
+from vdbench import shadow_attempt_store
 from vdbench.shadow_attempt_store import (
     ShadowAttemptStatus,
     ShadowAttemptStoreError,
@@ -33,15 +41,6 @@ from vdbench.shadow_window import (
     hash_shadow_audit_trace,
 )
 from vdbench.v2_shadow_worker import V2ShadowWorker, V2ShadowWorkerError
-import vdbench.shadow_attempt_store as shadow_attempt_store
-
-from tests.test_real_detector_attestation import (
-    _ENVIRONMENT,
-    _REVISION,
-    _commit_sources,
-    _stream,
-    _trace_for,
-)
 
 
 class _Clock:

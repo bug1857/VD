@@ -4489,6 +4489,148 @@ traces execute no later physical trace and never reach detector admission. A
 complete repository suite is required before review, with no live service or
 historical-evidence mutation.
 
+### ADR-016: Committed Gate-C operator boundary, V4 retirement, and V5 preconditions
+
+Status: Accepted — operator-authorized 2026-08-16
+Date: 2026-08-16
+Risk level: HIGH
+Evidence status: no new live evidence. No Milvus search, workload replay,
+detector execution, EXP-010 capture, grant, routing, activation, actuation, or
+canary traffic is authorized by this ADR. V1/V2/V3/V4 remain immutable.
+
+#### Context
+
+`Exp010LiveRunner.process_ready_windows()` has always been the canonical Gate-C
+call, but no committed code constructed the production composition around it.
+Every historical campaign was therefore driven by an ad-hoc, unpersisted
+composition, and a later preflight could not prove which path had actually run.
+The V4 Gate-C preflight of 2026-08-15 halted on exactly this: the canonical path
+could not be recovered from the repository.
+
+Separately, that same preflight found the live stack no longer continuous with
+Gate A #4 — `milvus-standalone` had exited (code 80) after an etcd session-lease
+expiry following host sleep. Because `build_environment_manifest_sha256` binds
+`observed_at_utc` and the live index identities, V4's stores are permanently
+pinned to a digest whose continuity no longer holds.
+
+#### Decision
+
+**1. Gate B and Gate C are separate boundaries.** Gate B genuine ingress is
+`vdbench.exp010_ingress.Exp010RequestIngress.admit` onto
+`Exp010LiveRunner.serve`; a request is genuine solely because an external
+application supplied it. Gate C never serves, never generates a query, and never
+replays one.
+
+**2. The canonical Gate-C entrypoint is `vdbench.exp010_gate_c_operator`.** It is
+the only committed operator path to `process_ready_windows()`. It composes
+`Exp010V2HostComposition`, `V2ShadowWorker`, `V2MilvusShadowCaptureExecutor`,
+the durable shadow-attempt store, and the window-finalization machinery. The
+historical `CaptureObserver` is not used.
+
+**3. Preflight mode (`--mode preflight`)** validates the exact closed 23-key
+operand set (a missing or unexpected key is refused, never defaulted),
+re-derives `configuration_identity` from the serving operands rather than
+trusting it, opens the already-initialized stores so their durable bindings are
+verified, prints the resolved plan with a `plan_sha256`, and issues **zero**
+physical searches and **zero** `serve()`/genuine requests. It injects executors
+that raise on any call, so reaching Milvus is structurally impossible, and it
+constructs no Milvus client at all. It refuses an uninitialized campaign: Gate C
+advances a campaign, it never brings one into being.
+
+**4. Execute mode requires a second explicit operator action** distinct from
+choosing the mode: `--mode execute --confirm-physical-shadow-searches`. Execute
+re-runs the entire preflight first, so a configuration, identity, or store
+binding mismatch always fails with zero physical capture.
+
+**5. Gate C advances only already-durable source windows.** Only whole
+200-source windows already committed by Gate B are processed, in order. An
+incomplete tail stays pending and is never acknowledged.
+
+**6. Ambiguous STARTED attempts are non-retriable.** A durable STARTED without a
+terminal record is `ORPHANED` / `EXECUTION_OUTCOME_UNKNOWN`. The entrypoint
+contains no retry loop, no replay path, and no exception handler over the
+canonical call: the reason code propagates verbatim to the operator.
+
+**7. Gate C does not claim crash-safe physical exactly-once execution.** The
+contract is: durably STARTED, then physical execution, then exactly one durable
+terminal record (COMPLETED or FAILED). A STARTED attempt left without a terminal
+record after interruption is execution-ambiguous and must never be replayed.
+
+**8. V4 is retired from further live progression.** Its authoritative historical
+state is Gate A #4 PASS, Gate B PASS, 600 genuine source records, and Gate C
+NEVER STARTED — 0 physical shadow searches, 0 attempts, 0 acknowledgements, 0
+detector events, 0 attestations, 0 finalization events. Environment continuity
+later broke when Milvus exited. There is therefore **no** V4 environment
+exception, **no** rebinding, **no** repair, **no** replay, and **no** V4 Gate C.
+V4 evidence is not modified to encode this decision; this ADR records it.
+
+**9. V5 requires a fresh Gate A and a fresh Gate B.** A new campaign needs a
+newly observed environment manifest digest from a fresh Gate A #5 and its own
+genuine Gate-B source ingest. A stale environment digest may not be carried
+forward, because `observed_at_utc` and the live index identities are bound into
+it precisely so that continuity cannot be silently asserted.
+
+**10. The governed FLAT/oracle comparator contract** (see
+`flat_oracle_agreement`) is six rules: exact capped membership; threshold
+validity; raw returned FLAT metric ordering; distinguishable oracle score-group
+order; permutation legal only inside one exact IEEE-754 binary32 oracle-score
+tie group; and no capped-membership substitution. `NUMERIC_TOLERANCE` (1e-6) is
+threshold-only — it is never applied to a FLAT-score-versus-oracle-score
+comparison, and no direct score-magnitude equality contract exists.
+
+**11. Canonical serialization is versioned.** `artifacts.canonical_json_bytes`
+is the **frozen v1** historical authority: every registered artifact digest and
+every V1-V4 campaign store digest is a SHA-256 over its exact bytes, so it must
+never change — including its known, deliberately retained `allow_nan=True`
+weakness. New governed schemas use the **strict v2** contract in
+`canonical_serialization`: deterministic key order, UTF-8 without ASCII
+escaping, non-finite floats refused, exactly one trailing newline, an exact
+permitted value-type set, mandatory digest domain separation, and a decoder that
+refuses duplicate keys and any non-canonical input.
+
+#### Command contract
+
+Preflight — issues zero physical searches:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_c_operator \
+--operands /path/to/gate_c_operands.json \
+--mode preflight
+```
+
+Execute — issues real FLAT and sentinel-`ef` searches:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_c_operator \
+--operands /path/to/gate_c_operands.json \
+--mode execute \
+--confirm-physical-shadow-searches
+```
+
+The operand file's exact closed key set is `exp010_gate_c_operator.
+OPERAND_FIELDS`. No V5 operand file exists yet, and none may be authored until a
+fresh Gate A #5 has produced the environment manifest digest it must bind to.
+
+#### Consequences
+
+The canonical Gate-C path is now provable from the repository rather than
+reconstructed from a session. An operator can inspect the resolved plan, and its
+digest, before authorizing any physical work. No existing trace, assembled
+window, detector, attestation, policy, grant, route, or actuation schema changes,
+and no new candidate-capable authority is created.
+
+#### Verification requirements
+
+Offline tests must prove: preflight performs zero searches and zero serves; the
+live command reaches `process_ready_windows()` exactly once; no `serve()` is
+issued by Gate C; a configuration, revision, environment, or stream mismatch
+fails before physical capture; the detector seed is explicit and has no default;
+an ambiguous STARTED propagates rather than being retried; and the entrypoint
+cannot replay source workload. A complete repository suite is required, with no
+live service or historical-evidence mutation.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX

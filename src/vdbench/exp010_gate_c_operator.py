@@ -44,13 +44,14 @@ Authority:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 from .canonical_serialization import (
     CANONICAL_JSON_SCHEMA_VERSION,
@@ -70,7 +71,6 @@ from .exp010_serving_configuration import (
 )
 from .exp010_v2_host import SHADOW_CONSUMER_ID
 from .shadow_window import TRACE_COUNT, WINDOW_QUERY_COUNT
-
 
 __all__ = [
     "GATE_C_PLAN_SCHEMA_VERSION",
@@ -153,14 +153,14 @@ class MonotonicUtcClock:
     """
 
     def __init__(self, now=None) -> None:
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
         self._last: datetime | None = None
 
     def __call__(self) -> str:
         value = self._now()
         if value.tzinfo is None:
             raise _error("GATE_C_CLOCK_INVALID", "clock must be timezone-aware UTC")
-        value = value.astimezone(timezone.utc)
+        value = value.astimezone(UTC)
         if self._last is not None and value <= self._last:
             value = self._last + _ONE_MICROSECOND
         self._last = value
@@ -480,10 +480,10 @@ def run_gate_c_execute_from_cli(
     preflight never reaches it and that a mismatched operand set never does.
     """
 
+    from .config import IndexTrack
     from .docker_health import DockerSocketHealthProbe
     from .milvus import MilvusHarness
     from .milvus_actuation import CollectionIdentityBinding
-    from .config import IndexTrack
     from .v2_milvus_shadow_capture import (
         V2MilvusShadowCaptureExecutor,
         V2ShadowCaptureIdentityBinding,

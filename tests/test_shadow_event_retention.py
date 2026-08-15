@@ -14,17 +14,16 @@ from __future__ import annotations
 
 import inspect
 import json
-from pathlib import Path
 import tempfile
 import unittest
-
-from vdbench.shadow_event_source import FileShadowTraceEventSource
-import vdbench.shadow_event_source as shadow_event_source
+from pathlib import Path
 
 from tests.test_shadow_event_source import (  # reuse the committed fixtures
     _context,
     _trace,
 )
+from vdbench import shadow_event_source
+from vdbench.shadow_event_source import FileShadowTraceEventSource
 
 
 def _outbox(root: Path) -> FileShadowTraceEventSource:

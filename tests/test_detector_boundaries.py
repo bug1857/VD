@@ -13,6 +13,7 @@ import unittest
 
 import numpy as np
 
+from vdbench import drift
 from vdbench.config import Metric
 from vdbench.drift import (
     AUDIT_QUERY_COUNT,
@@ -21,14 +22,13 @@ from vdbench.drift import (
     PERMUTATION_COUNT,
     PERMUTATION_DENOMINATOR,
     SENTINEL_EF,
+    IncompleteEvidenceError,
     Signal,
     SignalEvidence,
     derive_permutation_seed,
     deterministic_permutation_p_value,
     holm_step_down,
 )
-import vdbench.drift as drift
-
 
 _FLOORS = drift._EFFECT_FLOORS
 
@@ -227,15 +227,13 @@ class HolmBoundaryTests(unittest.TestCase):
 
     def test_out_of_range_p_values_are_refused(self) -> None:
         for value in (-0.0001, 1.0001, float("nan"), float("inf")):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    holm_step_down({Signal.RECALL: value})
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                holm_step_down({Signal.RECALL: value})
 
     def test_alpha_must_be_strictly_inside_the_unit_interval(self) -> None:
         for alpha in (0.0, 1.0, -0.1, 1.1):
-            with self.subTest(alpha=alpha):
-                with self.assertRaises(ValueError):
-                    holm_step_down({Signal.RECALL: 0.5}, alpha=alpha)
+            with self.subTest(alpha=alpha), self.assertRaises(ValueError):
+                holm_step_down({Signal.RECALL: 0.5}, alpha=alpha)
 
 
 class PermutationBoundaryTests(unittest.TestCase):
@@ -274,27 +272,29 @@ class PermutationBoundaryTests(unittest.TestCase):
 
     def test_non_finite_observed_statistic_fails_closed(self) -> None:
         for observed in (float("nan"), float("inf")):
-            with self.subTest(observed=observed):
-                with self.assertRaises(Exception):
-                    self._p_value(observed=observed, statistic_value=0.0)
+            with self.subTest(observed=observed), self.assertRaises(
+                IncompleteEvidenceError
+            ):
+                self._p_value(observed=observed, statistic_value=0.0)
 
     def test_reference_count_must_be_strictly_inside_total(self) -> None:
         def batch(membership):
             return np.zeros(membership.shape[0])
 
         for reference, total in ((0, 8), (8, 8), (9, 8)):
-            with self.subTest(reference=reference, total=total):
-                with self.assertRaises(ValueError):
-                    deterministic_permutation_p_value(
-                        observed_statistic=1.0,
-                        total_count=total,
-                        reference_count=reference,
-                        detector_seed=20260813,
-                        metric=Metric.L2,
-                        window_id=1,
-                        signal=Signal.RECALL,
-                        batch_statistic=batch,
-                    )
+            with self.subTest(reference=reference, total=total), self.assertRaises(
+                ValueError
+            ):
+                deterministic_permutation_p_value(
+                    observed_statistic=1.0,
+                    total_count=total,
+                    reference_count=reference,
+                    detector_seed=20260813,
+                    metric=Metric.L2,
+                    window_id=1,
+                    signal=Signal.RECALL,
+                    batch_statistic=batch,
+                )
 
 
 class DeterminismTests(unittest.TestCase):

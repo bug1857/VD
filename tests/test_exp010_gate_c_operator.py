@@ -13,13 +13,16 @@ import contextlib
 import inspect
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import UTC
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
+import vdbench.exp010_gate_c_operator as gate_c_operator
+from tests.test_exp010_live_runner import DATASET001, _trace_for
 from vdbench.config import Metric
 from vdbench.exp010_gate_c_operator import (
     GATE_C_PLAN_SCHEMA_VERSION,
@@ -37,10 +40,6 @@ from vdbench.exp010_serving_configuration import (
 )
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
 from vdbench.shadow_window import WINDOW_QUERY_COUNT
-import vdbench.exp010_gate_c_operator as gate_c_operator
-
-from tests.test_exp010_live_runner import DATASET001, _trace_for
-
 
 _ENVIRONMENT = "e" * 64
 _REVISION = "revision/exp010-gate-c"
@@ -287,9 +286,8 @@ class PreflightTests(unittest.TestCase):
                 gate_c_operator,
                 "run_gate_c_execute_from_cli",
                 side_effect=AssertionError("preflight must not execute"),
-            ):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exit_code = main(["--operands", str(path), "--mode", "preflight"])
+            ), contextlib.redirect_stdout(io.StringIO()):
+                exit_code = main(["--operands", str(path), "--mode", "preflight"])
             self.assertEqual(exit_code, 0)
 
     def test_preflight_plan_reports_the_canonical_path_and_zero_work(self) -> None:
@@ -353,9 +351,8 @@ class PreflightTests(unittest.TestCase):
                 gate_c_operator,
                 "run_gate_c_execute_from_cli",
                 side_effect=AssertionError("must not reach physical execution"),
-            ):
-                with self.assertRaises(Exception) as caught:
-                    build_gate_c_plan(operands)
+            ), self.assertRaises(Exception) as caught:
+                build_gate_c_plan(operands)
             self.assertIn("BINDING_MISMATCH", getattr(caught.exception, "code", ""))
 
     def test_environment_manifest_mismatch_fails_before_any_capture(self) -> None:
@@ -394,14 +391,16 @@ class ExecuteModeTests(unittest.TestCase):
             root = Path(directory)
             _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
             path = _write_operands(root)
-            with mock.patch.object(
-                gate_c_operator,
-                "run_gate_c_execute_from_cli",
-                side_effect=AssertionError("must not execute without confirmation"),
+            with (
+                mock.patch.object(
+                    gate_c_operator,
+                    "run_gate_c_execute_from_cli",
+                    side_effect=AssertionError("must not execute without confirmation"),
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(Exp010GateCOperatorError) as caught,
             ):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaises(Exp010GateCOperatorError) as caught:
-                        main(["--operands", str(path), "--mode", "execute"])
+                main(["--operands", str(path), "--mode", "execute"])
             self.assertEqual(
                 caught.exception.code, "GATE_C_EXECUTION_NOT_CONFIRMED"
             )
@@ -413,17 +412,16 @@ class ExecuteModeTests(unittest.TestCase):
             path = _write_operands(root)
             with mock.patch.object(
                 gate_c_operator, "run_gate_c_execute_from_cli", return_value=()
-            ) as seam:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exit_code = main(
-                        [
-                            "--operands",
-                            str(path),
-                            "--mode",
-                            "execute",
-                            "--confirm-physical-shadow-searches",
-                        ]
-                    )
+            ) as seam, contextlib.redirect_stdout(io.StringIO()):
+                exit_code = main(
+                    [
+                        "--operands",
+                        str(path),
+                        "--mode",
+                        "execute",
+                        "--confirm-physical-shadow-searches",
+                    ]
+                )
             self.assertEqual(exit_code, 0)
             seam.assert_called_once()
 
@@ -439,20 +437,22 @@ class ExecuteModeTests(unittest.TestCase):
             failure = V2ShadowWorkerError(
                 "SHADOW_ATTEMPT_ORPHANED", "ORPHANED;EXECUTION_OUTCOME_UNKNOWN"
             )
-            with mock.patch.object(
-                gate_c_operator, "run_gate_c_execute_from_cli", side_effect=failure
-            ) as seam:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaises(V2ShadowWorkerError) as caught:
-                        main(
-                            [
-                                "--operands",
-                                str(path),
-                                "--mode",
-                                "execute",
-                                "--confirm-physical-shadow-searches",
-                            ]
-                        )
+            with (
+                mock.patch.object(
+                    gate_c_operator, "run_gate_c_execute_from_cli", side_effect=failure
+                ) as seam,
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(V2ShadowWorkerError) as caught,
+            ):
+                main(
+                    [
+                        "--operands",
+                        str(path),
+                        "--mode",
+                        "execute",
+                        "--confirm-physical-shadow-searches",
+                    ]
+                )
             self.assertEqual(caught.exception.code, "SHADOW_ATTEMPT_ORPHANED")
             self.assertEqual(seam.call_count, 1)
 
@@ -545,9 +545,9 @@ class EntrypointDisciplineTests(unittest.TestCase):
 
 class MonotonicUtcClockTests(unittest.TestCase):
     def test_backward_wall_clock_still_yields_increasing_timestamps(self) -> None:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        base = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
+        base = datetime(2026, 8, 15, 12, 0, 0, tzinfo=UTC)
         moments = iter(
             [base, base - timedelta(hours=1), base - timedelta(days=1), base]
         )
@@ -557,9 +557,9 @@ class MonotonicUtcClockTests(unittest.TestCase):
         self.assertEqual(len(set(values)), 4)
 
     def test_repeated_wall_clock_still_strictly_increases(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        fixed = datetime(2026, 8, 15, 12, 0, 0, tzinfo=timezone.utc)
+        fixed = datetime(2026, 8, 15, 12, 0, 0, tzinfo=UTC)
         clock = MonotonicUtcClock(now=lambda: fixed)
         values = [clock() for _ in range(5)]
         self.assertEqual(len(set(values)), 5)
@@ -568,7 +568,10 @@ class MonotonicUtcClockTests(unittest.TestCase):
     def test_naive_datetime_is_refused(self) -> None:
         from datetime import datetime
 
-        clock = MonotonicUtcClock(now=lambda: datetime(2026, 8, 15, 12, 0, 0))
+        # DTZ001 suppressed deliberately and narrowly: supplying a naive
+        # datetime IS the subject of this test.
+        naive = datetime(2026, 8, 15, 12, 0, 0)  # noqa: DTZ001
+        clock = MonotonicUtcClock(now=lambda: naive)
         with self.assertRaises(Exp010GateCOperatorError) as caught:
             clock()
         self.assertEqual(caught.exception.code, "GATE_C_CLOCK_INVALID")

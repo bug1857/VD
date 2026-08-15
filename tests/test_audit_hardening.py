@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import inspect
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
+from tests.test_milvus_actuation import FLAT_NAME, THRESHOLD_STRATUM, fixture_components
+from tests.test_real_detector_attestation import _ENVIRONMENT, _REVISION, _stream
+from vdbench import actuation_persistence, canary_admission, shadow_attempt_store
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 from vdbench.exp010_serving_configuration import (
     Exp010ServingConfigurationError,
@@ -36,13 +39,6 @@ from vdbench.shadow_attempt_store import (
     SQLiteShadowAttemptStore,
 )
 from vdbench.shadow_event_types import MonitorStreamKey
-import vdbench.actuation_persistence as actuation_persistence
-import vdbench.canary_admission as canary_admission
-import vdbench.shadow_attempt_store as shadow_attempt_store
-
-from tests.test_milvus_actuation import FLAT_NAME, THRESHOLD_STRATUM, fixture_components
-from tests.test_real_detector_attestation import _ENVIRONMENT, _REVISION, _stream
-
 
 _REPOSITORY = Path(__file__).parents[1]
 
@@ -304,7 +300,7 @@ class FailClosedSemanticsTests(unittest.TestCase):
     ) -> None:
         """The injected physical boundary stays broad, but never silent."""
 
-        import vdbench.v2_shadow_worker as v2_shadow_worker
+        from vdbench import v2_shadow_worker
 
         source = inspect.getsource(v2_shadow_worker)
         # The one broad handler is annotated and immediately persists a
@@ -372,7 +368,7 @@ class MonotonicCausalAuthorityTests(unittest.TestCase):
         self.assertGreaterEqual(outcome.latency_ms, 0.0)
 
     def test_monotonic_check_is_not_an_assertion(self) -> None:
-        import vdbench.milvus_actuation as milvus_actuation
+        from vdbench import milvus_actuation
 
         source = inspect.getsource(milvus_actuation)
         self.assertIn("clock_ns must return monotonic integer nanoseconds", source)
@@ -414,11 +410,10 @@ class StreamIdentityValidationTests(unittest.TestCase):
             ("null byte", "a\x00b"),
             ("non-str", 7),
         ):
-            with self.subTest(case=label):
-                with self.assertRaises((ValueError, TypeError)):
-                    MonitorStreamKey(
-                        "stream", Metric.L2, "target-075", bad, "d", "f", "h"
-                    )
+            with self.subTest(case=label), self.assertRaises((ValueError, TypeError)):
+                MonitorStreamKey(
+                    "stream", Metric.L2, "target-075", bad, "d", "f", "h"
+                )
 
     def test_every_identity_component_is_validated(self) -> None:
         fields = (

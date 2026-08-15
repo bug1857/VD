@@ -40,9 +40,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any
 import unicodedata
-
+from typing import Any
 
 __all__ = [
     "CANONICAL_JSON_SCHEMA_VERSION",

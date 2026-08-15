@@ -28,7 +28,6 @@ from vdbench.canonical_serialization import (
     validate_strict_canonical_value,
 )
 
-
 #: The exact stream document the live V4 campaign is bound to.
 _V4_STREAM = {
     "configuration_identity": (

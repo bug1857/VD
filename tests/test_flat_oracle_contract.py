@@ -13,15 +13,14 @@ import math
 import struct
 import unittest
 
-from vdbench.config import Metric, NUMERIC_TOLERANCE
+from vdbench import flat_oracle_agreement
+from vdbench.config import NUMERIC_TOLERANCE, Metric
 from vdbench.flat_oracle_agreement import (
     FlatOracleAgreementKind,
     compare_flat_oracle_hits,
 )
 from vdbench.milvus import SearchHit
 from vdbench.oracle import OracleHit, OracleResult
-import vdbench.flat_oracle_agreement as flat_oracle_agreement
-
 
 _RADIUS = 10.0
 _RANGE_FILTER = 0.0
