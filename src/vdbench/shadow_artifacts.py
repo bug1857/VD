@@ -358,6 +358,44 @@ def _canonical_document_bytes(document: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def encode_persisted_shadow_trace_envelope(
+    envelope: PersistedShadowTraceEnvelope,
+) -> bytes:
+    """Return the strict canonical bytes for one persisted trace envelope.
+
+    The durable SQLite shadow-attempt journal uses this same codec as the
+    historical filesystem artifacts, avoiding a second trace serialization.
+    """
+
+    document = _document_for(envelope)
+    rebuilt = _decode_document(document)
+    encoded = _canonical_document_bytes(document)
+    if _canonical_document_bytes(_document_for(rebuilt)) != encoded:
+        raise ShadowTraceArtifactError("SCHEMA_MISMATCH: non-canonical envelope")
+    return encoded
+
+
+def decode_persisted_shadow_trace_envelope(
+    source: bytes,
+) -> PersistedShadowTraceEnvelope:
+    """Strictly decode canonical envelope bytes supplied by a durable store."""
+
+    if type(source) is not bytes:
+        raise ShadowTraceArtifactError("SCHEMA_MISMATCH: envelope bytes")
+    try:
+        document = json.loads(
+            source.decode("utf-8"),
+            object_pairs_hook=_no_duplicate_object,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ShadowTraceArtifactError("MALFORMED: persisted trace artifact") from exc
+    envelope = _decode_document(document)
+    if _canonical_document_bytes(document) != source:
+        raise ShadowTraceArtifactError("SCHEMA_MISMATCH: non-canonical envelope bytes")
+    return envelope
+
+
 def persist_shadow_trace_envelope(
     path: str | os.PathLike[str], envelope: PersistedShadowTraceEnvelope
 ) -> None:
@@ -374,15 +412,13 @@ def persist_shadow_trace_envelope(
         raise FileExistsError(f"refusing to overwrite immutable trace artifact: {target}")
     if not target.parent.is_dir():
         raise FileNotFoundError(f"artifact parent directory does not exist: {target.parent}")
-    document = _document_for(envelope)
-    # Re-decode before publication so invalid in-memory values never become evidence.
-    _decode_document(document)
+    encoded = encode_persisted_shadow_trace_envelope(envelope)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
-            handle.write(_canonical_document_bytes(document))
+            handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
         try:
@@ -406,12 +442,17 @@ def persist_shadow_trace_envelope(
 def load_persisted_shadow_trace_envelope(
     path: str | os.PathLike[str],
 ) -> PersistedShadowTraceEnvelope:
-    """Load one envelope only after strict schema and canonical checksum checks."""
+    """Load one envelope after strict schema and canonical checksum checks.
+
+    Historical filesystem artifacts did not require a particular JSON
+    whitespace encoding.  Preserve that compatibility here while the byte
+    decoder used by the durable attempt store remains deliberately stricter.
+    """
 
     try:
-        source = Path(path).read_text(encoding="utf-8")
+        source = Path(path).read_bytes()
         document = json.loads(
-            source,
+            source.decode("utf-8"),
             object_pairs_hook=_no_duplicate_object,
             parse_constant=_reject_constant,
         )
@@ -425,6 +466,8 @@ def load_persisted_shadow_trace_envelope(
 __all__ = [
     "SCHEMA_VERSION",
     "ShadowTraceArtifactError",
+    "decode_persisted_shadow_trace_envelope",
+    "encode_persisted_shadow_trace_envelope",
     "load_persisted_shadow_trace_envelope",
     "persist_shadow_trace_envelope",
 ]

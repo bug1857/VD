@@ -21,6 +21,7 @@ from vdbench.milvus_actuation import (
 from vdbench.oracle import OracleHit, OracleResult
 from vdbench.shadow_artifacts import (
     ShadowTraceArtifactError,
+    decode_persisted_shadow_trace_envelope,
     load_persisted_shadow_trace_envelope,
     persist_shadow_trace_envelope,
 )
@@ -104,6 +105,19 @@ class ShadowTraceArtifactTests(unittest.TestCase):
             persist_shadow_trace_envelope(path, expected)
             # A separate load call models a process restart.
             self.assertEqual(load_persisted_shadow_trace_envelope(path), expected)
+
+    def test_file_loader_preserves_historical_json_format_compatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "trace-0.json"
+            expected = _envelope()
+            persist_shadow_trace_envelope(path, expected)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            noncanonical = json.dumps(document, indent=2).encode("utf-8")
+            path.write_bytes(noncanonical)
+
+            self.assertEqual(load_persisted_shadow_trace_envelope(path), expected)
+            with self.assertRaisesRegex(ShadowTraceArtifactError, "non-canonical"):
+                decode_persisted_shadow_trace_envelope(noncanonical)
 
     def test_tampered_trace_payload_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -18,8 +18,12 @@ from numbers import Integral, Real
 import re
 import unicodedata
 
-from .config import IndexTrack, Metric
+from .config import IndexTrack, Metric, NUMERIC_TOLERANCE
 from .drift import canonical_serialize_tuple
+from .flat_oracle_agreement import (
+    FlatOracleAgreementKind,
+    compare_flat_oracle_hits,
+)
 from .milvus import CollectionIdentity, SearchHit
 from .milvus_actuation import (
     ShadowAuditStageEvidence,
@@ -488,7 +492,13 @@ def _validate_query(
         if len(set(ids)) != len(ids):
             _add(reasons, "QUERY_EVIDENCE_INCOMPLETE")
         try:
-            if threshold_violations(scores, metric, radius=radius, range_filter=range_filter):
+            if threshold_violations(
+                scores,
+                metric,
+                radius=radius,
+                range_filter=range_filter,
+                tolerance=NUMERIC_TOLERANCE,
+            ):
                 _add(reasons, "THRESHOLD_VIOLATION")
         except ValueError:
             _add(reasons, "QUERY_CONFIGURATION_INCONSISTENT")
@@ -496,8 +506,21 @@ def _validate_query(
 
     flat_ids = valid_hits(query.flat_hits, label="flat")
     sentinel_ids = valid_hits(query.sentinel_hits, label="sentinel")
-    if set(flat_ids) != set(oracle_ids):
+    agreement = compare_flat_oracle_hits(
+        flat_hits=query.flat_hits,
+        oracle_result=oracle,
+        metric=metric,
+        radius=radius,
+        range_filter=range_filter,
+        limit=limit,
+    )
+    if agreement.kind is FlatOracleAgreementKind.MEMBERSHIP_MISMATCH:
         _add(reasons, "FLAT_ORACLE_ID_SET_MISMATCH")
+    elif agreement.kind is FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH:
+        _add(reasons, "FLAT_ORACLE_ORDER_MISMATCH")
+    elif agreement.kind is FlatOracleAgreementKind.INVALID_EVIDENCE:
+        for code in agreement.reason_codes:
+            _add(reasons, code)
     try:
         recalculated = capped_threshold_recall(sentinel_ids, oracle_ids)
         supplied = float(_finite_number(query.sentinel_recall, field="sentinel_recall"))
@@ -620,6 +643,57 @@ def _window_manifest_payload(
         "total_observation_count": WINDOW_QUERY_COUNT,
         "ordered_query_ids": list(query_ids),
     }
+
+
+def validate_persisted_shadow_trace_envelope(
+    envelope: object,
+) -> tuple[str, ...]:
+    """Validate one 50-query envelope independently for fail-fast capture.
+
+    Cross-trace invariants remain the responsibility of
+    :func:`assemble_shadow_window`; this boundary exposes every reason already
+    derivable from one returned trace so a later physical trace is never
+    executed after an earlier canonical failure.
+    """
+
+    reasons: list[str] = []
+    if not isinstance(envelope, PersistedShadowTraceEnvelope):
+        return ("ENVELOPE_INVALID",)
+    if not isinstance(envelope.trace_id, str) or not envelope.trace_id:
+        _add(reasons, "TRACE_ID_INVALID")
+    elif unicodedata.normalize("NFC", envelope.trace_id) != envelope.trace_id:
+        _add(reasons, "TRACE_ID_INVALID")
+    if _valid_timestamp(envelope.captured_at_utc) is None:
+        _add(reasons, "TIMESTAMP_INVALID")
+    if (
+        isinstance(envelope.sequence_index, bool)
+        or not isinstance(envelope.sequence_index, Integral)
+        or not 0 <= int(envelope.sequence_index) < TRACE_COUNT
+    ):
+        _add(reasons, "SEQUENCE_INDEX_SET_INVALID")
+    if (
+        isinstance(envelope.declared_observation_count, bool)
+        or envelope.declared_observation_count != TRACE_QUERY_COUNT
+    ):
+        _add(reasons, "DECLARED_OBSERVATION_COUNT_INVALID")
+    if not _is_sha256(envelope.expected_trace_sha256):
+        _add(reasons, "TRACE_SHA256_FORMAT_INVALID")
+    if not isinstance(envelope.trace, ShadowAuditTrace):
+        _add(reasons, "TRACE_MISSING")
+        return tuple(reasons)
+    if not envelope.trace.complete:
+        _add(reasons, "TRACE_INCOMPLETE")
+    trace_reasons: list[str] = []
+    facts = _trace_facts(envelope.trace, reasons=trace_reasons)
+    for code in trace_reasons:
+        _add(reasons, code)
+    if (
+        facts is not None
+        and _is_sha256(envelope.expected_trace_sha256)
+        and envelope.expected_trace_sha256 != facts.trace_sha256
+    ):
+        _add(reasons, "TRACE_PAYLOAD_SHA256_MISMATCH")
+    return tuple(reasons)
 
 
 def assemble_shadow_window(
@@ -846,5 +920,6 @@ __all__ = [
     "assemble_shadow_window",
     "canonical_shadow_trace_payload",
     "hash_shadow_audit_trace",
+    "validate_persisted_shadow_trace_envelope",
     "verify_persisted_assembled_window",
 ]

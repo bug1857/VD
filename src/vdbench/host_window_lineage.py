@@ -49,6 +49,7 @@ from .shadow_event_types import MonitorStreamKey
 __all__ = [
     "HOST_WINDOW_LINEAGE_SCHEMA_VERSION",
     "CommittedHostObservation",
+    "HostConsumerAcknowledgementState",
     "HostResponseCommitError",
     "InjectedReadOnlyCaptureMetadataProvider",
     "ReferenceV2Host",
@@ -185,6 +186,16 @@ class CommittedHostObservation:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("committed observations are store-issued")
+
+
+@dataclass(frozen=True, slots=True)
+class HostConsumerAcknowledgementState:
+    """Verified durable acknowledgement prefix for one source consumer."""
+
+    consumer_id: str
+    start_source_sequence: int
+    event_ids: tuple[str, ...]
+    head_sha256: str | None
 
 
 def _make_committed(**values: object) -> CommittedHostObservation:
@@ -888,6 +899,42 @@ class SQLiteHostResponseCommitStore:
                 except sqlite3.Error:
                     pass
                 raise _error("HOST_SOURCE_ACK_FAILED") from exc
+
+    def load_window(
+        self, window_sequence: int
+    ) -> tuple[CommittedHostObservation, ...] | None:
+        """Load one exact canonical source window independent of consumer state."""
+
+        with self._mutex:
+            sources = self._verify_all()
+            if type(window_sequence) is not int or window_sequence < 0:
+                raise _error("HOST_SOURCE_WINDOW_INVALID")
+            start = window_sequence * 200
+            members = sources[start : start + 200]
+            return tuple(members) if len(members) == 200 else None
+
+    def consumer_acknowledgement_state(
+        self, *, consumer_id: str, start_source_sequence: int = 0
+    ) -> HostConsumerAcknowledgementState:
+        """Return the fully verified contiguous durable acknowledgement prefix."""
+
+        with self._mutex:
+            self._verify_all()
+            consumer = _text(consumer_id, code="HOST_SOURCE_CONSUMER_INVALID")
+            if type(start_source_sequence) is not int or start_source_sequence < 0:
+                raise _error("HOST_SOURCE_SEQUENCE_INVALID")
+            rows = self._connection.execute(
+                "SELECT source_sequence,event_id,ack_sha256 FROM consumer_acknowledgements WHERE consumer_id=? ORDER BY ack_sequence",
+                (consumer,),
+            ).fetchall()
+            if rows and rows[0][0] != start_source_sequence:
+                raise _error("HOST_SOURCE_CONSUMER_OFFSET_MISMATCH")
+            return HostConsumerAcknowledgementState(
+                consumer_id=consumer,
+                start_source_sequence=start_source_sequence,
+                event_ids=tuple(row[1] for row in rows),
+                head_sha256=None if not rows else rows[-1][2],
+            )
 
     def window_sha256(self, window_sequence: int) -> str | None:
         sources = self._verify_all()

@@ -4267,6 +4267,230 @@ actuation, or candidate authority, and B-001 is unchanged.
 
 ---
 
+### ADR-015: Exact-once durable shadow attempts and binary32 precision-tie ordering
+
+Status: Accepted — operator-authorized 2026-08-14; implementation pending external review
+Date: 2026-08-14
+Risk level: CRITICAL
+Evidence status: no new live evidence. V2 and V3 remain immutable failed/partial
+historical campaigns under their original source revisions. This ADR authorizes
+offline implementation and tests only; it does not authorize V4, a Milvus
+search, workload replay, detector execution, EXP-010, a grant, routing,
+activation, actuation, or canary traffic.
+
+#### Context
+
+The pre-ADR-015 `V2ShadowWorker` held four physical 50-query shadow results only
+in process memory. A crash after search execution but before window assembly
+could not distinguish an unexecuted attempt from an executed attempt whose
+result was lost. A returned incomplete trace was also not durably preserved
+before failure, and later execution could begin before each preceding result
+had an independently durable terminal record. Separately, the capture path
+required exact ordered FLAT/oracle IDs while reconstructive validation accepted
+global set equality. The latter was too permissive in general and too strict in
+the observed binary64-to-binary32 precision-tie case.
+
+#### Options considered
+
+1. Keep per-window in-memory capture and rerun after interruption. Rejected:
+   physical execution is ambiguous and a replay can duplicate searches.
+2. Persist only returned traces. Rejected: a crash after dispatch and before
+   persistence still looks unexecuted.
+3. Append an immutable STARTED event before each physical trace, append one
+   terminal event immediately afterward, and centralize ordered comparison.
+   Chosen: it is the smallest deterministic design that makes physical outcome
+   ambiguity explicit, preserves evidence, and supports recovery without replay.
+
+#### Decision — governed physical-attempt identity and lifecycle
+
+Each 50-source attempt has one domain-separated canonical identity binding the
+complete `MonitorStreamKey` (including configuration, data, and index
+identities), source revision, environment-manifest SHA-256, window sequence,
+trace sequence index, and exact ordered source sequences, source-record
+SHA-256s, and canonical query-ID SHA-256s. A slot is the pair
+`(window_sequence, trace_sequence_index)`; one slot can bind only one attempt
+identity.
+
+The prospective append-only SQLite journal permits exactly:
+
+```
+UNSEEN -> STARTED -> COMPLETED
+UNSEEN -> STARTED -> FAILED
+```
+
+`STARTED` commits with `synchronous=FULL` before the capture executor is called.
+A returned trace is encoded by the existing canonical persisted-shadow-envelope
+codec and its detached trace SHA-256. Before another trace can execute, the
+journal atomically appends either:
+
+- `COMPLETED` for a canonical, source-matched trace whose `complete` field is
+  true and whose one-trace validation has no failure; or
+- `FAILED` with the returned canonical trace when available, its trace digest,
+  its exact ordered `trace.reason_codes`, and a separate stable failure/error
+  classification. An exception that returned no trace records only terminal
+  failure metadata; it never fabricates a `ShadowAuditTrace`.
+
+No update, delete, overwrite, duplicate STARTED, second terminal, or terminal
+conversion is supported. `FAILED` remains historical failure evidence and is
+never replayable, completable, detector-admissible, or silently discarded.
+Any first per-trace failure stops the 200-source window immediately; no later
+physical trace executes.
+
+#### Orphan and restart semantics
+
+A durable `STARTED` with no terminal event on reconstruction is classified as
+`ORPHANED / EXECUTION_OUTCOME_UNKNOWN`. It is treated as physically ambiguous,
+not unexecuted: automatic retry, detector admission, and continuation of that
+window are forbidden. A fresh governed campaign/window is required.
+
+A `COMPLETED` trace may be loaded after restart, but only after full schema,
+store binding, event-chain, attempt identity, canonical envelope, and detached
+digest verification. The worker reuses that persisted evidence and issues no
+physical searches for the completed attempt. Assembly starts only after all
+four exact slots load as verified `COMPLETED`; it consumes the reloaded values,
+not transient executor returns. This is evidence recovery, never replay.
+
+#### Decision — canonical FLAT/oracle ordered agreement
+
+One comparator is shared by physical capture and reconstructive shadow-window
+validation. It returns one of: exact ordered agreement, precision-tie-equivalent
+agreement, membership mismatch, non-tie ordering mismatch, or invalid
+score/evidence.
+
+The independent oracle's binary64 score is converted to the exact IEEE-754
+binary32 value by round-to-nearest conversion equivalent to little-endian
+`struct.pack("<f", score)` followed by `struct.unpack("<f", ...)`; non-finite
+or overflowed values fail. Positive and negative zero form one canonical group.
+Each oracle ID inherits that canonical binary32 score-group identity. FLAT must
+return exactly the oracle-selected capped ID membership, with distinct IDs,
+finite scores, and metric-specific threshold validity. Its ordered sequence of
+oracle score groups must equal the oracle's ordered sequence. Therefore exact
+order passes, and permutations pass only within positions whose independent
+oracle scores collapse to the same canonical binary32 group. Any permutation
+across distinguishable groups fails. No epsilon or caller-selected tolerance
+defines a tie, and global set equality alone is never sufficient. The existing
+governed `NUMERIC_TOLERANCE = 1e-6` remains applicable only to metric-threshold
+validity in both capture and reconstruction; it never creates a score-tie
+group.
+
+Binary32 oracle grouping governs only permitted ID-order equivalence. The raw
+finite FLAT score sequence must independently remain metric ordered: monotonically
+nondecreasing for L2 and monotonically nonincreasing for COSINE. Binary32 grouping
+must never conceal a raw FLAT score inversion.
+
+At the result-limit boundary, **no tied-member substitution is allowed**. The
+exact oracle-selected capped membership remains mandatory even if an unreturned
+candidate would share a binary32 tie with the final returned member. The
+evidence available to this contract cannot prove interchangeable membership
+beyond the capped oracle payload; allowing it would weaken the contract into
+unverifiable set substitution.
+
+#### Store and failure hardening
+
+The store uses private owner-controlled paths, mode `0600`, regular/single-link
+checks, a sidecar exclusive process-lifetime lock, STRICT tables, exact schema
+verification, `journal_mode=DELETE`, `synchronous=FULL`,
+`trusted_schema=OFF`, `BEGIN IMMEDIATE`, append-only triggers, canonical JSON,
+and a domain-separated event hash chain. Binding, schema, trace, chain, slot,
+or transition corruption fails closed. Store hashes and private constructors
+are integrity/API mechanisms, not signatures and not defenses against a
+hostile same-user raw filesystem writer.
+
+The sidecar lock is owned by the PID that opened the store. A forked child may
+close its inherited local descriptor, but must never issue `LOCK_UN` against
+the shared open-file description or remove the parent's in-process ownership
+record. Every normal operation in a different PID fails closed. The owning
+parent alone performs explicit unlock and ownership cleanup.
+
+Each successful `STARTED` append returns one opaque, live
+`ShadowAttemptPermit`. The permit is bound to the issuing store instance,
+owner PID, and exact attempt digest; it is one-shot and is required for either
+terminal transition. It is never persisted and cannot be reconstructed on
+restart. Possession of an attempt identity, envelope, or inherited Python
+object is insufficient. A restarted `STARTED` attempt therefore remains an
+orphan and cannot be terminalized or retried.
+
+#### Decision — durable cross-store window finalization
+
+Detector events, real-detector attestations, source acknowledgements, and
+shadow attempts remain separate authoritative stores. They do not share, and
+this ADR does not simulate, a cross-SQLite transaction. Instead, the
+prospective v2 runner uses a private append-only finalization journal whose
+sole purpose is crash reconciliation. Before detector persistence, it records
+one immutable `PREPARED` identity binding the complete stream identity, source
+revision, environment-manifest digest, window sequence, exact source/shadow/
+assembled-window digests, all 200 ordered source sequence/event/source/query
+identities, the four completed attempt and trace identities, expected detector
+status, and—only for an evaluated window—the canonical deterministic detector
+decision and the minimum canonical pending evidence required to construct the
+corresponding attestation.
+
+The allowed per-window phase history is:
+
+```
+PREPARED
+  -> DETECTOR_COMMITTED
+  -> ATTESTATION_COMMITTED | ATTESTATION_NOT_REQUIRED
+  -> SOURCE_ACKNOWLEDGED
+  -> FINALIZED
+```
+
+Transitions are immutable, canonical, hash-chained, contiguous by window, and
+reconstructively validated. The coordinator's claims are never sufficient by
+themselves: every reconciliation step verifies the exact artifact in its
+owning detector, attestation, source, or attempt store. A contradiction fails
+closed; no store is overwritten and no history is skipped.
+
+On startup and before a new window, reconciliation resumes the sole pending
+window. `PREPARED` with no detector event invokes the governed detector path
+once. If the exact detector event already exists, it is loaded and verified
+without replaying `process_window`. A required missing attestation is rebuilt
+from the persisted canonical pending evidence; an existing attestation is
+verified and reused. A detector status without a head records
+`ATTESTATION_NOT_REQUIRED` explicitly. Source acknowledgement occurs only
+after the required detector and attestation artifacts verify. If the exact
+contiguous acknowledgement already exists, it is reused rather than appended
+again. `FINALIZED` is recorded only after the acknowledgement head and full
+prefix match.
+
+The next source window is derived from finalized/pending durable history, not
+from a zero-initialized RAM cursor. Detector reference progression is loaded
+from verified detector history; the reference bundle is reconstructed from
+the exact committed source records and four persisted `COMPLETED` traces.
+Reference recovery never executes a physical shadow search. Crash tests must
+cover every boundary before and after detector, attestation,
+acknowledgement, and finalization persistence, and prove exactly-once durable
+artifacts, no source gap, and no repeated physical capture.
+
+#### Consequences and compatibility
+
+The worker performs two small durable commits per newly executed 50-query
+trace; this latency is accepted because correctness and exact-once ambiguity
+closure outrank Gate-C throughput. The implementation is prospective and adds
+an attempt database and a reconciliation-only window-finalization database to
+the v2 composition root. It never opens, migrates, repairs, imports, or rewrites
+V1/V2/V3 runtime evidence. Existing trace payload,
+assembled-window, detector, attestation, policy, grant, route, and actuation
+schemas remain unchanged. The comparator tightens reconstructive set-only
+acceptance while permitting only the reproducible precision-tie case; no new
+candidate-capable authority is created.
+
+#### Verification requirements
+
+Offline tests must cover incomplete first/middle traces, exact reason
+preservation, executor exception, orphan restart refusal, completed restart
+reuse, four-trace durable assembly, trace/binding/schema/transition tamper,
+fork-child close and inherited-permit refusal, cross-thread permit possession,
+exact and tie-equivalent ordering, non-tie reordering, the observed source-372
+precision shape, threshold and membership failures, capped-limit tie refusal,
+all cross-store crash points, contradictory durable-artifact refusal, reference
+reconstruction, durable cursor reconstruction, and proof that failed/orphaned
+traces execute no later physical trace and never reach detector admission. A
+complete repository suite is required before review, with no live service or
+historical-evidence mutation.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |

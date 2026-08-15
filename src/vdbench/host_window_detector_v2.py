@@ -69,6 +69,8 @@ __all__ = [
     "HostWindowV2Status",
     "SQLiteHostWindowDetectorV2Store",
     "V2DetectorHead",
+    "PersistedV2DetectorWindow",
+    "V2DetectorProgression",
     "V2DetectorProcessResult",
     "V2ShadowPositionEvidence",
     "V2ShadowWindow",
@@ -771,6 +773,27 @@ class V2DetectorProcessResult:
     detector_head: V2DetectorHead | None
 
 
+@dataclass(frozen=True, slots=True)
+class PersistedV2DetectorWindow:
+    """Fully reconstructed durable detector event for one canonical window."""
+
+    result: V2DetectorProcessResult
+    source_window_sha256: str
+    shadow_window_sha256: str
+    event_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class V2DetectorProgression:
+    """Verified current progression needed by the reconciliation coordinator."""
+
+    next_window_sequence: int
+    reference_window_sequence: int | None
+    reference_source_window_sha256: str | None
+    reference_shadow_window_sha256: str | None
+    requires_rebaseline: bool
+
+
 _ISSUE_TOKEN = object()
 
 
@@ -950,6 +973,7 @@ class SQLiteHostWindowDetectorV2Store:
         gap = False
         latest: V2DetectorHead | None = None
         head_count = 0
+        persisted_windows: list[PersistedV2DetectorWindow] = []
         for sequence, document in enumerate(documents):
             required = {
                 "schema_version", "stream", "window_sequence", "window",
@@ -978,6 +1002,16 @@ class SQLiteHostWindowDetectorV2Store:
                     raise _error("DETECTOR_V2_HISTORY_INVALID")
                 gap = True
                 latest = None
+                persisted_windows.append(
+                    PersistedV2DetectorWindow(
+                        result=V2DetectorProcessResult(
+                            status, sequence, tuple(document["reason_codes"]), None
+                        ),
+                        source_window_sha256=window.source_window_sha256,
+                        shadow_window_sha256=window.shadow_window_sha256,
+                        event_sha256=_digest(_EVENT_DOMAIN, document),
+                    )
+                )
                 continue
             if reference is None or gap:
                 if status is not HostWindowV2Status.REBASELINE or document["detector_head"] is not None or document["head_record_sequence"] is not None:
@@ -990,6 +1024,16 @@ class SQLiteHostWindowDetectorV2Store:
                     or document["reference_source_window_sha256"] != window.source_window_sha256
                 ):
                     raise _error("DETECTOR_V2_HISTORY_INVALID")
+                persisted_windows.append(
+                    PersistedV2DetectorWindow(
+                        result=V2DetectorProcessResult(
+                            status, sequence, tuple(document["reason_codes"]), None
+                        ),
+                        source_window_sha256=window.source_window_sha256,
+                        shadow_window_sha256=window.shadow_window_sha256,
+                        event_sha256=_digest(_EVENT_DOMAIN, document),
+                    )
+                )
                 continue
             if status is not HostWindowV2Status.EVALUATED or document["head_record_sequence"] != head_count:
                 raise _error("DETECTOR_V2_HISTORY_INVALID")
@@ -1001,11 +1045,54 @@ class SQLiteHostWindowDetectorV2Store:
                 raise _error("DETECTOR_V2_HISTORY_INVALID")
             latest = head
             head_count += 1
+            persisted_windows.append(
+                PersistedV2DetectorWindow(
+                    result=V2DetectorProcessResult(
+                        status, sequence, tuple(document["reason_codes"]), head
+                    ),
+                    source_window_sha256=window.source_window_sha256,
+                    shadow_window_sha256=window.shadow_window_sha256,
+                    event_sha256=_digest(_EVENT_DOMAIN, document),
+                )
+            )
         self._reference = reference
         self._gap = gap
         self._latest_head = latest
         self._head_count = head_count
+        self._persisted_windows = tuple(persisted_windows)
         return reference, gap, latest, head_count, documents
+
+    def load_persisted_window(
+        self, window_sequence: int
+    ) -> PersistedV2DetectorWindow | None:
+        """Load one exact canonical event without replaying detector processing."""
+
+        with self._mutex:
+            self._reconstruct()
+            if type(window_sequence) is not int or window_sequence < 0:
+                raise _error("DETECTOR_V2_WINDOW_SEQUENCE_INVALID")
+            if window_sequence >= len(self._persisted_windows):
+                return None
+            return self._persisted_windows[window_sequence]
+
+    def load_progression(self) -> V2DetectorProgression:
+        """Return verified reference and next-window state for reconciliation."""
+
+        with self._mutex:
+            reference, gap, _latest, _count, documents = self._reconstruct()
+            return V2DetectorProgression(
+                next_window_sequence=len(documents),
+                reference_window_sequence=(
+                    None if reference is None else reference.window_sequence
+                ),
+                reference_source_window_sha256=(
+                    None if reference is None else reference.source_window_sha256
+                ),
+                reference_shadow_window_sha256=(
+                    None if reference is None else reference.shadow_window_sha256
+                ),
+                requires_rebaseline=reference is None or gap,
+            )
 
     def process_window(
         self, *, window: V2ShadowWindow,

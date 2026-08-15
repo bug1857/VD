@@ -45,6 +45,7 @@ from vdbench.real_detector_attestation_store import (
     VerifiedRealDetectorHead,
 )
 from vdbench.shadow_event_types import MonitorStreamKey
+from vdbench.shadow_attempt_store import SQLiteShadowAttemptStore
 from vdbench.shadow_window import (
     TRACE_COUNT,
     TRACE_QUERY_COUNT,
@@ -145,8 +146,16 @@ class _Harness:
             self._tick += 1
             return f"2026-08-12T{self._tick // 3600:02d}:{(self._tick // 60) % 60:02d}:{self._tick % 60:02d}Z"
 
+        self.attempt_store = SQLiteShadowAttemptStore(
+            root / "shadow-attempts.sqlite3",
+            stream_key=_stream(),
+            source_revision=_REVISION,
+            environment_manifest_sha256=_ENVIRONMENT,
+        )
         self.worker = V2ShadowWorker(
-            capture_executor=self.executor, captured_at_clock=_captured_at
+            capture_executor=self.executor,
+            captured_at_clock=_captured_at,
+            attempt_store=self.attempt_store,
         )
         self.detector_store = SQLiteHostWindowDetectorV2Store(
             root / "detector.sqlite3", stream_key=_stream()
@@ -165,6 +174,7 @@ class _Harness:
     def close(self) -> None:
         self.attestation_store.close()
         self.detector_store.close()
+        self.attempt_store.close()
 
     def window_sources(self, sequence: int):
         start = sequence * WINDOW_QUERY_COUNT
@@ -390,18 +400,24 @@ class RealDetectorAttestationTests(unittest.TestCase):
             ticks = iter(
                 f"2026-08-12T00:00:0{index}Z" for index in range(1, 9)
             )
-            worker = V2ShadowWorker(
-                capture_executor=_Mismapped(), captured_at_clock=lambda: next(ticks)
-            )
-            with self.assertRaises(V2ShadowWorkerError) as raised:
-                worker.build(tuple(sources))
+            with SQLiteShadowAttemptStore(
+                root / "attempts.sqlite3",
+                stream_key=_stream(),
+                source_revision=_REVISION,
+                environment_manifest_sha256=_ENVIRONMENT,
+            ) as attempt_store:
+                worker = V2ShadowWorker(
+                    capture_executor=_Mismapped(),
+                    captured_at_clock=lambda: next(ticks),
+                    attempt_store=attempt_store,
+                )
+                with self.assertRaises(V2ShadowWorkerError) as raised:
+                    worker.build(tuple(sources))
             # Repeating one slice is caught either by the window assembler's
             # duplicate-trace/query rules or by the query-id cross-check; both
             # are fail-closed, and neither may silently accept the mismapping.
-            self.assertIn(
-                raised.exception.code,
-                {"SHADOW_WINDOW_INCOMPLETE", "SHADOW_POSITION_QUERY_ID_MISMATCH"},
-            )
+            self.assertEqual(raised.exception.code, "SHADOW_TRACE_FAILED")
+            self.assertIn("SHADOW_POSITION_QUERY_ID_MISMATCH", str(raised.exception))
 
     # -- C. previous evidence state machine ------------------------------
 

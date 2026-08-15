@@ -9,9 +9,11 @@ from an explicit `serve(...)` call, which is the genuine-workload boundary.
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -26,6 +28,11 @@ from vdbench.exp010_live_runner import (
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
 from vdbench.host_window_detector_v2 import HostWindowV2Status
 from vdbench.shadow_window import TRACE_QUERY_COUNT, WINDOW_QUERY_COUNT
+from vdbench.v2_shadow_worker import V2ShadowWorkerError
+from vdbench.window_finalization import (
+    WindowFinalizationPhase,
+    restore_prepared_evaluation,
+)
 
 from vdbench.config import IndexTrack
 from vdbench.milvus_actuation import ShadowAuditTrace
@@ -292,14 +299,292 @@ class Exp010LiveRunnerTests(unittest.TestCase):
             try:
                 harness.serve_many(WINDOW_QUERY_COUNT)
                 harness.runner.composition.shadow_worker._executor = _FailingCapture()
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises(V2ShadowWorkerError) as raised:
                     harness.runner.process_ready_windows()
+                self.assertEqual(raised.exception.code, "SHADOW_CAPTURE_EXCEPTION")
                 committed = harness.runner.composition.response_store.poll(
                     consumer_id="probe", limit=WINDOW_QUERY_COUNT * 2
                 )
                 self.assertEqual(len(committed), WINDOW_QUERY_COUNT)
+                detector_event_count = harness.runner.composition.detector_store._db.execute(  # noqa: SLF001 - integration assertion
+                    "SELECT COUNT(*) FROM detector_events"
+                ).fetchone()[0]
+                self.assertEqual(detector_event_count, 0)
             finally:
                 harness.close()
+
+    def test_prepared_only_restart_reconciles_without_shadow_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with patch.object(
+                    harness.runner.composition.detector_store,
+                    "process_window",
+                    side_effect=RuntimeError("crash-before-detector"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        harness.runner.process_ready_windows()
+                self.assertEqual(
+                    harness.runner.composition.finalization_store.pending().phase,
+                    WindowFinalizationPhase.PREPARED,
+                )
+                self.assertEqual(harness.shadow.calls, 4)
+            finally:
+                harness.close()
+            reopened = _Harness(root)
+            try:
+                recovered = reopened.runner.process_ready_windows()
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0].status, HostWindowV2Status.REBASELINE)
+                self.assertEqual(reopened.shadow.calls, 0)
+                self.assertIsNone(
+                    reopened.runner.composition.finalization_store.pending()
+                )
+            finally:
+                reopened.close()
+
+    def test_completed_shadows_before_prepare_reconstruct_without_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with patch.object(
+                    harness.runner.composition.finalization_store,
+                    "prepare",
+                    side_effect=RuntimeError("crash-before-prepared"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        harness.runner.process_ready_windows()
+                self.assertEqual(harness.shadow.calls, 4)
+                self.assertIsNone(
+                    harness.runner.composition.finalization_store.pending()
+                )
+            finally:
+                harness.close()
+            reopened = _Harness(root)
+            try:
+                recovered = reopened.runner.process_ready_windows()
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0].status, HostWindowV2Status.REBASELINE)
+                self.assertEqual(reopened.shadow.calls, 0)
+            finally:
+                reopened.close()
+
+    def test_all_cross_store_crash_points_reconcile_exactly_once(self) -> None:
+        cases = (
+            ("after_detector_commit", "finalization", "record_detector"),
+            ("before_attestation", "attestation", "append"),
+            ("after_attestation", "finalization", "record_attestation"),
+            ("before_ack", "source", "acknowledge"),
+            ("after_ack", "finalization", "record_acknowledged"),
+            ("before_finalized", "finalization", "finalize"),
+        )
+        for label, owner, method in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                harness = _Harness(root)
+                try:
+                    harness.serve_many(WINDOW_QUERY_COUNT)
+                    harness.runner.process_ready_windows()
+                    harness.serve_many(WINDOW_QUERY_COUNT)
+                    target = {
+                        "finalization": harness.runner.composition.finalization_store,
+                        "attestation": harness.runner.composition.attestation_store,
+                        "source": harness.runner.composition.shadow_source,
+                    }[owner]
+                    with patch.object(
+                        target, method, side_effect=RuntimeError(label)
+                    ):
+                        with self.assertRaises(RuntimeError):
+                            harness.runner.process_ready_windows()
+                    self.assertEqual(harness.shadow.calls, 8)
+                finally:
+                    harness.close()
+
+                reopened = _Harness(root)
+                try:
+                    recovered = reopened.runner.process_ready_windows()
+                    self.assertEqual(len(recovered), 1)
+                    self.assertEqual(
+                        recovered[0].status, HostWindowV2Status.EVALUATED
+                    )
+                    self.assertEqual(reopened.shadow.calls, 0)
+                    detector_count = reopened.runner.composition.detector_store._db.execute(  # noqa: SLF001
+                        "SELECT COUNT(*) FROM detector_events"
+                    ).fetchone()[0]
+                    attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                        "SELECT COUNT(*) FROM attestation_records"
+                    ).fetchone()[0]
+                    acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(
+                        consumer_id="v2-shadow"
+                    )
+                    self.assertEqual(detector_count, 2)
+                    self.assertEqual(attestation_count, 1)
+                    self.assertEqual(len(acknowledgement.event_ids), 400)
+                    self.assertIsNone(
+                        reopened.runner.composition.finalization_store.pending()
+                    )
+                finally:
+                    reopened.close()
+
+    def test_contradictory_coordinator_and_detector_artifacts_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with patch.object(
+                    harness.runner.composition.finalization_store,
+                    "record_detector",
+                    side_effect=RuntimeError("after-detector-before-coordinator"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        harness.runner.process_ready_windows()
+                harness.runner.composition.finalization_store.record_detector(
+                    detector_event_sha256="f" * 64,
+                    detector_head_sha256=None,
+                    detector_status=HostWindowV2Status.REBASELINE,
+                    recorded_at_utc="2026-08-12T00:10:00Z",
+                )
+            finally:
+                harness.close()
+            reopened = _Harness(root)
+            try:
+                with self.assertRaises(Exp010LiveRunnerError) as raised:
+                    reopened.runner.process_ready_windows()
+                self.assertEqual(
+                    raised.exception.code, "WINDOW_DETECTOR_ARTIFACT_MISMATCH"
+                )
+                self.assertEqual(reopened.shadow.calls, 0)
+            finally:
+                reopened.close()
+
+    def test_correct_detector_event_with_wrong_journal_head_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                harness.runner.process_ready_windows()
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with patch.object(
+                    harness.runner.composition.finalization_store,
+                    "record_detector",
+                    side_effect=RuntimeError("after-detector-before-journal"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        harness.runner.process_ready_windows()
+                persisted = harness.runner.composition.detector_store.load_persisted_window(1)
+                self.assertIsNotNone(persisted)
+                self.assertIsNotNone(persisted.result.detector_head)
+                wrong_head = "f" * 64
+                self.assertNotEqual(
+                    wrong_head,
+                    persisted.result.detector_head.detector_head_sha256,
+                )
+                harness.runner.composition.finalization_store.record_detector(
+                    detector_event_sha256=persisted.event_sha256,
+                    detector_head_sha256=wrong_head,
+                    detector_status=HostWindowV2Status.EVALUATED,
+                    recorded_at_utc="2026-08-12T00:10:00Z",
+                )
+            finally:
+                harness.close()
+
+            reopened = _Harness(root)
+            try:
+                with self.assertRaises(Exp010LiveRunnerError) as raised:
+                    reopened.runner.process_ready_windows()
+                self.assertEqual(
+                    raised.exception.code, "WINDOW_DETECTOR_ARTIFACT_MISMATCH"
+                )
+                self.assertEqual(reopened.shadow.calls, 0)
+                self.assertEqual(
+                    reopened.runner.composition.finalization_store.pending().phase,
+                    WindowFinalizationPhase.DETECTOR_COMMITTED,
+                )
+                attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                    "SELECT COUNT(*) FROM attestation_records"
+                ).fetchone()[0]
+                acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(
+                    consumer_id="v2-shadow"
+                )
+                self.assertEqual(attestation_count, 0)
+                self.assertEqual(len(acknowledgement.event_ids), WINDOW_QUERY_COUNT)
+            finally:
+                reopened.close()
+
+    def test_detector_reason_codes_must_equal_prepared_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                harness.runner.process_ready_windows()
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                sources = harness.runner.composition.response_store.load_window(1)
+                self.assertIsNotNone(sources)
+                harness.runner._prepare_window(tuple(sources))  # noqa: SLF001
+                state = harness.runner.composition.finalization_store.pending()
+                self.assertEqual(state.phase, WindowFinalizationPhase.PREPARED)
+                restored = restore_prepared_evaluation(state.prepared)
+                self.assertIsNotNone(restored)
+                prepared_decision, _pending = restored
+                conflicting_decision = replace(
+                    prepared_decision,
+                    reason_codes=(
+                        *prepared_decision.reason_codes,
+                        "INJECTED_REASON_MISMATCH",
+                    ),
+                )
+                bundle = harness.runner._load_bound_bundle(state.prepared)  # noqa: SLF001
+                harness.runner.composition.detector_store.process_window(
+                    window=bundle.shadow_window,
+                    evaluator=lambda _reference, _current: conflicting_decision,
+                    persisted_at_utc="2026-08-12T00:10:00Z",
+                )
+                persisted = harness.runner.composition.detector_store.load_persisted_window(1)
+                self.assertIsNotNone(persisted)
+                self.assertEqual(
+                    persisted.result.reason_codes,
+                    conflicting_decision.reason_codes,
+                )
+                harness.runner.composition.finalization_store.record_detector(
+                    detector_event_sha256=persisted.event_sha256,
+                    detector_head_sha256=(
+                        persisted.result.detector_head.detector_head_sha256
+                    ),
+                    detector_status=HostWindowV2Status.EVALUATED,
+                    recorded_at_utc="2026-08-12T00:10:01Z",
+                )
+            finally:
+                harness.close()
+
+            reopened = _Harness(root)
+            try:
+                with self.assertRaises(Exp010LiveRunnerError) as raised:
+                    reopened.runner.process_ready_windows()
+                self.assertEqual(
+                    raised.exception.code, "WINDOW_DETECTOR_ARTIFACT_MISMATCH"
+                )
+                self.assertEqual(reopened.shadow.calls, 0)
+                self.assertEqual(
+                    reopened.runner.composition.finalization_store.pending().phase,
+                    WindowFinalizationPhase.DETECTOR_COMMITTED,
+                )
+                attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                    "SELECT COUNT(*) FROM attestation_records"
+                ).fetchone()[0]
+                acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(
+                    consumer_id="v2-shadow"
+                )
+                self.assertEqual(attestation_count, 0)
+                self.assertEqual(len(acknowledgement.event_ids), WINDOW_QUERY_COUNT)
+            finally:
+                reopened.close()
 
     def test_configuration_rejects_forbidden_operands(self) -> None:
         signature = Exp010OperatorConfiguration.__dataclass_fields__

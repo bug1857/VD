@@ -50,6 +50,7 @@ from .config import (
     Metric,
     SearchConfiguration,
 )
+from .flat_oracle_agreement import compare_flat_oracle_hits
 from .drift import AUDIT_QUERY_COUNT, SENTINEL_EF, canonical_serialize_tuple
 from .milvus import ClientLike, CollectionIdentity, MilvusHarness, SearchHit
 from .oracle import (
@@ -621,11 +622,16 @@ class MilvusActuationClient:
         oracle: OracleResult,
         configuration: SearchConfiguration,
     ) -> bool:
-        return bool(
-            outcome.hits is not None
-            and tuple(hit.id for hit in outcome.hits) == oracle.ids
-            and MilvusActuationClient._violation_count(outcome.hits, configuration) == 0
-        )
+        if outcome.hits is None:
+            return False
+        return compare_flat_oracle_hits(
+            flat_hits=outcome.hits,
+            oracle_result=oracle,
+            metric=configuration.metric,
+            radius=float(configuration.radius),
+            range_filter=float(configuration.range_filter),
+            limit=configuration.limit,
+        ).agrees
 
     def _run_audit(
         self,

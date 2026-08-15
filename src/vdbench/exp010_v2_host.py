@@ -46,7 +46,9 @@ from .real_detector_attestation_store import (
     VerifiedRealDetectorHead,
 )
 from .shadow_event_types import MonitorStreamKey
+from .shadow_attempt_store import SQLiteShadowAttemptStore
 from .v2_shadow_worker import V2ShadowCaptureExecutor, V2ShadowWorker
+from .window_finalization import SQLiteWindowFinalizationStore
 
 
 __all__ = [
@@ -164,33 +166,58 @@ class Exp010V2HostComposition:
         )
         directory = Path(root)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-        self.response_store = SQLiteHostResponseCommitStore(
-            directory / "v2_source.sqlite3",
-            stream_key=self.stream_key,
-            source_revision=source_revision,
-            environment_manifest_sha256=environment_manifest_sha256,
-        )
-        self.host = ReferenceV2Host(
-            serving_executor=serving_executor,
-            response_store=self.response_store,
-            clock=clock,
-        )
-        # Two independent cursors: the shadow worker and the EXP-010 capture
-        # never consume, delete, or advance each other's evidence.
-        self.shadow_source = V2GenuineWorkloadObservationSource(
-            store=self.response_store, consumer_id=SHADOW_CONSUMER_ID, clock=clock
-        )
-        self.shadow_worker = V2ShadowWorker(
-            capture_executor=shadow_capture_executor,
-            captured_at_clock=shadow_captured_at_clock,
-        )
-        self.detector_store = SQLiteHostWindowDetectorV2Store(
-            directory / "v2_detector.sqlite3", stream_key=self.stream_key
-        )
-        self.attestation_store = SQLiteRealDetectorAttestationStore(
-            directory / "v2_attestation.sqlite3", stream_key=self.stream_key
-        )
+        self._closed = False
+        self._stores: list[object] = []
+        try:
+            self.response_store = SQLiteHostResponseCommitStore(
+                directory / "v2_source.sqlite3",
+                stream_key=self.stream_key,
+                source_revision=source_revision,
+                environment_manifest_sha256=environment_manifest_sha256,
+            )
+            self._stores.append(self.response_store)
+            self.host = ReferenceV2Host(
+                serving_executor=serving_executor,
+                response_store=self.response_store,
+                clock=clock,
+            )
+            # Two independent cursors: the shadow worker and EXP-010 capture
+            # never consume, delete, or advance each other's evidence.
+            self.shadow_source = V2GenuineWorkloadObservationSource(
+                store=self.response_store,
+                consumer_id=SHADOW_CONSUMER_ID,
+                clock=clock,
+            )
+            self.shadow_attempt_store = SQLiteShadowAttemptStore(
+                directory / "v2_shadow_attempts.sqlite3",
+                stream_key=self.stream_key,
+                source_revision=source_revision,
+                environment_manifest_sha256=environment_manifest_sha256,
+            )
+            self._stores.append(self.shadow_attempt_store)
+            self.shadow_worker = V2ShadowWorker(
+                capture_executor=shadow_capture_executor,
+                captured_at_clock=shadow_captured_at_clock,
+                attempt_store=self.shadow_attempt_store,
+            )
+            self.detector_store = SQLiteHostWindowDetectorV2Store(
+                directory / "v2_detector.sqlite3", stream_key=self.stream_key
+            )
+            self._stores.append(self.detector_store)
+            self.attestation_store = SQLiteRealDetectorAttestationStore(
+                directory / "v2_attestation.sqlite3", stream_key=self.stream_key
+            )
+            self._stores.append(self.attestation_store)
+            self.finalization_store = SQLiteWindowFinalizationStore(
+                directory / "v2_window_finalization.sqlite3",
+                stream_key=self.stream_key,
+                source_revision=source_revision,
+                environment_manifest_sha256=environment_manifest_sha256,
+            )
+            self._stores.append(self.finalization_store)
+        except Exception:
+            self.close()
+            raise
         self.evaluator = GovernedV2DetectorEvaluator(
             previous_evidence_source=self.attestation_store,
             detector_seed=detector_seed,
@@ -199,7 +226,6 @@ class Exp010V2HostComposition:
         )
         self.source_revision = source_revision
         self.environment_manifest_sha256 = environment_manifest_sha256
-        self._closed = False
 
     @property
     def data_identity(self) -> str:
@@ -231,7 +257,7 @@ class Exp010V2HostComposition:
         if self._closed:
             return
         self._closed = True
-        for store in (self.attestation_store, self.detector_store, self.response_store):
+        for store in reversed(self._stores):
             try:
                 store.close()
             except Exception:

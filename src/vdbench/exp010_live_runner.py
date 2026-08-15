@@ -37,7 +37,7 @@ from typing import Any, Mapping
 from .artifacts import canonical_json_bytes
 from .config import Metric
 from .drift import DetectorState
-from .exp010_v2_host import Exp010V2HostComposition
+from .exp010_v2_host import Exp010V2HostComposition, SHADOW_CONSUMER_ID
 from .host_observation import RangeQueryRequest
 from .host_window_detector_v2 import HostWindowV2Status
 from .host_window_lineage import V2GenuineWorkloadObservationSource, V2VisibleResponse
@@ -45,6 +45,12 @@ from .monitor_evidence import encode_persisted_window_evidence
 from .real_detector_attestation_store import VerifiedRealDetectorHead
 from .response_profile_v2_capture import capture_real_v2_post_trigger_population
 from .shadow_window import WINDOW_QUERY_COUNT
+from .window_finalization import (
+    PreparedWindowFinalization,
+    WindowFinalizationPhase,
+    build_prepared_window_finalization,
+    restore_prepared_evaluation,
+)
 
 
 __all__ = [
@@ -236,7 +242,6 @@ class Exp010LiveRunner:
             shadow_captured_at_clock=shadow_captured_at_clock,
         )
         self._clock = clock
-        self._shadow_cursor = 0
         self._closed = False
 
     # -- Gate B: genuine workload ingress --------------------------------
@@ -258,41 +263,101 @@ class Exp010LiveRunner:
     def process_ready_windows(self) -> tuple[Exp010WindowResult, ...]:
         """Process every *complete* canonical 200-source window now available.
 
-        Only whole windows are processed, in order, from the independent
-        `v2-shadow` cursor; an incomplete tail stays pending and is never
-        acknowledged. Restart is safe because the cursor is durable and the
-        detector store reconstructs its own progression.
+        Only whole windows are processed in order. The next window comes from
+        the verified finalization history; the independent `v2-shadow`
+        acknowledgement prefix must agree exactly. An incomplete tail stays
+        pending and is never acknowledged. Restart first reconciles every
+        already-durable detector/attestation/acknowledgement artifact.
         """
 
         results: list[Exp010WindowResult] = []
+        recovered = self._reconcile_pending()
+        if recovered is not None:
+            results.append(recovered)
         while True:
+            window_sequence = self.composition.finalization_store.next_window_sequence()
             observations = self.composition.shadow_source.poll(
                 limit=WINDOW_QUERY_COUNT
             )
             if len(observations) < WINDOW_QUERY_COUNT:
                 break  # incomplete tail: remains pending, not acknowledged
-            sources = self.composition.response_store.poll(
-                consumer_id="v2-shadow-sources",
-                limit=WINDOW_QUERY_COUNT,
-                start_source_sequence=self._shadow_cursor,
-            )
-            if len(sources) != WINDOW_QUERY_COUNT:
+            sources = self.composition.response_store.load_window(window_sequence)
+            if sources is None:
                 break
-            results.append(self._process_window(tuple(sources)))
-            self.composition.shadow_source.acknowledge(
-                tuple(item.event_id for item in observations)
-            )
-            self._shadow_cursor += WINDOW_QUERY_COUNT
+            if tuple(item.event_id for item in observations) != tuple(
+                item.event_id for item in sources
+            ):
+                raise _error("WINDOW_SOURCE_CURSOR_MISMATCH")
+            self._prepare_window(tuple(sources))
+            reconciled = self._reconcile_pending()
+            if reconciled is None:
+                raise _error("WINDOW_FINALIZATION_INCOMPLETE")
+            results.append(reconciled)
         return tuple(results)
 
-    def _process_window(self, sources) -> Exp010WindowResult:
-        bundle = self.composition.shadow_worker.build(sources)
-        reference_bundle = getattr(self, "_reference_bundle", None)
-        captured: dict[str, object] = {}
+    def _load_bound_bundle(self, prepared: PreparedWindowFinalization):
+        sources = self.composition.response_store.load_window(
+            prepared.window_sequence
+        )
+        if sources is None:
+            raise _error("WINDOW_FINALIZATION_SOURCE_MISSING")
+        if (
+            tuple(item.source_sequence for item in sources)
+            != prepared.source_sequences
+            or tuple(item.event_id for item in sources) != prepared.source_event_ids
+            or tuple(item.source_sha256 for item in sources) != prepared.source_sha256s
+            or tuple(item.query_id_sha256 for item in sources)
+            != prepared.query_id_sha256s
+        ):
+            raise _error("WINDOW_FINALIZATION_SOURCE_MISMATCH")
+        bundle = self.composition.shadow_worker.load_completed(tuple(sources))
+        attempts = self.composition.shadow_attempt_store.records_for_window(
+            prepared.window_sequence
+        )
+        if (
+            tuple(item.identity.attempt_sha256 for item in attempts)
+            != prepared.attempt_sha256s
+            or tuple(item.envelope.expected_trace_sha256 for item in attempts)
+            != prepared.trace_sha256s
+            or bundle.shadow_window.source_window_sha256
+            != prepared.source_window_sha256
+            or bundle.shadow_window.shadow_window_sha256
+            != prepared.shadow_window_sha256
+            or bundle.assembled.manifest_sha256
+            != prepared.assembled_manifest_sha256
+        ):
+            raise _error("WINDOW_FINALIZATION_SHADOW_MISMATCH")
+        return bundle
 
-        def evaluator(reference_window, current_window):
-            if reference_bundle is None:
+    def _reference_bundle(self, reference_window_sequence: int):
+        sources = self.composition.response_store.load_window(
+            reference_window_sequence
+        )
+        if sources is None:
+            raise _error("WINDOW_REFERENCE_MISSING")
+        return self.composition.shadow_worker.load_completed(tuple(sources))
+
+    def _prepare_window(self, sources) -> None:
+        bundle = self.composition.shadow_worker.build(sources)
+        progression = self.composition.detector_store.load_progression()
+        if progression.next_window_sequence != bundle.window_sequence:
+            raise _error("WINDOW_DETECTOR_PROGRESSION_MISMATCH")
+        decision = None
+        pending = None
+        expected_status = HostWindowV2Status.REBASELINE
+        if not progression.requires_rebaseline:
+            if progression.reference_window_sequence is None:
                 raise _error("WINDOW_REFERENCE_MISSING")
+            reference_bundle = self._reference_bundle(
+                progression.reference_window_sequence
+            )
+            if (
+                reference_bundle.shadow_window.source_window_sha256
+                != progression.reference_source_window_sha256
+                or reference_bundle.shadow_window.shadow_window_sha256
+                != progression.reference_shadow_window_sha256
+            ):
+                raise _error("WINDOW_REFERENCE_BINDING_MISMATCH")
             decision, pending = self.composition.evaluator.evaluate(
                 reference_shadow_window=reference_bundle.shadow_window,
                 current_shadow_window=bundle.shadow_window,
@@ -302,41 +367,279 @@ class Exp010LiveRunner:
                 current_sources=bundle.sources,
                 metric=self.configuration.metric,
             )
-            captured["pending"] = pending
-            return decision
-
-        result = self.composition.detector_store.process_window(
-            window=bundle.shadow_window,
-            evaluator=evaluator,
-            persisted_at_utc=self._clock(),
+            expected_status = HostWindowV2Status.EVALUATED
+        attempts = self.composition.shadow_attempt_store.records_for_window(
+            bundle.window_sequence
         )
-        attested = False
-        if result.detector_head is not None and "pending" in captured:
-            pending = captured["pending"]
-            evidence = pending["current_window_evidence"]
-            encoded = encode_persisted_window_evidence(evidence)
-            attestation = self.composition.evaluator.attest(
-                pending=pending,
-                head=result.detector_head,
-                current_window_evidence_sha256=encoded["sha256"],
+        prepared = build_prepared_window_finalization(
+            bundle=bundle,
+            attempts=attempts,
+            source_revision=self.composition.source_revision,
+            environment_manifest_sha256=self.composition.environment_manifest_sha256,
+            expected_detector_status=expected_status,
+            decision=decision,
+            pending=pending,
+        )
+        self.composition.finalization_store.prepare(
+            prepared, recorded_at_utc=self._clock()
+        )
+
+    def _expected_acknowledged_ids(self, through_window: int) -> tuple[str, ...]:
+        states = self.composition.finalization_store.states()
+        if through_window >= len(states):
+            raise _error("WINDOW_FINALIZATION_STATE_INVALID")
+        return tuple(
+            event_id
+            for state in states[: through_window + 1]
+            for event_id in state.prepared.source_event_ids
+        )
+
+    def _verify_detector_artifact(self, state, persisted):
+        """Cross-check detector authority, PREPARED intent, and journal claims."""
+
+        if persisted is None:
+            raise _error("WINDOW_DETECTOR_ARTIFACT_MISSING")
+        prepared = state.prepared
+        result = persisted.result
+        expected_head_sha256 = (
+            None
+            if result.detector_head is None
+            else result.detector_head.detector_head_sha256
+        )
+        if (
+            persisted.source_window_sha256 != prepared.source_window_sha256
+            or persisted.shadow_window_sha256 != prepared.shadow_window_sha256
+            or result.status is not prepared.expected_detector_status
+        ):
+            raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+
+        restored = restore_prepared_evaluation(prepared)
+        if result.status is HostWindowV2Status.EVALUATED:
+            if restored is None or result.detector_head is None:
+                raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+            decision, pending = restored
+            head = result.detector_head
+            if (
+                result.reason_codes != decision.reason_codes
+                or head.stream_key != pending["stream_key"]
+                or head.reference_window_sequence
+                != pending["reference_window_sequence"]
+                or head.reference_source_window_sha256
+                != pending["reference_source_window_sha256"]
+                or head.current_window_sequence != pending["current_window_sequence"]
+                or head.current_source_window_sha256
+                != pending["current_source_window_sha256"]
+                or head.current_shadow_window_sha256
+                != pending["current_shadow_window_sha256"]
+                or head.detector_state is not decision.state
+                or head.detector_classification is not decision.classification
+                or head.detector_provenance.sha256
+                != pending["evidence_provenance_sha256"]
+            ):
+                raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+        elif (
+            result.status is not HostWindowV2Status.REBASELINE
+            or restored is not None
+            or result.detector_head is not None
+            or result.reason_codes != ("REFERENCE_ESTABLISHED",)
+        ):
+            raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+
+        if state.phase is not WindowFinalizationPhase.PREPARED and (
+            state.detector_event_sha256 != persisted.event_sha256
+            or state.detector_head_sha256 != expected_head_sha256
+        ):
+            raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+        return result, restored
+
+    def _reconcile_pending(self) -> Exp010WindowResult | None:
+        state = self.composition.finalization_store.pending()
+        if state is None:
+            acknowledged = self.composition.response_store.consumer_acknowledgement_state(
+                consumer_id=SHADOW_CONSUMER_ID
             )
-            self.composition.attestation_store.append(
-                attestation=attestation, window_evidence=evidence
+            expected = tuple(
+                event_id
+                for item in self.composition.finalization_store.states()
+                for event_id in item.prepared.source_event_ids
             )
-            attested = True
-        # REBASELINE (and the first window) establishes the reference epoch;
-        # UNEVALUABLE deliberately leaves the reference untouched.
-        if result.status is HostWindowV2Status.REBASELINE:
-            self._reference_bundle = bundle
+            if acknowledged.event_ids != expected:
+                raise _error("WINDOW_ACKNOWLEDGEMENT_STATE_MISMATCH")
+            return None
+
+        prepared = state.prepared
+        bundle = self._load_bound_bundle(prepared)
+        persisted = self.composition.detector_store.load_persisted_window(
+            prepared.window_sequence
+        )
+        if state.phase is WindowFinalizationPhase.PREPARED:
+            if persisted is None:
+                restored = restore_prepared_evaluation(prepared)
+
+                def evaluator(_reference, _current):
+                    if restored is None:
+                        raise _error("WINDOW_FINALIZATION_EVALUATION_MISSING")
+                    return restored[0]
+
+                self.composition.detector_store.process_window(
+                    window=bundle.shadow_window,
+                    evaluator=evaluator,
+                    persisted_at_utc=self._clock(),
+                )
+                persisted = self.composition.detector_store.load_persisted_window(
+                    prepared.window_sequence
+                )
+            if persisted is None:
+                raise _error("WINDOW_DETECTOR_ARTIFACT_MISSING")
+            result, _restored = self._verify_detector_artifact(state, persisted)
+            self.composition.finalization_store.record_detector(
+                detector_event_sha256=persisted.event_sha256,
+                detector_head_sha256=(
+                    None
+                    if result.detector_head is None
+                    else result.detector_head.detector_head_sha256
+                ),
+                detector_status=result.status,
+                recorded_at_utc=self._clock(),
+            )
+            state = self.composition.finalization_store.pending()
+
+        if state is None:
+            raise _error("WINDOW_FINALIZATION_STATE_INVALID")
+        if persisted is None:
+            persisted = self.composition.detector_store.load_persisted_window(
+                prepared.window_sequence
+            )
+        result, restored = self._verify_detector_artifact(state, persisted)
+        if state.phase is WindowFinalizationPhase.DETECTOR_COMMITTED:
+            if result.detector_head is None:
+                self.composition.finalization_store.record_attestation_not_required(
+                    recorded_at_utc=self._clock()
+                )
+            else:
+                if restored is None:
+                    raise _error("WINDOW_FINALIZATION_EVALUATION_MISSING")
+                decision, pending = restored
+                if (
+                    decision.state is not result.detector_head.detector_state
+                    or decision.classification
+                    is not result.detector_head.detector_classification
+                ):
+                    raise _error("WINDOW_DETECTOR_ARTIFACT_MISMATCH")
+                attested = self.composition.attestation_store.load_for_detector_head(
+                    result.detector_head
+                )
+                if attested is None:
+                    evidence = pending["current_window_evidence"]
+                    encoded = encode_persisted_window_evidence(evidence)
+                    attestation = self.composition.evaluator.attest(
+                        pending=pending,
+                        head=result.detector_head,
+                        current_window_evidence_sha256=encoded["sha256"],
+                    )
+                    self.composition.attestation_store.append(
+                        attestation=attestation, window_evidence=evidence
+                    )
+                    attested = self.composition.attestation_store.load_for_detector_head(
+                        result.detector_head
+                    )
+                if attested is None:
+                    raise _error("WINDOW_ATTESTATION_ARTIFACT_MISSING")
+                self.composition.finalization_store.record_attestation(
+                    attestation_record_sha256=attested.record_sha256,
+                    attestation_sha256=attested.attestation.attestation_sha256,
+                    recorded_at_utc=self._clock(),
+                )
+            state = self.composition.finalization_store.pending()
+
+        if state is None:
+            raise _error("WINDOW_FINALIZATION_STATE_INVALID")
+        if state.phase in {
+            WindowFinalizationPhase.ATTESTATION_COMMITTED,
+            WindowFinalizationPhase.ATTESTATION_NOT_REQUIRED,
+        }:
+            if state.phase is WindowFinalizationPhase.ATTESTATION_COMMITTED:
+                if result.detector_head is None:
+                    raise _error("WINDOW_ATTESTATION_ARTIFACT_MISMATCH")
+                actual = self.composition.attestation_store.load_for_detector_head(
+                    result.detector_head
+                )
+                if (
+                    actual is None
+                    or actual.record_sha256 != state.attestation_record_sha256
+                    or actual.attestation.attestation_sha256
+                    != state.attestation_sha256
+                ):
+                    raise _error("WINDOW_ATTESTATION_ARTIFACT_MISMATCH")
+            acknowledgement = self.composition.response_store.consumer_acknowledgement_state(
+                consumer_id=SHADOW_CONSUMER_ID
+            )
+            expected_before = self._expected_acknowledged_ids(
+                prepared.window_sequence - 1
+            ) if prepared.window_sequence else ()
+            expected_after = self._expected_acknowledged_ids(
+                prepared.window_sequence
+            )
+            if acknowledgement.event_ids == expected_before:
+                self.composition.shadow_source.acknowledge(
+                    prepared.source_event_ids
+                )
+                acknowledgement = self.composition.response_store.consumer_acknowledgement_state(
+                    consumer_id=SHADOW_CONSUMER_ID
+                )
+            if (
+                acknowledgement.event_ids != expected_after
+                or acknowledgement.head_sha256 is None
+            ):
+                raise _error("WINDOW_ACKNOWLEDGEMENT_STATE_MISMATCH")
+            self.composition.finalization_store.record_acknowledged(
+                acknowledgement_head_sha256=acknowledgement.head_sha256,
+                acknowledged_count=len(acknowledgement.event_ids),
+                recorded_at_utc=self._clock(),
+            )
+            state = self.composition.finalization_store.pending()
+
+        if state is None:
+            raise _error("WINDOW_FINALIZATION_STATE_INVALID")
+        if state.phase is WindowFinalizationPhase.SOURCE_ACKNOWLEDGED:
+            if state.detector_head_sha256 is not None:
+                if result.detector_head is None:
+                    raise _error("WINDOW_ATTESTATION_ARTIFACT_MISMATCH")
+                actual = self.composition.attestation_store.load_for_detector_head(
+                    result.detector_head
+                )
+                if (
+                    actual is None
+                    or actual.record_sha256 != state.attestation_record_sha256
+                    or actual.attestation.attestation_sha256
+                    != state.attestation_sha256
+                ):
+                    raise _error("WINDOW_ATTESTATION_ARTIFACT_MISMATCH")
+            acknowledgement = self.composition.response_store.consumer_acknowledgement_state(
+                consumer_id=SHADOW_CONSUMER_ID
+            )
+            if (
+                acknowledgement.event_ids
+                != self._expected_acknowledged_ids(prepared.window_sequence)
+                or acknowledgement.head_sha256
+                != state.acknowledgement_head_sha256
+            ):
+                raise _error("WINDOW_ACKNOWLEDGEMENT_STATE_MISMATCH")
+            self.composition.finalization_store.finalize(
+                recorded_at_utc=self._clock()
+            )
+        elif state.phase is not WindowFinalizationPhase.FINALIZED:
+            raise _error("WINDOW_FINALIZATION_STATE_INVALID")
+
         return Exp010WindowResult(
-            window_sequence=bundle.window_sequence,
+            window_sequence=prepared.window_sequence,
             status=result.status,
             reason_codes=result.reason_codes,
             detector_state=(
                 None if result.detector_head is None
                 else result.detector_head.detector_state
             ),
-            attested=attested,
+            attested=result.detector_head is not None,
         )
 
     # -- Gate D: trigger readiness (never auto-captures) -----------------

@@ -42,6 +42,7 @@ from .host_window_detector_v2 import (
     SQLiteHostWindowDetectorV2Store,
     V2DetectorHead,
     VerifiedLatestV2DetectorHead,
+    verify_v2_detector_head,
 )
 from .monitor_evidence import (
     decode_persisted_window_evidence,
@@ -59,6 +60,7 @@ from .shadow_event_types import MonitorStreamKey
 __all__ = [
     "RealDetectorAttestationStoreError",
     "VerifiedRealDetectorHead",
+    "PersistedRealDetectorAttestation",
     "SQLiteRealDetectorAttestationStore",
 ]
 
@@ -71,6 +73,15 @@ _OWNED_LOCK_INODES: set[tuple[int, int]] = set()
 _OWNERSHIP_LOCK = threading.Lock()
 
 _ISSUE_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedRealDetectorAttestation:
+    """Verified attestation record loaded by exact detector-head identity."""
+
+    attestation: RealDetectorAttestation
+    window_evidence: WindowEvidence
+    record_sha256: str
 
 
 class RealDetectorAttestationStoreError(RuntimeError):
@@ -419,6 +430,58 @@ class SQLiteRealDetectorAttestationStore:
                     detector_head_sha256=payload["detector_head_sha256"],
                 )
             return None
+
+    def load_for_detector_head(
+        self, head: V2DetectorHead
+    ) -> PersistedRealDetectorAttestation | None:
+        """Load one exact attestation without appending or replaying it."""
+
+        with self._mutex:
+            verify_v2_detector_head(head)
+            documents = self._verify_all()
+            matches = [
+                item
+                for item in documents
+                if item["detector_head_sha256"] == head.detector_head_sha256
+            ]
+            if not matches:
+                return None
+            if len(matches) != 1:
+                raise _error("ATTESTATION_RECORD_INVALID")
+            document = matches[0]
+            payload = document["attestation"]["attestation_payload"]
+            from .host_window_detector_v2 import _stream_document
+
+            if (
+                payload["stream"] != _stream_document(head.stream_key)
+                or payload["reference_window_sequence"]
+                != head.reference_window_sequence
+                or payload["reference_source_window_sha256"]
+                != head.reference_source_window_sha256
+                or payload["current_window_sequence"]
+                != head.current_window_sequence
+                or payload["current_source_window_sha256"]
+                != head.current_source_window_sha256
+                or payload["current_shadow_window_sha256"]
+                != head.current_shadow_window_sha256
+                or payload["detector_state"] != head.detector_state.value
+                or payload["detector_classification"]
+                != head.detector_classification.value
+                or payload["evidence_provenance_sha256"]
+                != head.detector_provenance.sha256
+            ):
+                raise _error("ATTESTATION_HEAD_MISMATCH")
+            evidence = decode_persisted_window_evidence(document["window_evidence"])
+            if (
+                document["window_evidence"]["sha256"]
+                != payload["current_window_evidence_sha256"]
+            ):
+                raise _error("ATTESTATION_EVIDENCE_MISMATCH")
+            return PersistedRealDetectorAttestation(
+                attestation=self._attestation_from_document(document["attestation"]),
+                window_evidence=evidence,
+                record_sha256=_digest(_RECORD_DOMAIN, document),
+            )
 
     # -- real head verification ------------------------------------------
 
