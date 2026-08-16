@@ -4631,6 +4631,189 @@ an ambiguous STARTED propagates rather than being retried; and the entrypoint
 cannot replay source workload. A complete repository suite is required, with no
 live service or historical-evidence mutation.
 
+### ADR-017: Committed Gate-A operator, V5 campaign initialization, and environment-observation authority
+
+Status: Accepted
+Date: 2026-08-16
+Risk level: HIGH
+Evidence status: no new live evidence. This ADR authorizes no Milvus search, no
+`serve()`, no Gate-B ingest, no Gate-C capture, and no V5 creation by itself.
+V1/V2/V3/V4 remain immutable.
+
+#### Context
+
+ADR-016 item 9 requires a fresh Gate A #5 before any V5 campaign, but no
+committed code performed one. The only Gate-A artifact was
+`exp010_live_runner.build_environment_manifest_sha256`, a pure offline helper
+with zero production callers: it hashes an observation an operator has *already*
+made, and defines neither how that observation is obtained nor where the result
+is persisted. Three gaps followed, and the 2026-08-16 Gate A #5 preflight halted
+on them.
+
+**First**, no operator existed. Gate C is provable from the repository; Gate A
+was not.
+
+**Second**, `deployment_identity` is one of the thirteen mandatory
+`_ENVIRONMENT_FIELDS`, yet it had no authority domain anywhere. It appears in no
+V4 durable store binding — the bound stream key is exactly seven fields and
+`deployment_identity` is not among them — and its only committed occurrences are
+mutually inconsistent test placeholders (`"deployment"`, `"offline-deployment"`,
+`"env-001"`, `"offline-v2-engine"`). Its only validation is a non-empty string
+check. `ARCHITECTURE.md` mentions it once, to *exclude* it from the serving
+domain as belonging to "a separate authority domain" that was never defined.
+
+**Third**, V5 campaign creation was unowned. Gate C refuses an uninitialized
+campaign by design, so some earlier boundary must create one, and none did.
+
+Separately, the preflight established by mechanical proof — not by campaign-name
+inference — which values are stable project identities. Re-deriving
+`derive_serving_configuration_identity` from candidate operands reproduces V4's
+durably bound `configuration_identity`
+(`exp010-serving-config-v1:sha256:825931cd…b366a9`) exactly, which is a SHA-256
+preimage proof of eight serving operands at once. Re-deriving the DATASET-001
+corpus identity from `artifacts/exp-001/dataset` reproduces V4's bound
+`data_identity` (`DATASET-001-v1:sha256:b6cb56a3…51da9`) exactly.
+`v2_milvus_shadow_capture` proves `flat_index_identity` and `hnsw_index_identity`
+*are* `flat_binding_id` and `hnsw_binding_id`.
+
+#### Decision
+
+**1. What Gate A proves.** Gate A proves exactly one thing: that at a stated
+instant, a live ENV-001 stack was observed to match a governed environment
+description, and that this observation was reduced to one canonical digest. It
+proves nothing about workload, sources, detectors, or drift. It is an
+*observation* boundary, never a serving or capture boundary.
+
+**2. Four field authority classes.** Every Gate-A field belongs to exactly one:
+
+*Stable project identity* — a label for a governed object whose lifetime spans
+campaigns. Reusable only because it is proven from committed authority:
+`flat_binding_id`/`flat_index_identity`, `hnsw_binding_id`/`hnsw_index_identity`,
+`threshold_stratum`, `threshold_radius`, `range_filter`, `limit`, `served_ef`,
+`dimensions`, `consistency_level`, `metric`.
+
+*Governed operator input* — supplied explicitly, never defaulted, never
+inferred: `deployment_identity`, `stream_id`, `campaign_root`, `milvus_uri`,
+`flat_collection_name`, `hnsw_collection_name`, the three container names,
+`source_revision`, `expected_row_count`, `hnsw_m`, `hnsw_ef_construction`,
+`dataset001_dir`.
+
+*Freshly observed* — must come from the current container lifetime and may never
+be carried forward: `observed_at_utc`, live FLAT/HNSW collection and index
+metadata, and the Docker container lifetime identities.
+
+*Derived* — computed, never accepted from the operator: `data_identity` (from
+the verified DATASET-001 corpus), `configuration_identity` (re-derived from the
+serving operands and required to match), `environment_manifest_sha256`, and the
+evidence digest.
+
+**3. `deployment_identity` is a governed operator input with no default.** No
+committed authority assigns it a value, and this ADR deliberately does not
+invent one. The operator refuses to run without it and never substitutes a
+default, a campaign-name-derived string, or a historical placeholder. Choosing
+its value is an operator act recorded in the evidence, not a code decision.
+
+**4. The canonical Gate-A entrypoint is `vdbench.exp010_gate_a_operator`,** with
+the same two-mode discipline as `exp010_gate_c_operator`. `--mode preflight`
+validates the closed operand set, verifies the frozen source revision, performs
+read-only Milvus metadata inspection, observes container lifetimes, re-derives
+every derived field, builds the prospective observation and its manifest digest,
+and prints the resolved plan. It creates nothing. `--mode execute` re-runs that
+entire preflight and then, only after the separate explicit flag
+`--confirm-initialize-v5`, initializes the campaign.
+
+**5. Gate A owns V5 creation, exactly once.** Gate A is the only boundary that
+brings a campaign into being. It creates the campaign root and the Gate-A
+evidence beneath it, and nothing else — it never creates the five Gate-C stores,
+which remain Gate B's to initialize through genuine ingest.
+
+**6. Evidence format and location.** The campaign root is
+`~/.local/share/vd/exp010/live-l2-target075-v5`, consistent with existing roots.
+Gate-A evidence is one immutable file at `<campaign_root>/gate_a/
+gate_a_environment_manifest.json`, serialized with the existing strict v2
+contract (`canonical_serialization.strict_canonical_json_bytes`). No second
+digest or serialization implementation is introduced: the environment digest is
+`build_environment_manifest_sha256` unchanged, and the evidence digest is
+`strict_canonical_digest` under a new domain constant.
+
+**7. Atomicity: the campaign root appears whole or not at all.** Evidence is
+written into a staging directory outside the campaign root, fsynced, and the
+staging directory is then `os.rename`d into place. A crash at any point leaves
+either no campaign root or a complete one. **A partially created V5 campaign can
+therefore never exist, and is never accepted as a successful Gate A.** A
+campaign root that exists but lacks complete, digest-verifiable Gate-A evidence
+is an error state, never a PASS.
+
+**8. Re-execution never rebinds.** If the campaign root already exists, execute
+refuses with `GATE_A_CAMPAIGN_ALREADY_INITIALIZED` and writes nothing. Gate A is
+not idempotent-by-overwrite: it is create-once. Preflight remains freely
+repeatable because it creates nothing.
+
+**9. Direction of authority is one-way.** Gate A produces
+`environment_manifest_sha256`; Gate B ingests genuine sources into the campaign
+Gate A created; Gate C consumes both. Gate C is not modified by this ADR and
+continues to refuse uninitialized campaigns. A Gate-A artifact that Gate C
+cannot consume is a Gate-A defect, never a reason to relax Gate C.
+
+**10. Zero searches, structurally.** Preflight and execute both reach Milvus
+only through a metadata reader exposing exactly `describe_collection`,
+`describe_index`, `get_collection_stats`, and `get_load_state`. The reader has no
+`search` attribute at all, so issuing a search is not merely forbidden but
+structurally impossible.
+
+**11. Historical evidence is unreachable.** The operator refuses any
+`campaign_root` that already exists, so no V1–V4 path can be targeted, and it
+opens no historical store.
+
+#### Command contract
+
+Preflight — creates nothing, issues zero searches:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_a_operator \
+--operands /path/to/gate_a_operands.json \
+--mode preflight
+```
+
+Execute — initializes V5 exactly once:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_a_operator \
+--operands /path/to/gate_a_operands.json \
+--mode execute \
+--confirm-initialize-v5
+```
+
+The operand file's exact closed key set is `exp010_gate_a_operator.
+OPERAND_FIELDS`.
+
+#### Consequences
+
+Gate A becomes provable from the repository rather than reconstructed from a
+session, and V5 acquires a single owner for its creation. The environment digest
+helper, the serving-configuration identity, the canonical serializers, Gate C,
+the detector contract, and every storage schema are unchanged; this ADR is
+additive. No scientific or statistical contract is affected, because Gate A
+observes an environment and measures nothing.
+
+#### Verification requirements
+
+Offline tests must prove: preflight creates nothing and issues zero searches;
+execute requires the explicit confirmation flag; correct fresh live metadata is
+accepted; and each of a source-revision, collection-name, row-count, dimension,
+metric, FLAT-type, HNSW-type, `M`, `efConstruction`, governed-serving-config, and
+stale-stable-identity mismatch is rejected. Incomplete and unexpected operands
+must both fail closed. An existing campaign root must be refused, a partial
+initialization must never report PASS, and an atomic-write failure must leave no
+campaign root. The manifest digest must be deterministic for an identical
+observation and must change with `observed_at_utc`. The source revision must be
+bound into the evidence. No V1–V4 path may be targetable, and the produced
+authority shape must be consumable by the existing Gate-C operand contract.
+Focused verification is sufficient: this change is additive and alters no shared
+runtime semantics.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX
