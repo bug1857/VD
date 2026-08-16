@@ -33,19 +33,20 @@ Evaluator trust boundary (read before consuming any head):
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields
-from enum import StrEnum
 import fcntl
 import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import threading
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
+from enum import StrEnum
+from pathlib import Path
+from typing import Self
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
@@ -67,11 +68,11 @@ __all__ = [
     "DETECTOR_V2_HEAD_SCHEMA_VERSION",
     "HostWindowDetectorV2Error",
     "HostWindowV2Status",
+    "PersistedV2DetectorWindow",
     "SQLiteHostWindowDetectorV2Store",
     "V2DetectorHead",
-    "PersistedV2DetectorWindow",
-    "V2DetectorProgression",
     "V2DetectorProcessResult",
+    "V2DetectorProgression",
     "V2ShadowPositionEvidence",
     "V2ShadowWindow",
     "VerifiedLatestV2DetectorHead",
@@ -846,7 +847,7 @@ class SQLiteHostWindowDetectorV2Store:
             self.close()
             raise
 
-    def __enter__(self) -> "SQLiteHostWindowDetectorV2Store":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

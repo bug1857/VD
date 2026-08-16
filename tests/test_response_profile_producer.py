@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 
@@ -43,7 +43,6 @@ from vdbench.response_profile_semantic import (
 )
 from vdbench.shadow_event_types import MonitorStreamKey
 
-
 MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_producer.py"
 
 
@@ -77,7 +76,7 @@ def _member(index: int, *, namespace: object, offset: float = 0.0):
 
 class _Clock:
     def __init__(self) -> None:
-        self._utc = datetime(2026, 8, 10, tzinfo=timezone.utc)
+        self._utc = datetime(2026, 8, 10, tzinfo=UTC)
         self._monotonic = 0
 
     def utc_now(self) -> str:
@@ -373,9 +372,9 @@ class ResponseProfileProducerTests(unittest.TestCase):
             value,
             r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{1,6}Z\Z",
         )
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         self.assertIsNotNone(parsed.tzinfo)
-        self.assertEqual(parsed.utcoffset(), timezone.utc.utcoffset(parsed))
+        self.assertEqual(parsed.utcoffset(), UTC.utcoffset(parsed))
 
 
 if __name__ == "__main__":

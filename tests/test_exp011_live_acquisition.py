@@ -8,18 +8,32 @@ PROSPECTIVE evidence -- every call in this file passes
 from __future__ import annotations
 
 import ast
-from dataclasses import fields
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-from vdbench.config import Metric, SearchConfiguration, IndexTrack
+from tests.test_response_profile_milvus_adapter import (
+    _FakeMilvusClient,
+    _FakeStackHealthProbe,
+)
+from vdbench.config import IndexTrack, Metric, SearchConfiguration
+from vdbench.exp011_live_acquisition import (
+    Exp011LiveAcquisitionError,
+    load_control_artifact,
+    load_static_identity_artifact,
+    main,
+    run_exp011_live_acquisition,
+)
 from vdbench.response_profile import SUPPORTED_EFS
-from vdbench.response_profile_control import build_response_profile_control
+from vdbench.response_profile_control import (
+    build_response_profile_control,
+    response_profile_control_document,
+)
 from vdbench.response_profile_evidence import (
     CALIBRATION_QUERY_COUNT,
     WARMUP_QUERY_COUNT,
@@ -44,20 +58,11 @@ from vdbench.response_profile_semantic import (
     build_response_profile_oracle_record,
     build_response_profile_static_identity,
     oracle_manifest_document,
+    response_profile_static_identity_document,
 )
-from vdbench.response_profile_control import response_profile_control_document
-from vdbench.response_profile_semantic import response_profile_static_identity_document
 from vdbench.response_profile_vector_material import (
     response_profile_vector_material_document,
 )
-from vdbench.exp011_live_acquisition import (
-    Exp011LiveAcquisitionError,
-    load_control_artifact,
-    load_static_identity_artifact,
-    main,
-    run_exp011_live_acquisition,
-)
-from tests.test_response_profile_milvus_adapter import _FakeMilvusClient, _FakeStackHealthProbe
 
 MODULE_PATH = Path(__file__).parents[1] / "src" / "vdbench" / "exp011_live_acquisition.py"
 DIMENSIONS = 1
@@ -166,8 +171,10 @@ class _Fixture:
             "exp011-live-stream-v1", Metric.L2, "target-075", "exp011-live-configuration-v1",
             self.static_identity.data_identity, "flat-exp011-live-fixture-v1", self.static_identity.hnsw_index_identity,
         )
-        from vdbench.response_profile_detector_head import build_response_profile_detector_head
         from vdbench.drift import DetectorState, DriftClassification
+        from vdbench.response_profile_detector_head import (
+            build_response_profile_detector_head,
+        )
 
         detector_head = build_response_profile_detector_head(
             stream_key=stream_key, window_sequence=2,
@@ -313,7 +320,7 @@ class Exp011LiveAcquisitionTests(unittest.TestCase):
             )
             first_calls = len(client.calls)
             second_client = _FakeMilvusClient(search_response=[[]])
-            result = run_exp011_live_acquisition(
+            run_exp011_live_acquisition(
                 client=second_client, stack_health_probe=health, collection_name=COLLECTION,
                 dimensions=DIMENSIONS, metric=Metric.L2, ledger_path=root / "ledger.sqlite3",
                 run_binding=fixture.run_binding, static_identity=fixture.static_identity,
@@ -436,7 +443,7 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             with self.assertRaises(Exp011LiveAcquisitionError):
                 load_static_identity_artifact(path)
 
-    def _valid_argv(self, root: Path, *, fixture: "_Fixture | None" = None) -> list[str]:
+    def _valid_argv(self, root: Path, *, fixture: _Fixture | None = None) -> list[str]:
         """Write a fully valid, mutually consistent governed artifact set --
         control, static identity, run binding, oracle manifest, and the
         supplemental vector material -- all derived from one fixture, and return
@@ -509,9 +516,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             argv = self._valid_argv(root)
             control_index = argv.index("--control-json") + 1
             argv[control_index] = str(self._write(root, "bad_control.json", {"not": "a control document"}))
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("control_json", str(raised.exception))
 
     def test_cli_malformed_static_identity_json_is_caught_before_run_binding_is_even_read(self) -> None:
@@ -530,9 +539,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             )
             run_binding_index = argv.index("--run-binding-json") + 1
             argv[run_binding_index] = str(root / "does-not-exist.json")
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("static_identity_json", str(raised.exception))
 
     def test_cli_malformed_vector_material_causes_zero_acquisition(self) -> None:
@@ -545,9 +556,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             argv = self._valid_argv(root)
             material_index = argv.index("--vector-material") + 1
             argv[material_index] = str(self._write(root, "bad_material.json", {"not": "vector material"}))
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("vector_material", str(raised.exception))
 
     def test_cli_tampered_oracle_manifest_causes_zero_acquisition(self) -> None:
@@ -563,9 +576,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             document["oracle_manifest_sha256"] = "0" * 64
             oracle_index = argv.index("--oracle-manifest-json") + 1
             argv[oracle_index] = str(self._write(root, "tampered_oracle.json", document))
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("oracle_manifest_json", str(raised.exception))
 
     def test_cli_missing_control_json_file_fails_closed(self) -> None:
@@ -574,9 +589,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             argv = self._valid_argv(root)
             control_index = argv.index("--control-json") + 1
             argv[control_index] = str(root / "does-not-exist.json")
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("cannot read", str(raised.exception))
 
     def test_cli_empty_evidence_status_fails_closed(self) -> None:
@@ -585,9 +602,11 @@ class Exp011LiveAcquisitionArtifactLoaderTests(unittest.TestCase):
             argv = self._valid_argv(root)
             status_index = argv.index("--evidence-status") + 1
             argv[status_index] = ""
-            with self._forbid_acquisition():
-                with self.assertRaises(Exp011LiveAcquisitionError) as raised:
-                    main(argv)
+            with (
+                self._forbid_acquisition(),
+                self.assertRaises(Exp011LiveAcquisitionError) as raised,
+            ):
+                main(argv)
             self.assertIn("evidence-status", str(raised.exception))
 
     def test_cli_missing_evidence_status_argument_is_rejected_by_argparse(self) -> None:

@@ -160,17 +160,17 @@ class LkgQualificationRunnerTests(unittest.TestCase):
         self.query_vector = self.base_vectors[0] * 0.999
 
     def _attempt(self, **overrides):
-        kwargs = dict(
-            query_id=1,
-            query_vector=self.query_vector,
-            metric=Metric.L2,
-            threshold_stratum="target-075",
-            ef=400,
-            radius=5.0,
-            attempt_sequence=0,
-            attempt_number=1,
-            run_binding_sha256=RUN_BINDING_SHA256,
-        )
+        kwargs = {
+            "query_id": 1,
+            "query_vector": self.query_vector,
+            "metric": Metric.L2,
+            "threshold_stratum": "target-075",
+            "ef": 400,
+            "radius": 5.0,
+            "attempt_sequence": 0,
+            "attempt_number": 1,
+            "run_binding_sha256": RUN_BINDING_SHA256,
+        }
         kwargs.update(overrides)
         return self.runner.attempt_query(**kwargs)
 

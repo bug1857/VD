@@ -3,15 +3,31 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.config import IndexTrack, Metric
+from vdbench.host_observation import (
+    BackgroundShadowWorker,
+    BoundedHostObservationRecorder,
+    CompletedRangeQueryObservation,
+    FileHostWorkerStateStore,
+    HostWorkerState,
+    HostWorkerStateError,
+    InMemoryHostWorkerStateStore,
+    ObservationReceipt,
+    ObservationStatus,
+    RangeQueryRequest,
+    ReferenceRangeGateway,
+    RegisteredTraceParameters,
+    ServedQueryOutcome,
+    StreamWorkerState,
+)
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
     ShadowAuditStageEvidence,
@@ -22,23 +38,6 @@ from vdbench.milvus_actuation import (
 from vdbench.oracle import OracleHit, OracleResult
 from vdbench.shadow_event_source import PublicationStatus, TracePublicationReceipt
 from vdbench.workload_monitor import MonitorStreamKey
-
-from vdbench.host_observation import (
-    BackgroundShadowWorker,
-    BoundedHostObservationRecorder,
-    CompletedRangeQueryObservation,
-    FileHostWorkerStateStore,
-    HostWorkerState,
-    HostWorkerStateError,
-    InMemoryHostWorkerStateStore,
-    ObservationStatus,
-    RangeQueryRequest,
-    RegisteredTraceParameters,
-    ReferenceRangeGateway,
-    ServedQueryOutcome,
-    StreamWorkerState,
-)
-
 
 _REGISTERED_TRACE_PARAMETERS = RegisteredTraceParameters(
     allowed_candidate_and_lkg_efs=frozenset({200, 400, 800, 1600}),

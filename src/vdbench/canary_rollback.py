@@ -7,20 +7,19 @@ restoration audit, then leaves only last-known-good routing available.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
 import re
 import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol
 
 from .canary_grant_store import GrantUseRecord, GrantUseResult, GrantUseStatus
 from .canary_lifecycle_audit import CanaryLifecycleAuditRecord, lifecycle_event_id
 from .canary_route_authority import RouteAuthoritySnapshot, RouteAuthorityState
 from .canary_route_state import RouteState, RouteStateBinding, RouteStateRecord
-from .config import Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, Metric
 from .policy import PolicyAction, PolicyDecision
-
 
 __all__ = [
     "CanaryRollbackCoordinator",
@@ -163,7 +162,7 @@ def _valid_context(value: object) -> bool:
     if not isinstance(binding, RouteStateBinding):
         return False
     try:
-        parsed = datetime.fromisoformat(value.occurred_at_utc[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value.occurred_at_utc)
     except (TypeError, ValueError):
         return False
     return bool(
@@ -173,7 +172,7 @@ def _valid_context(value: object) -> bool:
         and _SHA256.fullmatch(value.plan_sha256) is not None
         and _UTC.fullmatch(value.occurred_at_utc) is not None
         and parsed.tzinfo is not None
-        and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+        and parsed.utcoffset() == UTC.utcoffset(parsed)
         and isinstance(binding.metric, Metric)
         and binding.threshold_stratum in THRESHOLD_LABELS
         and binding.last_known_good_ef in {200, 400, 800, 1600}
@@ -275,13 +274,13 @@ class CanaryRollbackCoordinator:
         context = request.context
         try:
             snapshot = self._route_authority.snapshot()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._clear_authority_unavailable(context)
         try:
             cleared = self._route_authority.clear(
                 reason_code=self._clear_reason(request)
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._authority_clear_failed(context)
         if not isinstance(cleared, RouteAuthoritySnapshot) or cleared.state is not RouteAuthorityState.LKG_ONLY:
             return self._authority_clear_failed(context)
@@ -290,7 +289,7 @@ class CanaryRollbackCoordinator:
         try:
             marker = self._route_state_store.load()
             ledger = self._grant_store.load(context.grant_id)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._contain_invalid_context(context)
         if not _marker_matches(marker, context):
             return self._contain_invalid_context(context)
@@ -307,7 +306,7 @@ class CanaryRollbackCoordinator:
         context = request.context
         try:
             snapshot = self._route_authority.snapshot()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._clear_authority_unavailable(context)
         if not (
             isinstance(snapshot, RouteAuthoritySnapshot)
@@ -324,7 +323,7 @@ class CanaryRollbackCoordinator:
                 plan_sha256=context.plan_sha256,
                 occurred_at_utc=context.occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._expiry_reconciliation_failed(context)
         if getattr(expiry, "reconciled", None) is not True:
             return self._expiry_reconciliation_failed(context)
@@ -339,7 +338,7 @@ class CanaryRollbackCoordinator:
                 reason_code=reason,
                 changed_at_utc=context.occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             disabled = self._disable_best_effort(context, "ROLLBACK_MARKER_WRITE_FAILED")
             self._record_event(
                 context=context,
@@ -362,7 +361,7 @@ class CanaryRollbackCoordinator:
                 audit_id=context.policy_audit_id,
                 reason=self._policy_reason(request),
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._record_event(
                 context=context,
                 event_type="ROLLBACK_TRIGGERED",
@@ -391,14 +390,14 @@ class CanaryRollbackCoordinator:
                 audit_id=context.policy_audit_id,
                 reason="APPROVAL_EXPIRY",
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return RollbackResult(True, False, "ROLLBACK_CONTROLLER_DISABLE_FAILED", trigger_event_id, None, False)
         return self._restore(context, trigger_event_id)
 
     def _restore(self, context: RollbackContext, trigger_event_id: str | None) -> RollbackResult:
         try:
             evidence = self._restoration_auditor.verify_restoration(context=context)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             evidence = None
         verified = _restoration_valid(evidence)
         event_type = "ROLLBACK_RESTORATION_VERIFIED" if verified else "ROLLBACK_RESTORATION_UNVERIFIED"
@@ -411,7 +410,7 @@ class CanaryRollbackCoordinator:
     def _clear_invalid_context(self, context: RollbackContext) -> RollbackResult:
         try:
             cleared = self._route_authority.clear(reason_code="ROLLBACK_CONTEXT_INVALID")
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._authority_clear_failed(context)
         return self._contain_invalid_context(context, cleared=cleared)
 
@@ -443,7 +442,7 @@ class CanaryRollbackCoordinator:
 
         try:
             cleared = self._route_authority.clear(reason_code="ROLLBACK_CONTEXT_INVALID")
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return RollbackResult(False, False, "ROLLBACK_AUTHORITY_CLEAR_FAILED", None, None, False)
         return RollbackResult(
             isinstance(cleared, RouteAuthoritySnapshot)
@@ -458,7 +457,7 @@ class CanaryRollbackCoordinator:
     def _clear_authority_unavailable(self, context: RollbackContext) -> RollbackResult:
         try:
             cleared = self._route_authority.clear(reason_code="ROLLBACK_AUTHORITY_UNAVAILABLE")
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._authority_clear_failed(context)
         self._clear_marker_best_effort(context, "ROLLBACK_AUTHORITY_UNAVAILABLE")
         disabled = self._disable_best_effort(context, "ROLLBACK_AUTHORITY_UNAVAILABLE")
@@ -547,7 +546,7 @@ class CanaryRollbackCoordinator:
                 reason_code=reason_code,
                 changed_at_utc=context.occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
 
     def _disable_best_effort(self, context: RollbackContext, reason: str) -> bool:
@@ -555,14 +554,14 @@ class CanaryRollbackCoordinator:
             self._automatic_action_controller.disable_automatic_actions(
                 audit_id=context.policy_audit_id, reason=reason
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return False
         return True
 
     def _terminal_best_effort(self, context: RollbackContext, reason_code: str) -> None:
         try:
             self._terminal(context, reason_code)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
 
     def _terminal(self, context: RollbackContext, reason_code: str) -> bool:
@@ -573,7 +572,7 @@ class CanaryRollbackCoordinator:
                 reason_code=reason_code,
                 occurred_at_utc=context.occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return False
         return bool(isinstance(result, GrantUseResult) and result.accepted is True)
 
@@ -603,6 +602,6 @@ class CanaryRollbackCoordinator:
         try:
             if not self._lifecycle_audit_sink.contains(event_id):
                 self._lifecycle_audit_sink.append(record)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None
         return event_id

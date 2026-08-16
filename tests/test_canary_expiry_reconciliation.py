@@ -2,17 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from vdbench.canary_expiry_reconciliation import CanaryExpiryReconciler
-from vdbench.canary_grant_store import CanaryGrantUseStore, GrantUseRecord, GrantUseResult, GrantUseStatus
-from vdbench.canary_lifecycle_audit import CanaryLifecycleAuditRecord, JsonlCanaryLifecycleAuditSink
-from vdbench.canary_route_authority import CanaryRouteAuthority, RouteAuthoritySnapshot, RouteAuthorityState
-from vdbench.canary_route_state import FileCanaryRouteStateStore, RouteState, RouteStateBinding, RouteStateRecord
+from vdbench.canary_grant_store import (
+    CanaryGrantUseStore,
+    GrantUseRecord,
+    GrantUseResult,
+    GrantUseStatus,
+)
+from vdbench.canary_lifecycle_audit import (
+    CanaryLifecycleAuditRecord,
+    JsonlCanaryLifecycleAuditSink,
+)
+from vdbench.canary_route_authority import (
+    CanaryRouteAuthority,
+    RouteAuthoritySnapshot,
+    RouteAuthorityState,
+)
+from vdbench.canary_route_state import (
+    FileCanaryRouteStateStore,
+    RouteState,
+    RouteStateBinding,
+    RouteStateRecord,
+)
 from vdbench.canary_routing import CanaryRouteKind, RouteResolution
 from vdbench.config import Metric
 
@@ -206,7 +223,7 @@ class CanaryExpiryReconcilerTests(unittest.TestCase):
     def test_real_components_persist_one_expiry_failback_across_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            clock = MutableClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+            clock = MutableClock(datetime(2026, 8, 4, 10, 0, tzinfo=UTC))
             authority = CanaryRouteAuthority(clock=clock)
             state = FileCanaryRouteStateStore(root / "route-state.json")
             ledger = CanaryGrantUseStore(root / "grant-ledger.sqlite")
@@ -223,7 +240,7 @@ class CanaryExpiryReconcilerTests(unittest.TestCase):
                 grant_id="grant-001", signed_payload_sha256=_sha("a"),
                 reserved_at_utc="2026-08-04T10:00:00Z",
             )
-            clock.value = datetime(2026, 8, 4, 10, 1, tzinfo=timezone.utc)
+            clock.value = datetime(2026, 8, 4, 10, 1, tzinfo=UTC)
             self.assertEqual(authority.snapshot().reason_code, "ROUTE_APPROVAL_EXPIRED")
 
             result = CanaryExpiryReconciler(

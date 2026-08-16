@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import fields
 import ast
 import copy
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -16,10 +16,9 @@ from vdbench.drift import (
     DriftClassification,
     build_evidence_provenance,
 )
-from vdbench.response_profile import ResponseProfileIdentity, SUPPORTED_EFS
+from vdbench.response_profile import SUPPORTED_EFS, ResponseProfileIdentity
 from vdbench.response_profile_control import build_response_profile_control
 from vdbench.response_profile_detector_head import build_response_profile_detector_head
-from vdbench.response_profile_monitor_store import ResponseProfileMonitorStateStore
 from vdbench.response_profile_evidence import (
     CALIBRATION_QUERY_COUNT,
     WARMUP_QUERY_COUNT,
@@ -42,15 +41,16 @@ from vdbench.response_profile_lifecycle import (
     build_response_profile_lifecycle_event,
     build_response_profile_run_binding,
 )
+from vdbench.response_profile_monitor_store import ResponseProfileMonitorStateStore
 from vdbench.response_profile_semantic import (
     MeasuredResultOutcome,
     ResponseProfileSemanticBundle,
     ResponseProfileSemanticError,
     ResponseProfileSemanticExpectation,
     RuntimeSnapshotPhase,
+    build_response_profile_identity_from_static,
     build_response_profile_oracle_manifest,
     build_response_profile_oracle_record,
-    build_response_profile_identity_from_static,
     build_response_profile_semantic_encoder,
     build_response_profile_semantic_encoder_from_static,
     build_response_profile_static_identity,
@@ -61,7 +61,6 @@ from vdbench.response_profile_semantic import (
 )
 from vdbench.shadow_event_types import MonitorStreamKey
 from vdbench.workload_monitor import MonitorStreamState
-
 
 MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_semantic.py"
 
@@ -649,20 +648,22 @@ class ResponseProfileSemanticTests(unittest.TestCase):
     def test_oracle_result_rejects_bool_and_nonfinite_values(self) -> None:
         member = self.fixture.population.calibration_role_manifest.members[0]
         for ids, distances in (((True,), (0.1,)), ((1,), (float("nan"),))):
-            with self.subTest(ids=ids, distances=distances):
-                with self.assertRaises(ResponseProfileSemanticError):
-                    build_response_profile_oracle_record(
-                        observation_identity_sha256=member.observation_identity.observation_identity_sha256,
-                        query_id_sha256=member.query_identity.query_id_sha256,
-                        query_payload_sha256=member.query_payload_identity.query_payload_sha256,
-                        limit=100,
-                        full_count=1,
-                        capped_ids=ids,
-                        capped_distances=distances,
-                        metric=Metric.L2,
-                        radius=0.75,
-                        range_filter=0.0,
-                    )
+            with (
+                self.subTest(ids=ids, distances=distances),
+                self.assertRaises(ResponseProfileSemanticError),
+            ):
+                build_response_profile_oracle_record(
+                    observation_identity_sha256=member.observation_identity.observation_identity_sha256,
+                    query_id_sha256=member.query_identity.query_id_sha256,
+                    query_payload_sha256=member.query_payload_identity.query_payload_sha256,
+                    limit=100,
+                    full_count=1,
+                    capped_ids=ids,
+                    capped_distances=distances,
+                    metric=Metric.L2,
+                    radius=0.75,
+                    range_filter=0.0,
+                )
 
     def test_module_has_no_candidate_authority_or_live_dependencies(self) -> None:
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))

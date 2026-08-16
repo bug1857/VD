@@ -8,13 +8,12 @@ payload, and refuses to load anything whose schema or checksum is not exact.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import tempfile
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .config import IndexTrack, Metric
@@ -32,7 +31,6 @@ from .shadow_window import (
     canonical_shadow_trace_payload,
     hash_shadow_audit_trace,
 )
-
 
 SCHEMA_VERSION = "persisted-shadow-trace-envelope-v1"
 _ROOT_FIELDS = frozenset(

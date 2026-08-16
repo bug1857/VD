@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 import stat
 import tempfile
@@ -50,39 +49,39 @@ _ORDERED_QUERY_IDS_SHA256 = _ordered_query_ids_sha256(_ORDERED_QUERY_IDS)
 
 
 def _configuration(**overrides) -> SearchConfiguration:
-    fields = dict(
-        metric=Metric.L2,
-        threshold_label="target-075",
-        radius=5.0,
-        index_track=IndexTrack.HNSW,
-        ef=400,
-    )
+    fields = {
+        "metric": Metric.L2,
+        "threshold_label": "target-075",
+        "radius": 5.0,
+        "index_track": IndexTrack.HNSW,
+        "ef": 400,
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _binding(**overrides) -> LkgRunBinding:
-    fields = dict(
-        run_id="run-1",
-        producer_identity="producer-v1",
-        search_configuration=_configuration(),
-        collection_name="lkg_l2_hnsw",
-        base_data_identity="data-v1",
-        index_identity="index-v1",
-        qualification_dataset_id="DATASET-003",
-        qualification_dataset_version="DATASET-003-v1",
-        qualification_manifest_sha256="a" * 64,
-        qualification_query_role="lkg_qualification",
+    fields = {
+        "run_id": "run-1",
+        "producer_identity": "producer-v1",
+        "search_configuration": _configuration(),
+        "collection_name": "lkg_l2_hnsw",
+        "base_data_identity": "data-v1",
+        "index_identity": "index-v1",
+        "qualification_dataset_id": "DATASET-003",
+        "qualification_dataset_version": "DATASET-003-v1",
+        "qualification_manifest_sha256": "a" * 64,
+        "qualification_query_role": "lkg_qualification",
         # The raw .npy artifact hash is unrelated to this ledger's own
         # validation and deliberately given a value that would NOT match
         # any real DATASET-003 artifact -- the ledger never checks it.
-        qualification_query_id_array_sha256="b" * 64,
-        qualification_ordered_query_ids_sha256=_ORDERED_QUERY_IDS_SHA256,
-        qualification_query_array_sha256="c" * 64,
-        qualification_expected_query_count=len(_ORDERED_QUERY_IDS),
-        environment_identity="env-v1",
-        source_revision="deadbeef",
-    )
+        "qualification_query_id_array_sha256": "b" * 64,
+        "qualification_ordered_query_ids_sha256": _ORDERED_QUERY_IDS_SHA256,
+        "qualification_query_array_sha256": "c" * 64,
+        "qualification_expected_query_count": len(_ORDERED_QUERY_IDS),
+        "environment_identity": "env-v1",
+        "source_revision": "deadbeef",
+    }
     fields.update(overrides)
     return LkgRunBinding(**fields)
 
@@ -1167,7 +1166,7 @@ class LkgQualificationLedgerTests(unittest.TestCase):
                 barrier.wait(timeout=5)
                 ledger = self._ledger(lock_timeout_seconds=5.0)
                 ledger.append(_success_attempt(query_id, sequence))
-            except BaseException as exc:  # noqa: BLE001 - captured for the main thread
+            except BaseException as exc:  # captured for the main thread  # noqa: BLE001
                 errors.append(exc)
 
         threads = [

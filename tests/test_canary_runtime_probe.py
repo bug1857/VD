@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import ast
+import unittest
 from dataclasses import replace
 from pathlib import Path
-import unittest
 
 from vdbench.canary_route_state import RouteStateBinding
 from vdbench.canary_runtime_probe import Stage4ServingRuntimeProbe
@@ -179,7 +179,9 @@ class CanaryRuntimeProbeTests(unittest.TestCase):
         self.assertFalse(forbidden & imports)
 
     def test_admission_module_preserves_runtime_readiness_public_reexport(self) -> None:
-        from vdbench.canary_admission import Stage4RuntimeReadiness as AdmissionReadiness
+        from vdbench.canary_admission import (
+            Stage4RuntimeReadiness as AdmissionReadiness,
+        )
 
         self.assertIs(AdmissionReadiness, Stage4RuntimeReadiness)
 

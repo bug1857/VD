@@ -41,26 +41,26 @@ from vdbench.oracle import capped_threshold_recall
 
 
 def _search_configuration(**overrides) -> SearchConfiguration:
-    fields = dict(
-        metric=Metric.L2,
-        threshold_label="target-075",
-        radius=0.6,
-        index_track=IndexTrack.HNSW,
-        ef=800,
-        limit=100,
-        consistency_level="Strong",
-    )
+    fields = {
+        "metric": Metric.L2,
+        "threshold_label": "target-075",
+        "radius": 0.6,
+        "index_track": IndexTrack.HNSW,
+        "ef": 800,
+        "limit": 100,
+        "consistency_level": "Strong",
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _identity(**overrides) -> WorkloadIdentityBinding:
-    fields = dict(
-        configuration_identity="a" * 16,
-        data_identity="DATASET-001-v1:sha256:" + "b" * 64,
-        flat_binding_id="c" * 16,
-        hnsw_binding_id="d" * 16,
-    )
+    fields = {
+        "configuration_identity": "a" * 16,
+        "data_identity": "DATASET-001-v1:sha256:" + "b" * 64,
+        "flat_binding_id": "c" * 16,
+        "hnsw_binding_id": "d" * 16,
+    }
     fields.update(overrides)
     return WorkloadIdentityBinding(**fields)
 
@@ -176,11 +176,11 @@ class RecallAuditObservationValidationTests(unittest.TestCase):
             _observation(dataset002_manifest_sha256="not-a-digest")
 
     def test_invalid_search_configuration_rejected(self) -> None:
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             _observation(search_configuration=_search_configuration(ef=999))  # not in HNSW_EF_SWEEP
 
     def test_invalid_identity_rejected(self) -> None:
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             _observation(identity=_identity(configuration_identity=""))
 
 
@@ -401,7 +401,7 @@ class CanaryRecallAuditLedgerTests(unittest.TestCase):
         ledger = self._ledger()
         manifest_path = Path(self._tempdir.name) / "manifest.json"
         publish_recall_audit_manifest(ledger, manifest_path)
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             publish_recall_audit_manifest(ledger, manifest_path)
 
 

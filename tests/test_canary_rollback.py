@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
 
 from vdbench.actuation_persistence import FileAutomaticActionController
 from vdbench.canary_expiry_reconciliation import CanaryExpiryReconciler
-from vdbench.canary_grant_store import CanaryGrantUseStore, GrantUseRecord, GrantUseResult, GrantUseStatus
-from vdbench.canary_lifecycle_audit import CanaryLifecycleAuditRecord, JsonlCanaryLifecycleAuditSink
-from vdbench.canary_route_authority import CanaryRouteAuthority, RouteAuthoritySnapshot, RouteAuthorityState
-from vdbench.canary_route_state import FileCanaryRouteStateStore, RouteState, RouteStateBinding, RouteStateRecord
+from vdbench.canary_grant_store import (
+    CanaryGrantUseStore,
+    GrantUseRecord,
+    GrantUseResult,
+    GrantUseStatus,
+)
+from vdbench.canary_lifecycle_audit import (
+    CanaryLifecycleAuditRecord,
+    JsonlCanaryLifecycleAuditSink,
+)
 from vdbench.canary_rollback import (
     CanaryRollbackCoordinator,
     RestorationAuditResult,
@@ -22,6 +28,17 @@ from vdbench.canary_rollback import (
     RollbackRequest,
     RollbackResult,
     RollbackTrigger,
+)
+from vdbench.canary_route_authority import (
+    CanaryRouteAuthority,
+    RouteAuthoritySnapshot,
+    RouteAuthorityState,
+)
+from vdbench.canary_route_state import (
+    FileCanaryRouteStateStore,
+    RouteState,
+    RouteStateBinding,
+    RouteStateRecord,
 )
 from vdbench.config import Metric
 from vdbench.policy import PolicyAction, PolicyDecision, PolicyMode, SafetyGateResult
@@ -474,7 +491,7 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
                 clock=lambda: _context().occurred_at_utc,
             )
             authority = CanaryRouteAuthority(
-                clock=lambda: datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+                clock=lambda: datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
             )
             marker = state.begin_activation(
                 binding=_binding(),
@@ -521,7 +538,7 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
     def test_real_expiry_reconciliation_persists_failback_before_restoration_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            clock_value = datetime(2026, 8, 4, 12, 29, tzinfo=timezone.utc)
+            clock_value = datetime(2026, 8, 4, 12, 29, tzinfo=UTC)
 
             def clock() -> datetime:
                 return clock_value
@@ -550,7 +567,7 @@ class CanaryRollbackCoordinatorTests(unittest.TestCase):
                 activation_marker=marker,
                 expires_at_utc="2026-08-04T12:30:00Z",
             )
-            clock_value = datetime(2026, 8, 4, 12, 30, tzinfo=timezone.utc)
+            clock_value = datetime(2026, 8, 4, 12, 30, tzinfo=UTC)
             self.assertEqual(
                 authority.snapshot().reason_code,
                 "ROUTE_APPROVAL_EXPIRED",

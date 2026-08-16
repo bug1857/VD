@@ -14,15 +14,19 @@ capability, policy decision, grant, route, or actuation authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import shutil
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 from .artifacts import write_immutable_json
 from .config import SearchConfiguration
 from .exp011_live_acquisition import validate_exp011_governed_inputs
+from .host_window_detector_v2 import (
+    SQLiteHostWindowDetectorV2Store,
+    VerifiedLatestV2DetectorHead,
+)
 from .response_profile_control import (
     ResponseProfileControl,
     build_response_profile_control,
@@ -39,10 +43,6 @@ from .response_profile_lifecycle import (
     response_profile_run_binding_document,
 )
 from .response_profile_monitor_store import ResponseProfileMonitorStateStore
-from .host_window_detector_v2 import (
-    SQLiteHostWindowDetectorV2Store,
-    VerifiedLatestV2DetectorHead,
-)
 from .response_profile_semantic import (
     ResponseProfileOracleManifest,
     ResponseProfileOracleRecord,
@@ -157,12 +157,14 @@ def prepare_exp011_acquisition_inputs(
                 "PREPARATION_DETECTOR_HEAD_REQUIRED",
                 "a verified latest detector head is required",
             )
-        if type(monitor_store) is SQLiteHostWindowDetectorV2Store:
-            if type(latest) is not VerifiedLatestV2DetectorHead:
-                raise _error(
-                    "PREPARATION_DETECTOR_HEAD_INVALID",
-                    "v2 detector head must be store-issued",
-                )
+        if (
+            type(monitor_store) is SQLiteHostWindowDetectorV2Store
+            and type(latest) is not VerifiedLatestV2DetectorHead
+        ):
+            raise _error(
+                "PREPARATION_DETECTOR_HEAD_INVALID",
+                "v2 detector head must be store-issued",
+            )
         head = latest.head
         control = build_response_profile_control(
             stream_key=stream_key,

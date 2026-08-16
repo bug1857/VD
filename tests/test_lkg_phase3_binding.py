@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, replace
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields, replace
+from pathlib import Path
 
 import vdbench.lkg_phase3_binding as binding_module
+from tests.test_lkg_phase3_persistence import _authority
 from vdbench.config import Metric
 from vdbench.lkg_phase3_authority import LkgPhase3Authority
 from vdbench.lkg_phase3_binding import (
@@ -20,8 +21,6 @@ from vdbench.lkg_phase3_persistence import (
     PersistedLkgPhase3AuthorityReference,
     VerifiedLatestLkgPhase3AuthorityReference,
 )
-from tests.test_lkg_phase3_persistence import _authority
-
 
 _TIMESTAMP = "2026-08-08T16:00:00.000000Z"
 _D2_METADATA_FIELDS = {
@@ -87,7 +86,7 @@ class LkgPhase3BindingTests(unittest.TestCase):
         digest_fields = {
             name
             for name in identity_fields
-            if name.endswith("digest") or name.endswith("sha256")
+            if name.endswith(("digest", "sha256"))
         }
         integer_fields = {"evaluated_ef", "qualification_expected_query_count"}
 

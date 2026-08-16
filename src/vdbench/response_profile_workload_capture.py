@@ -9,16 +9,12 @@ present here.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from enum import StrEnum
 import base64
 import fcntl
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import shutil
 import sqlite3
@@ -26,20 +22,29 @@ import stat
 import tempfile
 import threading
 import unicodedata
-from typing import Protocol
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Protocol, Self
 
 import numpy as np
 
 from .artifacts import canonical_json_bytes, write_immutable_json
 from .config import IndexTrack, Metric, SearchConfiguration
+from .drift import DetectorState
+from .response_profile_detector_head import (
+    response_profile_detector_head_document,
+    response_profile_detector_head_from_document,
+)
 from .response_profile_evidence import (
     CALIBRATION_QUERY_COUNT,
     WARMUP_QUERY_COUNT,
     CalibrationPopulationManifest,
     LiveStreamSourceNamespace,
+    ResponseProfileEvidenceContractError,
     ResponseProfileRoleKind,
     ResponseProfileRoleManifest,
-    ResponseProfileEvidenceContractError,
     build_calibration_population_manifest,
     build_canonical_query_identity,
     build_live_stream_source_namespace,
@@ -62,14 +67,8 @@ from .response_profile_monitor_store import (
     ResponseProfileMonitorStateStore,
     VerifiedLatestResponseProfileDetectorHead,
 )
-from .response_profile_detector_head import (
-    response_profile_detector_head_document,
-    response_profile_detector_head_from_document,
-)
-from .drift import DetectorState
 from .response_profile_vector_material import response_profile_vector_material_document
 from .shadow_event_types import MonitorStreamKey
-
 
 __all__ = [
     "CAPTURE_EVIDENCE_STATUS",
@@ -860,7 +859,7 @@ class _CaptureLedger:
             self.close()
             raise
 
-    def __enter__(self) -> "_CaptureLedger":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -1098,7 +1097,7 @@ class ResponseProfileWorkloadCapture:
         )
         self._ledger = _CaptureLedger(ledger_path, binding=self._binding)
 
-    def __enter__(self) -> "ResponseProfileWorkloadCapture":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

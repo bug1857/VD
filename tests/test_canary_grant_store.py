@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sqlite3
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from vdbench.canary_grant_store import (
     CanaryGrantUseStore,
-    GrantUseStoreError,
     GrantUseStatus,
+    GrantUseStoreError,
 )
-
 
 _DIGEST_A = "a" * 64
 _DIGEST_B = "b" * 64
@@ -156,7 +155,7 @@ class CanaryGrantUseStoreTests(unittest.TestCase):
                         reserved_at_utc=_RESERVED_AT,
                     )
                 )
-            except BaseException as exc:  # test records concurrent failures explicitly
+            except BaseException as exc:  # test records concurrent failures explicitly  # noqa: BLE001
                 failures.append(exc)
 
         first = threading.Thread(target=reserve)

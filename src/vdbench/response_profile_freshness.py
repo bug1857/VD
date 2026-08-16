@@ -9,12 +9,13 @@ before each governed use and remains disabled pending reviewed EXP-010 evidence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
 import hashlib
 import hmac
 import re
+from dataclasses import dataclass, fields
 
 from .artifacts import canonical_json_bytes
+from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
 from .response_profile import (
     CalibratedResponseProfile,
     ResponseProfileCalibrationEvidence,
@@ -22,7 +23,6 @@ from .response_profile import (
 )
 from .response_profile_control import (
     ResponseProfileControl,
-    response_profile_control_payload,
     verify_response_profile_control,
 )
 from .response_profile_detector_head import verify_response_profile_detector_head
@@ -31,21 +31,19 @@ from .response_profile_root_pin import (
     RootPinnedResponseProfileEvidence,
     verify_root_pinned_response_profile_evidence,
 )
-from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
-
 
 FRESH_EVIDENCE_SCHEMA_VERSION = "fresh-response-profile-evidence-v1"
 FRESH_EVIDENCE_HASH_DOMAIN = b"VD::FRESH_RESPONSE_PROFILE_EVIDENCE::V1\x00"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 __all__ = [
-    "FRESH_EVIDENCE_SCHEMA_VERSION",
     "FRESH_EVIDENCE_HASH_DOMAIN",
-    "ResponseProfileFreshnessError",
+    "FRESH_EVIDENCE_SCHEMA_VERSION",
     "FreshResponseProfileEvidence",
+    "ResponseProfileFreshnessError",
     "bind_fresh_response_profile_evidence",
-    "verify_fresh_response_profile_evidence",
     "fresh_response_profile_evidence_payload",
+    "verify_fresh_response_profile_evidence",
 ]
 
 

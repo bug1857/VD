@@ -39,11 +39,12 @@ Authority:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import math
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
 
 from .artifacts import canonical_json_bytes
 from .config import (
@@ -54,14 +55,13 @@ from .config import (
 )
 from .policy import ACTUATION_LADDER
 
-
 __all__ = [
-    "EXP010_SERVING_CONFIGURATION_SCHEMA_VERSION",
     "EXP010_SERVING_CONFIGURATION_PREFIX",
-    "Exp010ServingConfigurationError",
+    "EXP010_SERVING_CONFIGURATION_SCHEMA_VERSION",
     "Exp010ServingConfiguration",
-    "serving_configuration_payload",
+    "Exp010ServingConfigurationError",
     "derive_serving_configuration_identity",
+    "serving_configuration_payload",
     "validate_governed_configuration_identity",
 ]
 

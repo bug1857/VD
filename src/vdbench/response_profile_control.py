@@ -2,33 +2,36 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
 import hashlib
 import hmac
 import re
 import unicodedata
+from dataclasses import dataclass, fields
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
-from .drift import EvidenceProvenance, build_evidence_provenance, evidence_provenance_valid
+from .drift import (
+    EvidenceProvenance,
+    build_evidence_provenance,
+    evidence_provenance_valid,
+)
 from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
 from .shadow_event_types import MonitorStreamKey
-
 
 CONTROL_SCHEMA_VERSION = "response-profile-control-v1"
 CONTROL_HASH_DOMAIN = b"VD::RESPONSE_PROFILE_CONTROL::V1\x00"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 __all__ = [
-    "CONTROL_SCHEMA_VERSION",
     "CONTROL_HASH_DOMAIN",
-    "ResponseProfileControlError",
+    "CONTROL_SCHEMA_VERSION",
     "ResponseProfileControl",
+    "ResponseProfileControlError",
     "build_response_profile_control",
-    "verify_response_profile_control",
-    "response_profile_control_payload",
     "response_profile_control_document",
     "response_profile_control_from_document",
+    "response_profile_control_payload",
+    "verify_response_profile_control",
 ]
 
 
@@ -398,12 +401,12 @@ def response_profile_control_from_document(value: object) -> ResponseProfileCont
             raise ValueError("provenance fields differ")
         trigger_window_sequence = payload["trigger_window_sequence"]
         if isinstance(trigger_window_sequence, bool) or not isinstance(trigger_window_sequence, int):
-            raise ValueError("trigger_window_sequence must be an integer")
+            raise ValueError("trigger_window_sequence must be an integer")  # domain error type carries the governed reason code  # noqa: TRY004
         detector_head_record_sequence = payload["detector_head_record_sequence"]
         if isinstance(detector_head_record_sequence, bool) or not isinstance(
             detector_head_record_sequence, int
         ):
-            raise ValueError("detector_head_record_sequence must be an integer")
+            raise ValueError("detector_head_record_sequence must be an integer")  # domain error type carries the governed reason code  # noqa: TRY004
 
         stream_key = MonitorStreamKey(
             stream_id=stream["stream_id"],

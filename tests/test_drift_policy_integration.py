@@ -1,8 +1,9 @@
 import ast
+import unittest
 from dataclasses import dataclass
 from pathlib import Path
-import unittest
 
+from tests.test_policy import phase3_pair
 from vdbench.drift import (
     DetectorState,
     DriftClassification,
@@ -20,7 +21,6 @@ from vdbench.policy import (
     ResponseEstimate,
     evaluate_tuning_policy,
 )
-from tests.test_policy import phase3_pair
 
 EFFECT_FLOORS = {
     Signal.QUERY_VECTOR: 0.01,

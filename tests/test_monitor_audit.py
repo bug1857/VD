@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.config import Metric
 from vdbench.shadow_event_types import MonitorStreamKey
@@ -99,7 +99,10 @@ class MonitorAuditSinkTests(unittest.TestCase):
             FileMonitorAuditSink(self.path).read_records()
 
     def test_invalid_outgoing_record_is_rejected_before_any_write(self) -> None:
-        from vdbench.monitor_audit import FileMonitorAuditSink, MonitorAuditLogCorruptedError
+        from vdbench.monitor_audit import (
+            FileMonitorAuditSink,
+            MonitorAuditLogCorruptedError,
+        )
 
         invalid = replace(self._record(), event_trace_sha256=("not-a-sha256",))
         with self.assertRaises(MonitorAuditLogCorruptedError):
@@ -116,7 +119,7 @@ class MonitorAuditSinkTests(unittest.TestCase):
         def append(sink: FileMonitorAuditSink, record_id: str) -> None:
             try:
                 sink.append(self._record(record_id))
-            except BaseException as exc:  # pragma: no cover - failure assertion below
+            except BaseException as exc:  # pragma: no cover - failure assertion below  # noqa: BLE001
                 failures.append(exc)
 
         threads = (
@@ -135,7 +138,10 @@ class MonitorAuditSinkTests(unittest.TestCase):
         )
 
     def test_symlink_log_path_is_rejected(self) -> None:
-        from vdbench.monitor_audit import FileMonitorAuditSink, MonitorAuditLogCorruptedError
+        from vdbench.monitor_audit import (
+            FileMonitorAuditSink,
+            MonitorAuditLogCorruptedError,
+        )
 
         target = self.root / "target.jsonl"
         target.write_text("", encoding="utf-8")

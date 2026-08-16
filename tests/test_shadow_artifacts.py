@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import inspect
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
+from vdbench import shadow_artifacts
 from vdbench.config import IndexTrack, Metric
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
@@ -25,7 +26,6 @@ from vdbench.shadow_artifacts import (
     load_persisted_shadow_trace_envelope,
     persist_shadow_trace_envelope,
 )
-import vdbench.shadow_artifacts as shadow_artifacts
 from vdbench.shadow_window import PersistedShadowTraceEnvelope, hash_shadow_audit_trace
 
 

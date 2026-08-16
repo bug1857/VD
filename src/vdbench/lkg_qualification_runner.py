@@ -46,7 +46,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .actuation import QueryId
-from .config import ContractViolation, Metric, NUMERIC_TOLERANCE
+from .config import NUMERIC_TOLERANCE, ContractViolation, Metric
 from .lkg_milvus_adapter import ClockNs, LkgMilvusAdapter, LkgSearchCall
 from .lkg_qualification_evidence import (
     LkgAttemptStatus,
@@ -55,7 +55,6 @@ from .lkg_qualification_evidence import (
     build_lkg_query_observation,
 )
 from .oracle import capped_threshold_recall, exact_range_search, threshold_violations
-
 
 __all__ = ["LkgQualificationRunner"]
 
@@ -175,7 +174,7 @@ class LkgQualificationRunner:
                     tolerance=NUMERIC_TOLERANCE,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - oracle computation boundary
+        except Exception as exc:  # oracle computation boundary  # noqa: BLE001
             return build_lkg_query_attempt(
                 query_id=query_id,
                 attempt_sequence=attempt_sequence,

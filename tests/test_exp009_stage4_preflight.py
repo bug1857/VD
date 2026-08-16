@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import hashlib
 import json
 import tempfile
-from pathlib import Path
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
-from vdbench.config import IndexTrack, Metric
 from vdbench.artifacts import canonical_json_bytes, sha256_file
+from vdbench.config import IndexTrack, Metric
 from vdbench.exp005_acquisition import IdentityBaseline
-from vdbench.milvus import CollectionIdentity
-from vdbench.milvus_actuation import CollectionIdentityBinding, StackHealth
 from vdbench.exp009_stage4_preflight import (
     PreflightEvidenceTarget,
     ReadOnlyPreflightClient,
     capture_read_only_preflight,
     verify_preflight_evidence,
 )
+from vdbench.milvus import CollectionIdentity
+from vdbench.milvus_actuation import CollectionIdentityBinding, StackHealth
 
 
 def _identity(track: IndexTrack) -> CollectionIdentity:
@@ -153,9 +153,9 @@ class Exp009Stage4PreflightTests(unittest.TestCase):
             allowed_collections=frozenset(self.client.identities),
         )
         with self.assertRaises(AttributeError):
-            facade.search  # type: ignore[attr-defined]
+            facade.search  # type: ignore[attr-defined]  # the expression under test must be evaluated for its side effect  # the expression must be evaluated for its side effect  # noqa: B018
         with self.assertRaises(AttributeError):
-            facade.create_collection  # type: ignore[attr-defined]
+            facade.create_collection  # type: ignore[attr-defined]  # the expression under test must be evaluated for its side effect  # the expression must be evaluated for its side effect  # noqa: B018
 
     def test_existing_output_is_refused_before_client_use(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

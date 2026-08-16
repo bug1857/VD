@@ -570,7 +570,7 @@ class MonotonicUtcClockTests(unittest.TestCase):
 
         # DTZ001 suppressed deliberately and narrowly: supplying a naive
         # datetime IS the subject of this test.
-        naive = datetime(2026, 8, 15, 12, 0, 0)  # noqa: DTZ001
+        naive = datetime(2026, 8, 15, 12, 0, 0)  # supplying a naive datetime is the subject of this test  # noqa: DTZ001
         clock = MonotonicUtcClock(now=lambda: naive)
         with self.assertRaises(Exp010GateCOperatorError) as caught:
             clock()

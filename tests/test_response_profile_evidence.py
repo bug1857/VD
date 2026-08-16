@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import fields
 import hashlib
 import unittest
+from dataclasses import fields
 from unittest.mock import patch
 
 import numpy as np
 
 from vdbench.artifacts import canonical_json_bytes
-from vdbench.config import IndexTrack, Metric, SearchConfiguration, THRESHOLD_LABELS
+from vdbench.config import THRESHOLD_LABELS, IndexTrack, Metric, SearchConfiguration
 from vdbench.drift import canonical_serialize_tuple
 from vdbench.response_profile import SUPPORTED_EFS
 from vdbench.response_profile_evidence import (
@@ -57,7 +57,6 @@ from vdbench.response_profile_evidence import (
     verify_response_profile_replay_schedule,
     verify_response_profile_role_manifest,
 )
-
 
 GOLDEN_QUERY_ID_SHA256 = "b308b64a0771ef42cdff86166f714442c55922078d2a69b62d257e1cb63bab3b"
 GOLDEN_VECTOR_SHA256 = "1228a716655ebe1cc5b75475c851ac1d8ff47fbf784e4cdb90759fb1a9a86c84"

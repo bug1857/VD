@@ -45,24 +45,24 @@ Schema history:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
-from typing import Any, Iterator
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
 from .artifacts import canonical_json_bytes
 from .canary_schedule import Stage4ExecutionSchedule
-
 
 __all__ = [
     "Stage4ExecutionLedger",
@@ -1111,7 +1111,7 @@ def _record_document(
 
 def _observation_document(observation: object) -> dict[str, object]:
     if not isinstance(observation, Stage4SlotObservation):
-        raise ValueError("observation is invalid")
+        raise ValueError("observation is invalid")  # domain error type carries the governed reason code  # noqa: TRY004
     _nonnegative_integer(observation.execution_index, field="execution_index")
     _positive_integer(observation.observed_ef, field="observed_ef")
     start = _nonnegative_integer(
@@ -1269,7 +1269,7 @@ def _start_sha256(previous: str, document: dict[str, object]) -> str:
 
 def _canonical_text(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if (
         not normalized
@@ -1286,10 +1286,10 @@ def _timestamp(value: object) -> str:
     if not isinstance(value, str) or _UTC_RE.fullmatch(value) is None:
         raise ValueError("recorded_at_utc is invalid")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("recorded_at_utc is invalid") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError("recorded_at_utc is invalid")
     return value
 

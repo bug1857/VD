@@ -6,19 +6,23 @@ Every test here uses a fake client. None of these tests contact Milvus.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from vdbench.config import HNSW_EF_CONSTRUCTION, HNSW_M, IndexTrack, Metric, SearchConfiguration
+from vdbench.config import (
+    HNSW_EF_CONSTRUCTION,
+    HNSW_M,
+    IndexTrack,
+    Metric,
+    SearchConfiguration,
+)
 from vdbench.response_profile_evidence import (
-    ResponseProfileRoleKind,
     build_artifact_source_namespace,
     build_canonical_query_identity,
     build_query_vector_identity,
     build_response_profile_query_payload,
-    build_response_profile_role,
     build_response_profile_role_member,
 )
 from vdbench.response_profile_milvus_adapter import (
@@ -172,17 +176,17 @@ class ResponseProfileMilvusQueryExecutorTests(unittest.TestCase):
 
     def test_malformed_result_fails_closed(self) -> None:
         client = _FakeMilvusClient(search_response=[[{"id": 1, "distance": 1.0}], [{"id": 2, "distance": 1.0}]])
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             self._executor(client).execute(_query())
 
     def test_duplicate_ids_fail_closed(self) -> None:
         client = _FakeMilvusClient(search_response=[[{"id": 1, "distance": 1.0}, {"id": 1, "distance": 2.0}]])
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             self._executor(client).execute(_query())
 
     def test_client_exception_propagates_as_a_typed_failure_not_a_fake_success(self) -> None:
         client = _FakeMilvusClient(raise_on="search")
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception):  # the boundary raises several distinct domain error types  # noqa: B017
             self._executor(client).execute(_query())
 
     def test_dimension_mismatch_refuses_before_any_client_call(self) -> None:

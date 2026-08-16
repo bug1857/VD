@@ -27,33 +27,33 @@ Trust boundary:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import unicodedata
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Self
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
 from .lkg_phase3_authority import LkgPhase3Authority
 from .search_configuration_digest import search_configuration_sha256
 
-
 __all__ = [
-    "LKG_PHASE3_REFERENCE_SCHEMA_VERSION",
     "LKG_PHASE3_REFERENCE_HASH_DOMAIN",
+    "LKG_PHASE3_REFERENCE_SCHEMA_VERSION",
+    "LkgPhase3AuthorityAppendResult",
+    "LkgPhase3AuthorityReferenceStore",
     "LkgPhase3PersistenceError",
     "PersistedLkgPhase3AuthorityReference",
     "VerifiedLatestLkgPhase3AuthorityReference",
-    "LkgPhase3AuthorityAppendResult",
-    "LkgPhase3AuthorityReferenceStore",
 ]
 
 
@@ -404,7 +404,7 @@ def _parse_rfc3339_utc(value: object, *, field: str) -> datetime:
             code="LKG_PHASE3_REFERENCE_MALFORMED",
         )
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise LkgPhase3PersistenceError(
             f"{field} is not a valid calendar timestamp",
@@ -1142,7 +1142,7 @@ class LkgPhase3AuthorityReferenceStore:
             finally:
                 self._conn = None
 
-    def __enter__(self) -> LkgPhase3AuthorityReferenceStore:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:

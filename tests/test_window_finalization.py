@@ -8,12 +8,13 @@ create no detector, policy, grant, routing, or actuation authority.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
-import vdbench.window_finalization as window_finalization
+from tests.test_exp010_live_runner import _Harness
+from vdbench import window_finalization
 from vdbench.host_window_detector_v2 import HostWindowV2Status
 from vdbench.window_finalization import (
     SQLiteWindowFinalizationStore,
@@ -21,9 +22,6 @@ from vdbench.window_finalization import (
     WindowFinalizationPhase,
     build_prepared_window_finalization,
 )
-
-from tests.test_exp010_live_runner import _Harness
-
 
 MODULE_PATH = (
     Path(__file__).parents[1] / "src" / "vdbench" / "window_finalization.py"
@@ -145,11 +143,11 @@ class WindowFinalizationStoreTests(unittest.TestCase):
                     identity[0], recorded_at_utc="2026-08-14T00:00:01Z"
                 )
                 with self.assertRaises(sqlite3.DatabaseError):
-                    store._db.execute(  # noqa: SLF001 - deliberate raw SQL probe
+                    store._db.execute(
                         "UPDATE finalization_events SET phase='FINALIZED'"
                     )
                 with self.assertRaises(sqlite3.DatabaseError):
-                    store._db.execute(  # noqa: SLF001 - deliberate raw SQL probe
+                    store._db.execute(
                         "DELETE FROM finalization_events"
                     )
             connection = sqlite3.connect(path)
@@ -181,12 +179,12 @@ class WindowFinalizationStoreTests(unittest.TestCase):
                 "source_sequences",
                 (False, *prepared.source_sequences[1:]),
             )
-            forged_payload = window_finalization._prepared_payload(prepared)  # noqa: SLF001
+            forged_payload = window_finalization._prepared_payload(prepared)
             object.__setattr__(
                 prepared,
                 "prepared_sha256",
-                window_finalization._digest(  # noqa: SLF001
-                    window_finalization._PREPARED_DOMAIN, forged_payload  # noqa: SLF001
+                window_finalization._digest(
+                    window_finalization._PREPARED_DOMAIN, forged_payload
                 ),
             )
             with _store(root / "finalization.sqlite3", identity) as store:

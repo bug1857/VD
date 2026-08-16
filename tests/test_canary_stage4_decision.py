@@ -31,7 +31,6 @@ from vdbench.canary_stage4_decision import (
 )
 from vdbench.canary_stage4_latency_evidence import Stage4LatencyEvidence
 
-
 _BINDING_SHA256 = "a" * 64
 _OTHER_BINDING_SHA256 = "b" * 64
 

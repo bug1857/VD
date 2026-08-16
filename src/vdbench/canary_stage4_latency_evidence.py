@@ -49,7 +49,6 @@ from .canary_schedule_evaluation import (
 )
 from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 
-
 __all__ = ["Stage4LatencyEvidence", "build_stage4_latency_evidence"]
 
 

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
 from vdbench.artifacts import write_dataset_artifacts
-from vdbench.config import ContractViolation, EXP001_DATASET_SPEC, Metric
+from vdbench.config import EXP001_DATASET_SPEC, ContractViolation, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
 from vdbench.dataset002 import (
     DATASET002_QUERY_IDENTITY_SCOPE,
-    DATASET002_SPEC,
     Dataset002QueryIdentityResult,
     Dataset002Spec,
     generate_dataset002,

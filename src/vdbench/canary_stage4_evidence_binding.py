@@ -7,17 +7,19 @@ exact configuration/run/workload identity to bind and verify.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from .artifacts import canonical_json_bytes
 from .canary_workload import WorkloadIdentityBinding
 from .config import IndexTrack, Metric, SearchConfiguration
 from .policy import ACTUATION_LADDER
-from .search_configuration_digest import search_configuration_document, search_configuration_sha256
-
+from .search_configuration_digest import (
+    search_configuration_document,
+    search_configuration_sha256,
+)
 
 __all__ = ["STAGE4_EVIDENCE_BINDING_SCHEMA_VERSION", "Stage4EvidenceBinding"]
 
@@ -30,7 +32,7 @@ _MAX_TEXT_CODEPOINTS = 256
 
 def _canonical_text(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if (
         not normalized
@@ -82,7 +84,7 @@ class Stage4EvidenceBinding:
         if not isinstance(self.source_revision, str) or _REVISION_RE.fullmatch(self.source_revision) is None:
             raise ValueError("source_revision must be a lowercase 40-hex git revision")
         if not isinstance(self.metric, Metric):
-            raise ValueError("metric must be a Metric")
+            raise ValueError("metric must be a Metric")  # domain error type carries the governed reason code  # noqa: TRY004
         object.__setattr__(self, "threshold_stratum", _canonical_text(self.threshold_stratum, field="threshold_stratum"))
         object.__setattr__(self, "current_ef", _ef(self.current_ef, field="current_ef"))
         object.__setattr__(self, "candidate_ef", _ef(self.candidate_ef, field="candidate_ef"))
@@ -92,7 +94,7 @@ class Stage4EvidenceBinding:
         if self.candidate_ef == self.last_known_good_ef:
             raise ValueError("candidate_ef must differ from last_known_good_ef")
         if not isinstance(self.candidate_search_configuration, SearchConfiguration):
-            raise ValueError("candidate_search_configuration must be a SearchConfiguration")
+            raise ValueError("candidate_search_configuration must be a SearchConfiguration")  # domain error type carries the governed reason code  # noqa: TRY004
         self.candidate_search_configuration.validate()
         if self.candidate_search_configuration.index_track is not IndexTrack.HNSW:
             raise ValueError("candidate_search_configuration.index_track must be HNSW")
@@ -105,7 +107,7 @@ class Stage4EvidenceBinding:
         if self.candidate_search_configuration.ef != self.candidate_ef:
             raise ValueError("candidate_search_configuration.ef must equal binding.candidate_ef")
         if not isinstance(self.identity, WorkloadIdentityBinding):
-            raise ValueError("identity must be a WorkloadIdentityBinding")
+            raise ValueError("identity must be a WorkloadIdentityBinding")  # domain error type carries the governed reason code  # noqa: TRY004
         self.identity.validate()
         for field in (
             "dataset002_manifest_sha256",

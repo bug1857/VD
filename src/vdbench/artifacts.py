@@ -7,23 +7,23 @@ so a recorded dataset or run cannot be silently replaced.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
-from importlib.metadata import version
 import json
 import os
 import platform
-from pathlib import Path
 import shlex
 import subprocess
 import sys
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
+from importlib.metadata import version
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from .config import ENV001_PINS, ContractViolation, derive_seed
 from .dataset import BoundaryFixture, DatasetBundle, FrozenThreshold
-
 
 #: The frozen v1 canonical-JSON contract identifier (FINDING-001).
 CANONICAL_JSON_V1_SCHEMA_VERSION = "vd-canonical-json-v1"
@@ -207,13 +207,13 @@ def build_run_manifest(
 ) -> dict[str, object]:
     """Build the reproducibility manifest written with every future live run."""
 
-    when = timestamp or datetime.now(timezone.utc)
+    when = timestamp or datetime.now(UTC)
     if when.tzinfo is None:
         raise ContractViolation("run timestamp must be timezone-aware")
     return {
         "experiment_id": "EXP-002",
         "contract_id": "EXP-001",
-        "timestamp_utc": when.astimezone(timezone.utc).isoformat(),
+        "timestamp_utc": when.astimezone(UTC).isoformat(),
         "git": git_state(repository),
         "environment": ENV001_PINS.as_dict(),
         "software": {

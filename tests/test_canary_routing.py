@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
 from vdbench.canary_routing import (
@@ -21,7 +21,11 @@ from vdbench.canary_workload import (
 )
 from vdbench.config import EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
 
 
 class CanaryRoutePlanTests(unittest.TestCase):

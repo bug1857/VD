@@ -7,16 +7,15 @@ durable outbox from importing detector/policy code merely to name a stream.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-import re
 from typing import Protocol
-import unicodedata
 
 from .config import Metric
-
 
 __all__ = [
     "MonitorStreamKey",
@@ -126,11 +125,11 @@ class ShadowTraceEvent:
         if not isinstance(self.event_id, str) or not self.event_id:
             raise ValueError("event_id must be a non-empty string")
         if isinstance(self.window_sequence, bool) or not isinstance(self.window_sequence, int):
-            raise ValueError("window_sequence must be an integer")
+            raise ValueError("window_sequence must be an integer")  # domain error type carries the governed reason code  # noqa: TRY004
         if self.window_sequence < 0:
             raise ValueError("window_sequence must be non-negative")
         if isinstance(self.window_id, bool) or not isinstance(self.window_id, (int, str)):
-            raise ValueError("window_id must be an integer or string")
+            raise ValueError("window_id must be an integer or string")  # domain error type carries the governed reason code  # noqa: TRY004
         if isinstance(self.window_id, str) and not self.window_id:
             raise ValueError("window_id must be non-empty")
         if not isinstance(self.envelope_path, Path):
@@ -207,7 +206,7 @@ def _parse_rfc3339_utc(value: object) -> datetime:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         raise ShadowEventSourceError("CAPTURE_TIMESTAMP_INVALID")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ShadowEventSourceError("CAPTURE_TIMESTAMP_INVALID") from exc
     if parsed.utcoffset() != timedelta(0):

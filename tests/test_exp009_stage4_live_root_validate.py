@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import ast
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from experiments.exp009_stage4_live_root_validate import (
     LIVE_ROOT_SUITE_FILENAMES,

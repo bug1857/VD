@@ -12,18 +12,19 @@ migrates, or repairs historical V1/V2/V3 evidence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
-from enum import StrEnum
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import threading
 import unicodedata
+from dataclasses import dataclass, fields
+from enum import StrEnum
+from pathlib import Path
+from typing import Self
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
@@ -31,13 +32,13 @@ from .host_window_lineage import (
     CommittedHostObservation,
     verify_committed_host_observation,
 )
+from .response_profile_evidence import build_canonical_query_identity
 from .shadow_artifacts import (
     ShadowTraceArtifactError,
     decode_persisted_shadow_trace_envelope,
     encode_persisted_shadow_trace_envelope,
 )
 from .shadow_event_types import MonitorStreamKey
-from .response_profile_evidence import build_canonical_query_identity
 from .shadow_window import (
     TRACE_QUERY_COUNT,
     WINDOW_QUERY_COUNT,
@@ -45,14 +46,13 @@ from .shadow_window import (
     validate_persisted_shadow_trace_envelope,
 )
 
-
 __all__ = [
+    "SQLiteShadowAttemptStore",
     "ShadowAttemptIdentity",
-    "ShadowAttemptRecord",
     "ShadowAttemptPermit",
+    "ShadowAttemptRecord",
     "ShadowAttemptStatus",
     "ShadowAttemptStoreError",
-    "SQLiteShadowAttemptStore",
     "build_shadow_attempt_identity",
     "expected_shadow_trace_id",
 ]
@@ -545,7 +545,7 @@ class SQLiteShadowAttemptStore:
             self.close()
             raise
 
-    def __enter__(self) -> "SQLiteShadowAttemptStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -860,14 +860,13 @@ class SQLiteShadowAttemptStore:
                     # envelope written by any other means is still refused
                     # rather than replayed as this attempt's evidence.
                     _verify_terminal_envelope_binding(identity, envelope)
-            if envelope is not None:
-                if (
-                    envelope.sequence_index != identity.trace_sequence_index
-                    or envelope.declared_observation_count != TRACE_QUERY_COUNT
-                    or envelope.trace is None
-                    or tuple(envelope.trace.reason_codes) != reason_tuple
-                ):
-                    raise _error("SHADOW_ATTEMPT_TRACE_INVALID")
+            if envelope is not None and (
+                envelope.sequence_index != identity.trace_sequence_index
+                or envelope.declared_observation_count != TRACE_QUERY_COUNT
+                or envelope.trace is None
+                or tuple(envelope.trace.reason_codes) != reason_tuple
+            ):
+                raise _error("SHADOW_ATTEMPT_TRACE_INVALID")
             states[identity.attempt_sha256] = ShadowAttemptRecord(
                 identity, kind, existing.started_at_utc, recorded, envelope,
                 reason_tuple, failure_code, error_type,

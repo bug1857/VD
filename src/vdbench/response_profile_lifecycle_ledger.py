@@ -21,16 +21,15 @@ fail closed.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 import fcntl
 import json
 import os
-from pathlib import Path
 import sqlite3
 import stat
 import threading
-from typing import Any, Final
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Final, Self
 
 from .artifacts import canonical_json_bytes
 from .response_profile_evidence import ReplayPosition
@@ -59,13 +58,12 @@ from .response_profile_lifecycle import (
     verify_response_profile_run_binding,
 )
 
-
 __all__ = [
+    "MeasurementStartPermit",
+    "ResponseProfileLifecycleExport",
+    "ResponseProfileLifecycleLedger",
     "ResponseProfileLifecycleLedgerError",
     "ResponseProfileLifecycleLedgerView",
-    "ResponseProfileLifecycleExport",
-    "MeasurementStartPermit",
-    "ResponseProfileLifecycleLedger",
 ]
 
 
@@ -827,7 +825,7 @@ class ResponseProfileLifecycleLedger:
         if len(run_rows) != 1:
             raise _error("RUN_BINDING_INVALID", "ledger must contain one run binding")
         run_row = run_rows[0]
-        run_document = _parse_canonical_document(
+        _parse_canonical_document(
             run_row["canonical_document"], field_name="run binding document"
         )
         expected_document = response_profile_run_binding_document(self._run_binding)
@@ -1290,7 +1288,7 @@ class ResponseProfileLifecycleLedger:
             self._poisoned = True
             self._active_permit = None
             if isinstance(exc, ResponseProfileLifecycleLedgerError):
-                raise exc
+                raise
             raise _error("LEDGER_TRANSACTION_FAILED", "ledger transaction failed") from exc
         try:
             self._reconcile_committed_candidate(
@@ -1416,7 +1414,7 @@ class ResponseProfileLifecycleLedger:
                 self._poisoned = True
                 self._active_permit = None
                 if isinstance(exc, ResponseProfileLifecycleLedgerError):
-                    raise exc
+                    raise
                 raise _error(
                     "LIFECYCLE_EXPORT_FAILED",
                     "durable lifecycle export failed",
@@ -1789,7 +1787,7 @@ class ResponseProfileLifecycleLedger:
                 with _REGISTRY_LOCK:
                     _OWNED_INODES.discard((self._owner_pid, *lock_inode))
 
-    def __enter__(self) -> ResponseProfileLifecycleLedger:
+    def __enter__(self) -> Self:
         self._require_operational()
         return self
 

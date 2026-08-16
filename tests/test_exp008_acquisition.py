@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import patch
 
 from vdbench.actuation import ShadowResult
@@ -168,7 +168,6 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
     def test_prepared_configuration_is_pinned_to_the_two_registered_streams(self) -> None:
         from vdbench.exp008_acquisition import (
             EXP008_DETECTOR_SEED,
-            prepare_exp008_configuration,
         )
 
         configuration = _configuration()
@@ -263,16 +262,15 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             with patch(
                 "vdbench.exp008_acquisition.git_state",
                 return_value={"commit": "different-commit", "dirty": False},
+            ), self.assertRaisesRegex(
+                EXP008AcquisitionError,
+                "CAPTURE_COMMIT_CHANGED_BEFORE_FINALIZATION",
             ):
-                with self.assertRaisesRegex(
-                    EXP008AcquisitionError,
-                    "CAPTURE_COMMIT_CHANGED_BEFORE_FINALIZATION",
-                ):
-                    finalize_exp008(
-                        configuration=_configuration(),
-                        output_dir=root,
-                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
-                    )
+                finalize_exp008(
+                    configuration=_configuration(),
+                    output_dir=root,
+                    post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                )
             self.assertFalse((root / "completion.json").exists())
 
     def test_finalizer_rejects_tampered_foreground_evidence(self) -> None:
@@ -289,16 +287,15 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             with patch(
                 "vdbench.exp008_acquisition.git_state",
                 return_value={"commit": "fake-capture-commit", "dirty": False},
+            ), self.assertRaisesRegex(
+                EXP008AcquisitionError,
+                "CAPTURE_FOREGROUND_EVIDENCE_INVALID",
             ):
-                with self.assertRaisesRegex(
-                    EXP008AcquisitionError,
-                    "CAPTURE_FOREGROUND_EVIDENCE_INVALID",
-                ):
-                    finalize_exp008(
-                        configuration=_configuration(),
-                        output_dir=root,
-                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
-                    )
+                finalize_exp008(
+                    configuration=_configuration(),
+                    output_dir=root,
+                    post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                )
             self.assertFalse((root / "completion.json").exists())
 
     def test_finalizer_rejects_event_path_escape_before_loading_trace(self) -> None:
@@ -315,16 +312,15 @@ class Exp008AcquisitionContractTests(unittest.TestCase):
             with patch(
                 "vdbench.exp008_acquisition.git_state",
                 return_value={"commit": "fake-capture-commit", "dirty": False},
+            ), self.assertRaisesRegex(
+                EXP008AcquisitionError,
+                "CAPTURE_EVENT_OR_TRACE_INVALID",
             ):
-                with self.assertRaisesRegex(
-                    EXP008AcquisitionError,
-                    "CAPTURE_EVENT_OR_TRACE_INVALID",
-                ):
-                    finalize_exp008(
-                        configuration=_configuration(),
-                        output_dir=root,
-                        post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
-                    )
+                finalize_exp008(
+                    configuration=_configuration(),
+                    output_dir=root,
+                    post_run_resources={"timestamp_utc": "2026-08-03T00:01:00Z"},
+                )
             self.assertFalse((root / "completion.json").exists())
 
     def test_finalize_only_cli_never_constructs_live_runtime(self) -> None:

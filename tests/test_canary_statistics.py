@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from math import comb, log, sqrt
 import unittest
+from math import comb, log, sqrt
 
 from vdbench.canary_statistics import (
     EXP009_CANDIDATE_COUNT,

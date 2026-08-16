@@ -23,20 +23,19 @@ atomic LKG-only route authority.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
 import hashlib
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
-from typing import Final
 import unicodedata
-
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Final
 
 __all__ = [
     "CanaryGrantUseStore",
@@ -100,7 +99,7 @@ def _store_error(code: str, cause: BaseException | None = None) -> GrantUseStore
 
 def _canonical_text(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if (
         not normalized
@@ -123,10 +122,10 @@ def _timestamp(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ValueError(f"{field} must be RFC3339 UTC ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{field} must be a valid RFC3339 UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError(f"{field} must use UTC")
     return value
 
@@ -143,7 +142,7 @@ def _terminal_record_id(
     signed_payload_sha256: str,
     reason_code: str,
 ) -> str:
-    material = "\0".join((grant_id, signed_payload_sha256, reason_code)).encode("utf-8")
+    material = f"{grant_id}\x00{signed_payload_sha256}\x00{reason_code}".encode()
     return hashlib.sha256(_TERMINAL_RECORD_DOMAIN + material).hexdigest()
 
 

@@ -8,21 +8,23 @@ It issues latest-head snapshots only after complete chain verification.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
+import secrets
 import sqlite3
 import stat
 import threading
-from typing import Any, Callable
-import secrets
+from collections.abc import Callable
+from dataclasses import dataclass, fields, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Self
 
 from .artifacts import canonical_json_bytes
+from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
 from .response_profile_detector_head import (
     ResponseProfileDetectorHead,
     response_profile_detector_head_document,
@@ -30,9 +32,7 @@ from .response_profile_detector_head import (
     verify_response_profile_detector_head,
 )
 from .shadow_event_types import MonitorStreamKey
-from .lkg_window_readiness import parse_rfc3339_utc_instant, validate_rfc3339_utc
 from .workload_monitor import MonitorStreamState, _state_document, _state_from_document
-
 
 STORE_SCHEMA_VERSION = 1
 STORE_BINDING_SCHEMA_VERSION = "response-profile-monitor-store-binding-v1"
@@ -43,9 +43,9 @@ STATE_RECORD_HASH_DOMAIN = b"VD::RESPONSE_PROFILE_MONITOR_STATE_RECORD::V1\x00"
 HEAD_RECORD_HASH_DOMAIN = b"VD::RESPONSE_PROFILE_DETECTOR_HEAD_RECORD::V1\x00"
 
 __all__ = [
+    "ResponseProfileMonitorStateStore",
     "ResponseProfileMonitorStoreError",
     "VerifiedLatestResponseProfileDetectorHead",
-    "ResponseProfileMonitorStateStore",
 ]
 
 
@@ -195,7 +195,7 @@ def _load_json(value: str) -> object:
 
 
 def _default_utc_now() -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
 
 
@@ -246,7 +246,7 @@ class ResponseProfileMonitorStateStore:
         self._utc_now = utc_now or _default_utc_now
         self._open()
 
-    def __enter__(self) -> "ResponseProfileMonitorStateStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -437,7 +437,7 @@ class ResponseProfileMonitorStateStore:
         expected: dict[str, str] = {}
         for statement in _SCHEMA_SQL:
             tokens = statement.split()
-            name = tokens[2] if tokens[1] == "TABLE" else tokens[2]
+            name = tokens[2] if tokens[1] == "TABLE" else tokens[2]  # the explicit branch documents both governed outcomes  # noqa: RUF034
             expected[name] = _normalized_sql(statement)
         if actual != expected:
             raise _error("STORE_SCHEMA_INVALID", "store schema inventory differs")
@@ -574,7 +574,7 @@ class ResponseProfileMonitorStateStore:
                 states, _ = self._verify_all()
                 connection.execute("COMMIT")
                 return states[-1] if states else None
-            except ResponseProfileMonitorStoreError as exc:
+            except ResponseProfileMonitorStoreError:
                 self._poisoned = True
                 raise
             except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
@@ -608,9 +608,13 @@ class ResponseProfileMonitorStateStore:
                 previous_head = heads[-1][0] if heads else None
                 if head is None and previous_head is not None:
                     raise _error("STORE_HEAD_REGRESSION", "state cannot discard latest detector head")
-                if head is not None and previous_head is not None:
-                    if head.detector_head_sha256 != previous_head.detector_head_sha256 and head.window_sequence <= previous_head.window_sequence:
-                        raise _error("STORE_HEAD_REGRESSION", "detector head sequence did not advance")
+                if (
+                    head is not None
+                    and previous_head is not None
+                    and head.detector_head_sha256 != previous_head.detector_head_sha256
+                    and head.window_sequence <= previous_head.window_sequence
+                ):
+                    raise _error("STORE_HEAD_REGRESSION", "detector head sequence did not advance")
                 next_state_sequence = len(states)
                 head_digest = None if head is None else head.detector_head_sha256
                 state_payload = {

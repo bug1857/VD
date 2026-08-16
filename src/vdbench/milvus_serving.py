@@ -22,11 +22,11 @@ Failure modes:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-import math
-from time import perf_counter_ns
 from threading import Event
+from time import perf_counter_ns
 from types import MappingProxyType
 from typing import Protocol
 
@@ -36,7 +36,6 @@ from .config import RESULT_LIMIT, IndexTrack, Metric, SearchConfiguration
 from .host_observation import RangeQueryRequest, ServedQueryOutcome
 from .milvus import ClientLike, CollectionIdentity, MilvusHarness
 from .shadow_event_types import MonitorStreamKey
-
 
 __all__ = [
     "HostServingPlan",
@@ -151,7 +150,7 @@ class MilvusRangeServingExecutor:
         reasons: list[str] = []
         try:
             health = self._stack_health_probe.check()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._set_admission(
                 ServingPreflightResult(False, 0, ("STACK_HEALTH_UNAVAILABLE",))
             )
@@ -171,7 +170,7 @@ class MilvusRangeServingExecutor:
             ):
                 try:
                     state = self._client.get_load_state(collection_name=name)
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                     reasons.append(f"COLLECTION_LOAD_STATE_UNAVAILABLE:{track.value}")
                     stream_complete = False
                     continue
@@ -184,13 +183,13 @@ class MilvusRangeServingExecutor:
                     identity = self._harnesses[plan.dimensions].index_identity(
                         name, stream_key.metric, track
                     )
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                     reasons.append(f"COLLECTION_IDENTITY_UNAVAILABLE:{track.value}")
                     stream_complete = False
                     continue
                 try:
                     binding_matches = binding.matches(identity)
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                     reasons.append(f"COLLECTION_BINDING_UNAVAILABLE:{track.value}")
                     stream_complete = False
                     continue
@@ -233,7 +232,7 @@ class MilvusRangeServingExecutor:
             configuration.validate()
         except _RequestRejected as exc:
             return self._failure(start, str(exc))
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(start, "SERVING_REQUEST_INVALID")
 
         try:
@@ -244,7 +243,7 @@ class MilvusRangeServingExecutor:
             )
         except TimeoutError:
             return self._failure(start, "MILVUS_SEARCH_TIMEOUT", timed_out=True)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(start, "MILVUS_SEARCH_FAILED")
         if not self._threshold_semantics_valid(hits, configuration):
             return self._failure(start, "MILVUS_THRESHOLD_SEMANTICS_INVALID")

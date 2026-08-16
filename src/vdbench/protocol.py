@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter_ns
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -267,7 +268,7 @@ def run_protocol(
                         )
                     )
                     ended_ns = clock_ns()
-                except Exception as error:
+                except Exception as error:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                     ended_ns = clock_ns()
                     failure = {
                         "status": "failed",
@@ -374,7 +375,7 @@ def deliberate_unreachable_probe(
 
     try:
         search_call()
-    except Exception as error:
+    except Exception as error:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         sink(
             {
                 "status": "expected_failure",

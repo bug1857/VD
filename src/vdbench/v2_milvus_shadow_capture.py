@@ -37,19 +37,18 @@ Authority:
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import math
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter_ns
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 
 from .actuation import ShadowActuationContext
 from .artifacts import sha256_file, verify_dataset_artifacts
-from .config import ContractViolation, IndexTrack, Metric
-from .drift import SENTINEL_EF
+from .config import ContractViolation, IndexTrack
 from .host_window_lineage import CommittedHostObservation
 from .milvus_actuation import (
     ActuationWorkload,
@@ -60,11 +59,10 @@ from .milvus_actuation import (
 from .shadow_event_types import MonitorStreamKey
 from .shadow_window import TRACE_QUERY_COUNT
 
-
 __all__ = [
     "V2MilvusShadowCaptureError",
-    "V2ShadowCaptureIdentityBinding",
     "V2MilvusShadowCaptureExecutor",
+    "V2ShadowCaptureIdentityBinding",
     "build_readonly_milvus_client",
 ]
 

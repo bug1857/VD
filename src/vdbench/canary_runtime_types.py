@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from .canary_route_state import RouteStateBinding
-
 
 __all__ = ["Stage4RuntimeReadiness", "Stage4SlotSafety"]
 

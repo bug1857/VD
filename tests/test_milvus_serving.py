@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.host_observation import (
@@ -12,13 +12,11 @@ from vdbench.host_observation import (
 )
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import CollectionIdentityBinding, StackHealth
-from vdbench.shadow_event_types import MonitorStreamKey
-
 from vdbench.milvus_serving import (  # type: ignore[import-not-found]
     HostServingPlan,
     MilvusRangeServingExecutor,
 )
-
+from vdbench.shadow_event_types import MonitorStreamKey
 
 REPOSITORY = Path(__file__).parents[1]
 MODULE_PATH = REPOSITORY / "src" / "vdbench" / "milvus_serving.py"

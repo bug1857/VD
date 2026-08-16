@@ -8,13 +8,13 @@ owns one-shot occurrence claims, atomic installation/removal, and failback.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
 import hashlib
 import math
 import re
-from types import MappingProxyType
 from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from types import MappingProxyType
 
 from .artifacts import canonical_json_bytes
 from .canary_workload import (
@@ -23,13 +23,12 @@ from .canary_workload import (
     WorkloadIdentityBinding,
 )
 from .config import (
-    ContractViolation,
     HNSW_EF_SWEEP,
-    Metric,
     RESULT_LIMIT,
     THRESHOLD_LABELS,
+    ContractViolation,
+    Metric,
 )
-
 
 __all__ = [
     "CanaryRouteKind",
@@ -342,7 +341,7 @@ def _validate_route_plan(
 
 def _validated_manifest(manifest: object) -> EligibleWorkloadManifest:
     if not isinstance(manifest, EligibleWorkloadManifest):
-        raise ValueError("ELIGIBLE_WORKLOAD_INVALID")
+        raise ValueError("ELIGIBLE_WORKLOAD_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
     try:
         manifest.validate()
     except (ContractViolation, TypeError, ValueError) as exc:
@@ -352,7 +351,7 @@ def _validated_manifest(manifest: object) -> EligibleWorkloadManifest:
 
 def _validated_selection(selection: object) -> CandidateSelectionRecord:
     if not isinstance(selection, CandidateSelectionRecord):
-        raise ValueError("CANDIDATE_SELECTION_INVALID")
+        raise ValueError("CANDIDATE_SELECTION_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
     try:
         selection.validate()
     except (ContractViolation, TypeError, ValueError) as exc:

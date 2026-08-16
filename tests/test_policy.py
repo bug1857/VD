@@ -1,8 +1,8 @@
 import ast
-from dataclasses import fields, replace
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields, replace
+from pathlib import Path
 from unittest import mock
 
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
@@ -41,12 +41,12 @@ from vdbench.policy import (
     qualify_last_known_good,
 )
 from vdbench.response_profile import (
+    SUPPORTED_EFS,
     CalibratedResponseProfile,
     ResponseProfileCalibrationEvidence,
     ResponseProfileEfObservation,
     ResponseProfileIdentity,
     ResponseProfileQueryObservation,
-    SUPPORTED_EFS,
     build_calibrated_response_profile,
 )
 from vdbench.search_configuration_digest import search_configuration_sha256

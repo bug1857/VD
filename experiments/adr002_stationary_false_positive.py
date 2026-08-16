@@ -22,15 +22,15 @@ reported separately by metric; the cross-metric total is descriptive only.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
 import json
 import math
 import os
 import sys
 import time
-from typing import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, dataclass
 
 import numpy as np
 

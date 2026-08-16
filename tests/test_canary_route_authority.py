@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import threading
 import unittest
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from vdbench.canary_route_authority import CanaryRouteAuthority, RouteAuthorityState
-from vdbench.canary_routing import CanaryRouteKind, RouteResolution
 from vdbench.canary_route_state import RouteState, RouteStateBinding, RouteStateRecord
+from vdbench.canary_routing import CanaryRouteKind, RouteResolution
 from vdbench.config import Metric
 
 
@@ -42,7 +42,7 @@ class MutableUtcClock:
 
 class CanaryRouteAuthorityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.clock = MutableUtcClock(datetime(2026, 8, 4, 8, 0, tzinfo=timezone.utc))
+        self.clock = MutableUtcClock(datetime(2026, 8, 4, 8, 0, tzinfo=UTC))
         self.plan = FakePlan()
         self.binding = RouteStateBinding(
             metric=Metric.L2, threshold_stratum="target-075", last_known_good_ef=400,
@@ -167,7 +167,7 @@ class CanaryRouteAuthorityTests(unittest.TestCase):
             activation_marker=self.marker,
             expires_at_utc="2026-08-04T08:01:00Z",
         )
-        self.clock.now = datetime(2026, 8, 4, 8, 1, tzinfo=timezone.utc)
+        self.clock.now = datetime(2026, 8, 4, 8, 1, tzinfo=UTC)
 
         claim = authority.resolve_and_claim("exp009-routing-000000")
         snapshot = authority.snapshot()
@@ -182,7 +182,7 @@ class CanaryRouteAuthorityTests(unittest.TestCase):
 
     def test_expired_grant_is_refused_at_publication(self) -> None:
         authority = self._authority()
-        self.clock.now = datetime(2026, 8, 4, 8, 30, tzinfo=timezone.utc)
+        self.clock.now = datetime(2026, 8, 4, 8, 30, tzinfo=UTC)
 
         with self.assertRaisesRegex(ValueError, "ROUTE_APPROVAL_EXPIRED"):
             authority.activate(

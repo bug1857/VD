@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from vdbench.config import Metric
 from vdbench.host_observation import (

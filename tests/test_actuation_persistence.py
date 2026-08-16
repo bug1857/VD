@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import json
 import multiprocessing
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from vdbench.actuation import (
@@ -238,7 +238,7 @@ def _append_worker(
     start.wait(timeout=10)
     try:
         JsonlAuditSink(path).append(policy_record(audit_id))
-    except Exception as exc:
+    except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         results.put((audit_id, type(exc).__name__, str(exc)))
     else:
         results.put((audit_id, "OK", ""))
@@ -251,7 +251,7 @@ def _contains_worker(
 ) -> None:
     try:
         found = JsonlAuditSink(path).contains(audit_id)
-    except Exception as exc:
+    except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         results.put((type(exc).__name__, str(exc)))
     else:
         results.put(("OK", found))
@@ -266,7 +266,7 @@ def _disable_worker(path: str, results: multiprocessing.queues.Queue) -> None:
             audit_id="rollback-audit-001",
             reason="ROLLBACK_VERIFICATION_FAILED",
         )
-    except Exception as exc:
+    except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         results.put((type(exc).__name__, str(exc)))
     else:
         results.put(("OK", True))
@@ -811,9 +811,11 @@ class JsonlAuditSinkTests(unittest.TestCase):
             for index, payload in enumerate(variants):
                 path = Path(directory) / f"strict-{index}.jsonl"
                 _write_payload(path, payload)
-                with self.subTest(index=index):
-                    with self.assertRaises(AuditLogCorruptedError):
-                        JsonlAuditSink(path).contains("source")
+                with (
+                    self.subTest(index=index),
+                    self.assertRaises(AuditLogCorruptedError),
+                ):
+                    JsonlAuditSink(path).contains("source")
 
     def test_v3_extra_missing_and_mixed_version_contexts_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -852,9 +854,11 @@ class JsonlAuditSinkTests(unittest.TestCase):
             for index, payload in enumerate(variants):
                 path = Path(directory) / f"variant-{index}.jsonl"
                 _write_payload(path, payload)
-                with self.subTest(index=index):
-                    with self.assertRaises(AuditLogCorruptedError):
-                        JsonlAuditSink(path).contains("source")
+                with (
+                    self.subTest(index=index),
+                    self.assertRaises(AuditLogCorruptedError),
+                ):
+                    JsonlAuditSink(path).contains("source")
 
     def test_v3_reader_rejects_tampered_provenance_and_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -908,9 +912,11 @@ class JsonlAuditSinkTests(unittest.TestCase):
             for index, payload in enumerate(variants):
                 path = Path(directory) / f"rollback-{index}.jsonl"
                 _write_payload(path, payload)
-                with self.subTest(index=index):
-                    with self.assertRaises(AuditLogCorruptedError):
-                        JsonlAuditSink(path).contains("rollback")
+                with (
+                    self.subTest(index=index),
+                    self.assertRaises(AuditLogCorruptedError),
+                ):
+                    JsonlAuditSink(path).contains("rollback")
 
     def test_separate_process_reader_observes_persisted_v3_audit(self) -> None:
         process_context = multiprocessing.get_context("fork")

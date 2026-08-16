@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, replace
-from pathlib import Path
 import threading
 import time
 import unittest
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 
@@ -29,6 +29,11 @@ from vdbench.milvus_actuation import (
     ShadowQueryAuditTrace,
     StackHealth,
 )
+from vdbench.milvus_host_executor import (
+    HostShadowExecutionError,
+    HostShadowPlan,
+    MilvusHostShadowExecutor,
+)
 from vdbench.oracle import OracleResult
 from vdbench.shadow_event_types import (
     MonitorStreamKey,
@@ -36,13 +41,6 @@ from vdbench.shadow_event_types import (
     TracePublicationContext,
     TracePublicationReceipt,
 )
-
-from vdbench.milvus_host_executor import (
-    HostShadowExecutionError,
-    HostShadowPlan,
-    MilvusHostShadowExecutor,
-)
-
 
 REPOSITORY = Path(__file__).parents[1]
 MODULE_PATH = REPOSITORY / "src" / "vdbench" / "milvus_host_executor.py"
@@ -110,7 +108,7 @@ class _FakeHarness:
 
 @dataclass
 class _FakeHealthProbe:
-    result: StackHealth = StackHealth(True, True, "healthy")
+    result: StackHealth = StackHealth(True, True, "healthy")  # the dataclass default is an immutable test fixture  # noqa: RUF009
 
     def __post_init__(self) -> None:
         self.calls = 0
@@ -404,14 +402,14 @@ class MilvusHostShadowExecutorTests(unittest.TestCase):
             with self.subTest(phase="post", failure=failure):
                 adapter = _FakeAdapter()
                 if failure == "health":
-                    adapter.after_shadow = lambda: setattr(
-                        adapter.stack_health_probe, "result", StackHealth(False, True)
+                    adapter.after_shadow = lambda a=adapter: setattr(
+                        a.stack_health_probe, "result", StackHealth(False, True)
                     )
                 elif failure == "load":
-                    adapter.after_shadow = lambda: setattr(adapter.client, "loaded", False)
+                    adapter.after_shadow = lambda a=adapter: setattr(a.client, "loaded", False)
                 else:
-                    adapter.after_shadow = lambda: setattr(
-                        adapter.harness, "identity_matches", False
+                    adapter.after_shadow = lambda a=adapter: setattr(
+                        a.harness, "identity_matches", False
                     )
                 with self.assertRaises(HostShadowExecutionError):
                     _executor(adapter).capture(_observations())
@@ -475,7 +473,7 @@ class MilvusHostShadowExecutorTests(unittest.TestCase):
         def capture() -> None:
             try:
                 executor.capture(_observations())
-            except BaseException as exc:  # test collects thread failures
+            except BaseException as exc:  # test collects thread failures  # noqa: BLE001
                 errors.append(exc)
 
         first = threading.Thread(target=capture)

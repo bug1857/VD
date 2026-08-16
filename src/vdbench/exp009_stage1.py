@@ -10,18 +10,17 @@ independent workload, selection, and calibration verification succeeds.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -38,7 +37,6 @@ from .canary_workload import (
     verify_eligible_workload_manifest,
 )
 from .exp005_acquisition import load_identity_baseline
-
 
 EXP009_STAGE1_SCHEMA_VERSION = "exp009-stage1-evidence-v1"
 EXP009_STAGE1_COMPLETION_SCHEMA_VERSION = "exp009-stage1-completion-v1"
@@ -102,7 +100,7 @@ class _StrictUtcClock:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+        return datetime.now(UTC).isoformat(timespec="microseconds").replace(
             "+00:00", "Z"
         )
 
@@ -111,7 +109,7 @@ class _StrictUtcClock:
         if not isinstance(raw, str) or not raw.endswith("Z"):
             raise Exp009Stage1Error("CLOCK_TIMESTAMP_INVALID")
         try:
-            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            value = datetime.fromisoformat(raw)
         except ValueError as exc:
             raise Exp009Stage1Error("CLOCK_TIMESTAMP_INVALID") from exc
         if value.tzinfo is None or value.utcoffset() != timedelta(0):

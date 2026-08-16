@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import fields, replace
 import hashlib
 import math
-import unittest
 import unicodedata
+import unittest
+from copy import deepcopy
+from dataclasses import fields, replace
 from unittest.mock import patch
 
 from vdbench.artifacts import canonical_json_bytes
@@ -35,7 +35,6 @@ from vdbench.response_profile import (
     verify_calibrated_response_profile,
     verify_response_profile_document,
 )
-
 
 GOLDEN_PROFILE_SHA256 = "7e99628c74cec49056787100b601b542ac6f42f6962163fb3b08baac02b9cb0b"
 GOLDEN_PROFILE_PAYLOAD_SHA256 = (
@@ -420,14 +419,16 @@ class ResponseProfileIdentityTests(unittest.TestCase):
             (replace(base[0], threshold_label="target-025"), *base[1:]),
         ]
         for configurations in cases:
-            with self.subTest(configurations=configurations):
-                with self.assertRaises(ResponseProfileContractError):
-                    build_calibrated_response_profile(
-                        identity=_identity(
-                            search_configurations=tuple(configurations)
-                        ),
-                        evidence=self.evidence,
-                    )
+            with (
+                self.subTest(configurations=configurations),
+                self.assertRaises(ResponseProfileContractError),
+            ):
+                build_calibrated_response_profile(
+                    identity=_identity(
+                        search_configurations=tuple(configurations)
+                    ),
+                    evidence=self.evidence,
+                )
 
     def test_object_forged_search_configuration_fails_reconstruction(self) -> None:
         forged = object.__new__(SearchConfiguration)

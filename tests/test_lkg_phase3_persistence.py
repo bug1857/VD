@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest import mock
 
 from vdbench.artifacts import canonical_json_bytes
@@ -36,7 +36,6 @@ from vdbench.lkg_qualification_evaluation_ledger import (
 from vdbench.lkg_qualification_ledger import LkgQualificationLedger
 from vdbench.lkg_run_binding import LkgRunBinding
 from vdbench.search_configuration_digest import search_configuration_sha256
-
 
 _TIMESTAMP_1 = "2026-08-08T13:00:00.000000Z"
 _TIMESTAMP_2 = "2026-08-08T13:01:00.000000Z"
@@ -281,58 +280,60 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
 
     def test_schema_row_or_chain_tamper_prevents_verified_latest_issuance(self) -> None:
         for tamper_kind in ("schema", "row", "chain"):
-            with self.subTest(tamper_kind=tamper_kind):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "phase3-authority.db"
-                    with LkgPhase3AuthorityReferenceStore(path) as store:
-                        store.append(_authority(1), persisted_at_utc=_TIMESTAMP_1)
-                        if tamper_kind == "chain":
-                            store.append(
-                                _authority(2), persisted_at_utc=_TIMESTAMP_2
-                            )
+            with (
+                self.subTest(tamper_kind=tamper_kind),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "phase3-authority.db"
+                with LkgPhase3AuthorityReferenceStore(path) as store:
+                    store.append(_authority(1), persisted_at_utc=_TIMESTAMP_1)
+                    if tamper_kind == "chain":
+                        store.append(
+                            _authority(2), persisted_at_utc=_TIMESTAMP_2
+                        )
 
-                        if tamper_kind == "schema":
-                            connection = sqlite3.connect(path)
-                            try:
-                                connection.execute(
-                                    "DROP TRIGGER "
-                                    "trg_lkg_phase3_reference_no_update"
-                                )
-                                connection.commit()
-                            finally:
-                                connection.close()
-                        elif tamper_kind == "row":
-                            _raw_mutate_preserving_triggers(
-                                path,
-                                f"UPDATE {_TABLE} SET source_run_id='tampered-run' "
-                                "WHERE sequence_number=0",
+                    if tamper_kind == "schema":
+                        connection = sqlite3.connect(path)
+                        try:
+                            connection.execute(
+                                "DROP TRIGGER "
+                                "trg_lkg_phase3_reference_no_update"
                             )
-                        else:
-                            connection = sqlite3.connect(path)
-                            try:
-                                stored_json = connection.execute(
-                                    f"SELECT record_document_json FROM {_TABLE} "
-                                    "WHERE sequence_number=1"
-                                ).fetchone()[0]
-                            finally:
-                                connection.close()
-                            document = json.loads(stored_json)
-                            document["previous_record_digest"] = "a" * 64
-                            replacement_digest = _canonical_digest(document)
-                            _raw_mutate_preserving_triggers(
-                                path,
-                                f"UPDATE {_TABLE} SET previous_record_digest=?, "
-                                "canonical_record_digest=?, record_document_json=? "
-                                "WHERE sequence_number=1",
-                                (
-                                    "a" * 64,
-                                    replacement_digest,
-                                    canonical_json_bytes(document).decode("utf-8"),
-                                ),
-                            )
+                            connection.commit()
+                        finally:
+                            connection.close()
+                    elif tamper_kind == "row":
+                        _raw_mutate_preserving_triggers(
+                            path,
+                            f"UPDATE {_TABLE} SET source_run_id='tampered-run' "
+                            "WHERE sequence_number=0",
+                        )
+                    else:
+                        connection = sqlite3.connect(path)
+                        try:
+                            stored_json = connection.execute(
+                                f"SELECT record_document_json FROM {_TABLE} "
+                                "WHERE sequence_number=1"
+                            ).fetchone()[0]
+                        finally:
+                            connection.close()
+                        document = json.loads(stored_json)
+                        document["previous_record_digest"] = "a" * 64
+                        replacement_digest = _canonical_digest(document)
+                        _raw_mutate_preserving_triggers(
+                            path,
+                            f"UPDATE {_TABLE} SET previous_record_digest=?, "
+                            "canonical_record_digest=?, record_document_json=? "
+                            "WHERE sequence_number=1",
+                            (
+                                "a" * 64,
+                                replacement_digest,
+                                canonical_json_bytes(document).decode("utf-8"),
+                            ),
+                        )
 
-                        with self.assertRaises(LkgPhase3PersistenceError):
-                            store.load_verified_latest()
+                    with self.assertRaises(LkgPhase3PersistenceError):
+                        store.load_verified_latest()
 
     def test_later_append_requires_refresh_for_a_new_verified_latest_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -396,30 +397,32 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
 
     def test_preexisting_empty_or_unversioned_database_is_refused(self) -> None:
         for kind in ("empty", "sqlite-unversioned"):
-            with self.subTest(kind=kind):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "phase3-authority.db"
-                    if kind == "empty":
-                        path.touch(mode=0o600)
-                    else:
-                        connection = sqlite3.connect(path)
-                        try:
-                            connection.execute("CREATE TABLE transient(value INTEGER)")
-                            connection.execute("DROP TABLE transient")
-                            connection.commit()
-                        finally:
-                            connection.close()
-                        path.chmod(0o600)
-                    before = path.read_bytes()
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "phase3-authority.db"
+                if kind == "empty":
+                    path.touch(mode=0o600)
+                else:
+                    connection = sqlite3.connect(path)
+                    try:
+                        connection.execute("CREATE TABLE transient(value INTEGER)")
+                        connection.execute("DROP TABLE transient")
+                        connection.commit()
+                    finally:
+                        connection.close()
+                    path.chmod(0o600)
+                before = path.read_bytes()
 
-                    with self.assertRaisesRegex(
-                        LkgPhase3PersistenceError,
-                        "pre-existing database",
-                    ):
-                        LkgPhase3AuthorityReferenceStore(path)
+                with self.assertRaisesRegex(
+                    LkgPhase3PersistenceError,
+                    "pre-existing database",
+                ):
+                    LkgPhase3AuthorityReferenceStore(path)
 
-                    self.assertEqual(path.read_bytes(), before)
-                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_hardlink_is_refused_without_modifying_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -487,22 +490,24 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
 
     def test_distinct_authority_requires_strictly_later_timestamp(self) -> None:
         for rejected_timestamp in (_TIMESTAMP_1, "2026-08-08T12:59:59.999999Z"):
-            with self.subTest(rejected_timestamp=rejected_timestamp):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "phase3-authority.db"
-                    with LkgPhase3AuthorityReferenceStore(path) as store:
-                        first = store.append(
-                            _authority(1), persisted_at_utc=_TIMESTAMP_1
+            with (
+                self.subTest(rejected_timestamp=rejected_timestamp),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "phase3-authority.db"
+                with LkgPhase3AuthorityReferenceStore(path) as store:
+                    first = store.append(
+                        _authority(1), persisted_at_utc=_TIMESTAMP_1
+                    )
+                    with self.assertRaisesRegex(
+                        LkgPhase3PersistenceError,
+                        "must be later than the previous record",
+                    ):
+                        store.append(
+                            _authority(2),
+                            persisted_at_utc=rejected_timestamp,
                         )
-                        with self.assertRaisesRegex(
-                            LkgPhase3PersistenceError,
-                            "must be later than the previous record",
-                        ):
-                            store.append(
-                                _authority(2),
-                                persisted_at_utc=rejected_timestamp,
-                            )
-                        self.assertEqual(store.load_all(), (first.reference,))
+                    self.assertEqual(store.load_all(), (first.reference,))
 
     def test_chain_tamper_is_detected_after_coherent_record_rehash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -554,35 +559,37 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
 
     def test_json_and_digest_tamper_are_detected(self) -> None:
         for tamper_kind in ("json", "digest"):
-            with self.subTest(tamper_kind=tamper_kind):
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "phase3-authority.db"
-                    with LkgPhase3AuthorityReferenceStore(path) as store:
-                        store.append(_authority(), persisted_at_utc=_TIMESTAMP_1)
-                    if tamper_kind == "json":
-                        connection = sqlite3.connect(path)
-                        try:
-                            stored_json = connection.execute(
-                                f"SELECT record_document_json FROM {_TABLE}"
-                            ).fetchone()[0]
-                        finally:
-                            connection.close()
-                        document = json.loads(stored_json)
-                        document["source_run_id"] = "tampered-run"
-                        _raw_mutate_preserving_triggers(
-                            path,
-                            f"UPDATE {_TABLE} SET record_document_json=?",
-                            (canonical_json_bytes(document).decode("utf-8"),),
-                        )
-                    else:
-                        _raw_mutate_preserving_triggers(
-                            path,
-                            f"UPDATE {_TABLE} SET canonical_record_digest=?",
-                            ("f" * 64,),
-                        )
+            with (
+                self.subTest(tamper_kind=tamper_kind),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "phase3-authority.db"
+                with LkgPhase3AuthorityReferenceStore(path) as store:
+                    store.append(_authority(), persisted_at_utc=_TIMESTAMP_1)
+                if tamper_kind == "json":
+                    connection = sqlite3.connect(path)
+                    try:
+                        stored_json = connection.execute(
+                            f"SELECT record_document_json FROM {_TABLE}"
+                        ).fetchone()[0]
+                    finally:
+                        connection.close()
+                    document = json.loads(stored_json)
+                    document["source_run_id"] = "tampered-run"
+                    _raw_mutate_preserving_triggers(
+                        path,
+                        f"UPDATE {_TABLE} SET record_document_json=?",
+                        (canonical_json_bytes(document).decode("utf-8"),),
+                    )
+                else:
+                    _raw_mutate_preserving_triggers(
+                        path,
+                        f"UPDATE {_TABLE} SET canonical_record_digest=?",
+                        ("f" * 64,),
+                    )
 
-                    with self.assertRaises(LkgPhase3PersistenceError):
-                        LkgPhase3AuthorityReferenceStore(path)
+                with self.assertRaises(LkgPhase3PersistenceError):
+                    LkgPhase3AuthorityReferenceStore(path)
 
     def test_noncanonical_json_is_detected_even_when_semantics_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -746,17 +753,19 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
     def test_storage_read_errors_use_persistence_error_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "phase3-authority.db"
-            with LkgPhase3AuthorityReferenceStore(path) as store:
-                with mock.patch.object(
+            with (
+                LkgPhase3AuthorityReferenceStore(path) as store,
+                mock.patch.object(
                     store,
                     "_verify_schema",
                     side_effect=sqlite3.OperationalError("simulated read failure"),
-                ):
-                    with self.assertRaisesRegex(
-                        LkgPhase3PersistenceError,
-                        "failed to load authority references",
-                    ):
-                        store.load_all()
+                ),
+                self.assertRaisesRegex(
+                    LkgPhase3PersistenceError,
+                    "failed to load authority references",
+                ),
+            ):
+                store.load_all()
 
     def test_malformed_or_non_d1_authority_is_rejected_before_db_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -764,12 +773,14 @@ class LkgPhase3PersistenceTests(unittest.TestCase):
             malformed = object.__new__(LkgPhase3Authority)
             with LkgPhase3AuthorityReferenceStore(path) as store:
                 for candidate in (object(), malformed):
-                    with self.subTest(candidate=type(candidate).__name__):
-                        with self.assertRaises(LkgPhase3PersistenceError):
-                            store.append(  # type: ignore[arg-type]
-                                candidate,
-                                persisted_at_utc=_TIMESTAMP_1,
-                            )
+                    with (
+                        self.subTest(candidate=type(candidate).__name__),
+                        self.assertRaises(LkgPhase3PersistenceError),
+                    ):
+                        store.append(  # type: ignore[arg-type]
+                            candidate,
+                            persisted_at_utc=_TIMESTAMP_1,
+                        )
                 self.assertEqual(store.load_all(), ())
 
     def test_invalid_timestamp_is_rejected_without_append(self) -> None:

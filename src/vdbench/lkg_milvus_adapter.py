@@ -37,10 +37,11 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from collections.abc import Callable
+from dataclasses import dataclass
 from time import perf_counter_ns
-from typing import Callable, Self
+from typing import Self
 
 import numpy as np
 import numpy.typing as npt
@@ -49,8 +50,7 @@ from .actuation import QueryId
 from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 from .milvus import ClientLike, MilvusHarness, SearchHit
 
-
-__all__ = ["LkgSearchCall", "LkgMilvusAdapter"]
+__all__ = ["LkgMilvusAdapter", "LkgSearchCall"]
 
 
 ClockNs = Callable[[], int]
@@ -205,7 +205,7 @@ class LkgMilvusAdapter:
                 configuration=configuration,
             )
             _validate_hits(hits, limit=configuration.limit)
-        except Exception as exc:  # noqa: BLE001 - injected client boundary
+        except Exception as exc:  # injected client boundary  # noqa: BLE001
             end = self._clock_ns()
             return LkgSearchCall(
                 query_id=query_id,

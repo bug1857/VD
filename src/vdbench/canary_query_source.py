@@ -22,9 +22,9 @@ Failure modes:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import hashlib
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
@@ -35,10 +35,13 @@ from .canary_statistics import (
     EXP009_RECALL_AUDIT_COUNT,
     EXP009_ROUTING_POPULATION_COUNT,
 )
-from .canary_workload import EligibleOccurrence, EligibleWorkloadManifest, ScheduleControl
+from .canary_workload import (
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
+    ScheduleControl,
+)
 from .config import ContractViolation
 from .dataset002 import verify_dataset002_artifacts
-
 
 __all__ = [
     "CanaryQuerySourceError",
@@ -71,7 +74,7 @@ class Dataset002CanaryQuerySource:
         dataset002_dir: str | Path,
         dataset001_dir: str | Path,
         manifest: EligibleWorkloadManifest,
-    ) -> "Dataset002CanaryQuerySource":
+    ) -> Dataset002CanaryQuerySource:
         """Verify artifacts, then bind each in-memory vector to the manifest.
 
         Verification intentionally happens during construction, off the future

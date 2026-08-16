@@ -52,13 +52,12 @@ import math
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 
-
 __all__ = [
     "SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION",
     "SEARCH_CONFIGURATION_HASH_DOMAIN",
     "search_configuration_document",
-    "search_configuration_sha256",
     "search_configuration_from_document",
+    "search_configuration_sha256",
 ]
 
 

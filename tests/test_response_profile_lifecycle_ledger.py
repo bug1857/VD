@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields
 import os
 import pickle
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
@@ -12,11 +10,13 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import fields
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
-import vdbench.response_profile_lifecycle_ledger as lifecycle_ledger_module
 
+import vdbench.response_profile_lifecycle_ledger as lifecycle_ledger_module
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.response_profile_evidence import (
@@ -92,6 +92,53 @@ def _assert_error(
         operation()  # type: ignore[operator]
     if code is not None:
         case.assertEqual(raised.exception.code, code)
+
+
+
+def _scenario_forked_child_cleanup(ledger_path: str, binding_path: str) -> None:
+    """Hold the ledger, fork, let the child close, prove the lock still holds."""
+
+    import pickle as _pickle
+
+    from vdbench.response_profile_lifecycle_ledger import (
+        ResponseProfileLifecycleLedger,
+    )
+
+    with open(binding_path, "rb") as handle:
+        binding = _pickle.load(handle)
+    ledger = ResponseProfileLifecycleLedger(
+        ledger_path, expected_run_binding=binding
+    )
+    if hasattr(os, "fork"):
+        child = os.fork()
+        if child == 0:
+            ledger.close()
+            os._exit(0)
+        _, status = os.waitpid(child, 0)
+        assert status == 0, status
+
+    operation = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            ("import pickle,sys; "
+             "from vdbench.response_profile_lifecycle_ledger import "
+             "ResponseProfileLifecycleLedger,ResponseProfileLifecycleLedgerError; "
+             "binding=pickle.load(open(sys.argv[2],'rb')); "
+             "\ntry:\n ResponseProfileLifecycleLedger(sys.argv[1], "
+             "expected_run_binding=binding)\nexcept ResponseProfileLifecycleLedgerError as exc:\n "
+             "print(exc.code)\nelse:\n print('OPENED')"),
+            str(ledger_path),
+            str(binding_path),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert operation.returncode == 0, operation.stderr
+    assert operation.stdout.strip() == "LEDGER_OWNERSHIP_CONFLICT", operation.stdout
+    ledger.close()
 
 
 class _ConnectionProxy:
@@ -324,39 +371,42 @@ class CreationSchemaAndPathTests(ResponseProfileLifecycleLedgerFixture):
             self.assertTrue(reopened.current_view().opened_existing)
 
     def test_process_lifetime_lock_survives_forked_child_cleanup(self) -> None:
-        ledger = self._ledger()
-        if hasattr(os, "fork"):
-            child = os.fork()
-            if child == 0:
-                ledger.close()
-                os._exit(0)
-            _, status = os.waitpid(child, 0)
-            self.assertEqual(status, 0)
+        """Real `os.fork()`, run in a fresh provably single-threaded interpreter.
+
+        A forked child's `close()` must not release the parent's process-lifetime
+        lock, so an independent process must still see LEDGER_OWNERSHIP_CONFLICT.
+        `spawn` cannot reproduce this: the property depends on the child
+        inheriting the parent's open file description. The scenario therefore
+        keeps a genuine fork and only moves it into a clean interpreter, which
+        removes CPython's fork-in-multi-threaded-process DeprecationWarning by
+        construction instead of filtering it. Assertions are unchanged.
+        """
 
         binding_path = Path(self.directory.name) / "binding.pickle"
         binding_path.write_bytes(pickle.dumps(self.binding))
-        operation = subprocess.run(
+        completed = subprocess.run(
             (
                 sys.executable,
+                "-W",
+                "error::DeprecationWarning",
                 "-c",
-                "import pickle,sys; "
-                "from vdbench.response_profile_lifecycle_ledger import "
-                "ResponseProfileLifecycleLedger,ResponseProfileLifecycleLedgerError; "
-                "binding=pickle.load(open(sys.argv[2],'rb')); "
-                "\ntry:\n ResponseProfileLifecycleLedger(sys.argv[1], "
-                "expected_run_binding=binding)\nexcept ResponseProfileLifecycleLedgerError as exc:\n "
-                "print(exc.code)\nelse:\n print('OPENED')",
+                (
+                    "import sys; "
+                    "from tests.test_response_profile_lifecycle_ledger import "
+                    "_scenario_forked_child_cleanup; "
+                    "_scenario_forked_child_cleanup(sys.argv[1], sys.argv[2])"
+                ),
                 str(self.path),
                 str(binding_path),
             ),
+            cwd=Path(__file__).parents[1],
             check=False,
             capture_output=True,
             text=True,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            env={**os.environ, "PYTHONPATH": "src", "PYTHONDONTWRITEBYTECODE": "1"},
         )
-        self.assertEqual(operation.returncode, 0, operation.stderr)
-        self.assertEqual(operation.stdout.strip(), "LEDGER_OWNERSHIP_CONFLICT")
-        ledger.close()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("DeprecationWarning", completed.stderr)
 
     def test_simultaneous_first_creation_has_one_owner_and_valid_database(self) -> None:
         binding_path = Path(self.directory.name) / "race-binding.pickle"
@@ -461,10 +511,9 @@ class CreationSchemaAndPathTests(ResponseProfileLifecycleLedgerFixture):
                 lifecycle_ledger_module,
                 "_claim_lock_ownership",
                 side_effect=traced_claim,
-            ),
+            ),self._ledger()
         ):
-            with self._ledger():
-                pass
+            pass
 
         self.assertEqual(
             calls[:4],

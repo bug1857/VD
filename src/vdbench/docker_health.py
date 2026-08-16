@@ -8,17 +8,15 @@ socket directly instead.  This module exposes only the existing lightweight
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 import http.client
 import json
 import os
-from pathlib import Path
 import socket
-from typing import Any
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from urllib.parse import quote
 
 from .milvus_actuation import StackHealth
-
 
 __all__ = ["DockerSocketHealthProbe"]
 
@@ -84,7 +82,7 @@ class DockerSocketHealthProbe:
         try:
             document = self._inspector(container)
             status = _health_status(document)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return False, f"{container}=unavailable"
         return status == "healthy", f"{container}={status or 'unavailable'}"
 
@@ -115,10 +113,10 @@ class DockerSocketHealthProbe:
 
 def _health_status(value: object) -> str | None:
     if not isinstance(value, Mapping):
-        raise ValueError("Docker inspect response is not a mapping")
+        raise ValueError("Docker inspect response is not a mapping")  # domain error type carries the governed reason code  # noqa: TRY004
     state = value.get("State")
     if not isinstance(state, Mapping):
-        raise ValueError("Docker inspect response has no State")
+        raise ValueError("Docker inspect response has no State")  # domain error type carries the governed reason code  # noqa: TRY004
     health = state.get("Health")
     if not isinstance(health, Mapping):
         return None

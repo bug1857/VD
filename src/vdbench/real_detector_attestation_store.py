@@ -26,15 +26,16 @@ Authority:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import sqlite3
 import stat
 import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Self
 
 from .artifacts import canonical_json_bytes
 from .drift import DetectorState, DriftClassification, WindowEvidence
@@ -56,12 +57,11 @@ from .real_detector_attestation import (
 )
 from .shadow_event_types import MonitorStreamKey
 
-
 __all__ = [
-    "RealDetectorAttestationStoreError",
-    "VerifiedRealDetectorHead",
     "PersistedRealDetectorAttestation",
+    "RealDetectorAttestationStoreError",
     "SQLiteRealDetectorAttestationStore",
+    "VerifiedRealDetectorHead",
 ]
 
 
@@ -161,7 +161,7 @@ class SQLiteRealDetectorAttestationStore:
             self.close()
             raise
 
-    def __enter__(self) -> "SQLiteRealDetectorAttestationStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

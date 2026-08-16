@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ast
+import unittest
 from dataclasses import fields
 from pathlib import Path
-import unittest
 
-from tests.test_response_profile_semantic import _SemanticFixture, _digest
 from tests.test_policy import decide
+from tests.test_response_profile_semantic import _digest, _SemanticFixture
 from vdbench.drift import DetectorState, DriftClassification
 from vdbench.policy import PolicyAction
 from vdbench.response_profile_detector_head import build_response_profile_detector_head
@@ -17,12 +17,12 @@ from vdbench.response_profile_freshness import (
     fresh_response_profile_evidence_payload,
     verify_fresh_response_profile_evidence,
 )
-from vdbench.response_profile_monitor_store import ResponseProfileMonitorStateStore
 from vdbench.response_profile_projection import project_root_pinned_response_profile
-from vdbench.response_profile_root_pin import issue_root_pinned_response_profile_evidence
+from vdbench.response_profile_root_pin import (
+    issue_root_pinned_response_profile_evidence,
+)
 from vdbench.shadow_event_types import MonitorStreamKey
 from vdbench.workload_monitor import MonitorStreamState
-
 
 MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_freshness.py"
 

@@ -25,11 +25,12 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from math import isfinite
 import re
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from math import isfinite
+from typing import Protocol
 
 from .canary_admission import Stage4AdmissionReceipt
 from .canary_execution_ledger import (
@@ -40,13 +41,16 @@ from .canary_execution_ledger import (
     Stage4LedgerStatus,
     Stage4SlotObservation,
 )
-from .canary_schedule import Stage4ExecutionSchedule, Stage4ScheduleStep, Stage4ScheduleStepKind
+from .canary_schedule import (
+    Stage4ExecutionSchedule,
+    Stage4ScheduleStep,
+    Stage4ScheduleStepKind,
+)
 from .canary_schedule_evaluation import (
     Stage4ScheduleEvaluation,
     evaluate_stage4_execution_ledger,
 )
 from .canary_workload import ScheduleControl
-
 
 __all__ = [
     "Dataset002ScheduleVectorSource",
@@ -79,7 +83,7 @@ class Stage4SlotExecutorLike(Protocol):
 
     def execute(
         self, *, step: Stage4ScheduleStep, query_vector: tuple[float, ...]
-    ) -> "Stage4SlotExecutorOutcome": ...
+    ) -> Stage4SlotExecutorOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +126,7 @@ class Dataset002ScheduleVectorSource:
         """Resolve exactly one vector using only a validated schedule binding."""
 
         if not isinstance(step, Stage4ScheduleStep):
-            raise ValueError("SCHEDULE_STEP_INVALID")
+            raise ValueError("SCHEDULE_STEP_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
         if step.kind is Stage4ScheduleStepKind.CONTROL:
             if step.control_query_id is None or step.control_vector_sha256 is None:
                 raise ValueError("SCHEDULE_CONTROL_BINDING_INVALID")
@@ -251,7 +255,7 @@ class Stage4SerialRunner:
 
         try:
             query_vector = self._vector_source.vector_for_step(step)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             finish = _monotonic(self._monotonic_ns, "CLOCK_FINISH_INVALID")
             return (
                 self._failure_observation(step, start, finish, "QUERY_SOURCE_FAILURE"),
@@ -260,7 +264,7 @@ class Stage4SerialRunner:
             )
         try:
             outcome = self._executor.execute(step=step, query_vector=query_vector)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             finish = _monotonic(self._monotonic_ns, "CLOCK_FINISH_INVALID")
             return (
                 self._failure_observation(step, start, finish, "EXECUTOR_EXCEPTION"),
@@ -407,12 +411,12 @@ def _monotonic(clock: Callable[[], int], reason: str) -> int:
 
 def _timestamp(value: object) -> str:
     if not isinstance(value, str):
-        raise RuntimeError("UTC_CLOCK_INVALID")
+        raise RuntimeError("UTC_CLOCK_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00") if value.endswith("Z") else None
+        parsed = datetime.fromisoformat(value) if value.endswith("Z") else None
     except ValueError as exc:
         raise RuntimeError("UTC_CLOCK_INVALID") from exc
-    if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise RuntimeError("UTC_CLOCK_INVALID")
     return value
 

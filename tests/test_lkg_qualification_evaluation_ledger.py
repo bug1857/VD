@@ -1,9 +1,9 @@
 """Integration tests for Checkpoint C SQLite evaluation ledger and lifecycle finalization."""
 
 import os
+import shutil
 import sqlite3
 import stat
-import shutil
 import tempfile
 import threading
 import unittest
@@ -11,26 +11,7 @@ from dataclasses import replace
 from unittest import mock
 
 from vdbench.artifacts import canonical_json_bytes
-from vdbench.config import IndexTrack, SearchConfiguration, Metric
-from vdbench.lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
-from vdbench.lkg_qualification_evidence import (
-    LkgAttemptStatus,
-    LkgQueryAttempt,
-    LkgQueryObservation,
-)
-from vdbench.lkg_qualification_seal import LkgSealCompletionState
-from vdbench.lkg_qualification_ledger import (
-    LkgQualificationLedger,
-    seal_lkg_qualification_run,
-    verify_seal,
-)
-from vdbench.lkg_window_readiness import (
-    FakeLkgWindowOperationalReadinessProvider,
-    READINESS_SCHEMA_VERSION,
-    readiness_payload_document,
-    readiness_payload_document_digest,
-    lkg_window_operational_readiness_evidence_from_payload,
-)
+from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.lkg_phase2_readiness_ledger import Phase2ReadinessLedger
 from vdbench.lkg_phase2_source_binding import (
     PHASE1_LEDGER_SCHEMA_VERSION,
@@ -51,6 +32,25 @@ from vdbench.lkg_qualification_evaluation import (
 from vdbench.lkg_qualification_evaluation_ledger import (
     LkgQualificationEvaluationError,
     LkgQualificationEvaluationLedger,
+)
+from vdbench.lkg_qualification_evidence import (
+    LkgAttemptStatus,
+    LkgQueryAttempt,
+    LkgQueryObservation,
+)
+from vdbench.lkg_qualification_ledger import (
+    LkgQualificationLedger,
+    seal_lkg_qualification_run,
+    verify_seal,
+)
+from vdbench.lkg_qualification_seal import LkgSealCompletionState
+from vdbench.lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
+from vdbench.lkg_window_readiness import (
+    READINESS_SCHEMA_VERSION,
+    FakeLkgWindowOperationalReadinessProvider,
+    lkg_window_operational_readiness_evidence_from_payload,
+    readiness_payload_document,
+    readiness_payload_document_digest,
 )
 
 
@@ -792,15 +792,14 @@ class TestLkgQualificationEvaluationLedger(unittest.TestCase):
                 LkgQualificationLedger,
                 "stored_ordered_query_ids",
                 side_effect=TypeError("simulated programming bug"),
-            ):
-                with self.assertRaises(TypeError):
-                    c_ledger.evaluate_and_finalize(
-                        phase1_ledger=self.p1_ledger,
-                        phase2_readiness_ledger=self.p2_ledger,
-                        evaluator_identity="evaluator-1",
-                        evaluator_source_revision="rev-1",
-                        evaluated_at_utc="2026-01-01T00:02:00.000000Z",
-                    )
+            ), self.assertRaises(TypeError):
+                c_ledger.evaluate_and_finalize(
+                    phase1_ledger=self.p1_ledger,
+                    phase2_readiness_ledger=self.p2_ledger,
+                    evaluator_identity="evaluator-1",
+                    evaluator_source_revision="rev-1",
+                    evaluated_at_utc="2026-01-01T00:02:00.000000Z",
+                )
             # The ledger must remain usable afterward -- the rollback in the
             # exception boundary must still have released the transaction.
             self.assertIsNone(c_ledger.get_final_evaluation())
@@ -968,9 +967,8 @@ class TestLkgQualificationEvaluationLedger(unittest.TestCase):
             Phase2ReadinessLedger,
             "all_verified_ingestions",
             return_value=(alternate,),
-        ):
-            with self.assertRaises(LkgQualificationEvaluationError) as caught:
-                self._evaluate(ledger)
+        ), self.assertRaises(LkgQualificationEvaluationError) as caught:
+            self._evaluate(ledger)
         self.assertEqual(caught.exception.code, "LKG_QUAL_EVAL_REPLAY_MISMATCH")
         ledger.close()
 
@@ -992,9 +990,8 @@ class TestLkgQualificationEvaluationLedger(unittest.TestCase):
                     LkgQualificationLedger,
                     "stored_run_binding",
                     return_value=alternate,
-                ):
-                    with self.assertRaises(LkgQualificationEvaluationError) as caught:
-                        self._evaluate(ledger)
+                ), self.assertRaises(LkgQualificationEvaluationError) as caught:
+                    self._evaluate(ledger)
                 self.assertEqual(
                     caught.exception.code, "LKG_QUAL_EVAL_SOURCE_IDENTITY_MISMATCH"
                 )
@@ -1029,9 +1026,8 @@ class TestLkgQualificationEvaluationLedger(unittest.TestCase):
             Phase2ReadinessLedger,
             "all_verified_ingestions",
             return_value=(altered_ingestion,),
-        ):
-            with self.assertRaises(LkgQualificationEvaluationError) as caught:
-                self._evaluate(ledger)
+        ), self.assertRaises(LkgQualificationEvaluationError) as caught:
+            self._evaluate(ledger)
         self.assertEqual(
             caught.exception.code, "LKG_QUAL_EVAL_SOURCE_IDENTITY_MISMATCH"
         )
@@ -1303,7 +1299,7 @@ class TestLkgQualificationEvaluationLedger(unittest.TestCase):
                 )
                 results[thread_idx] = res
                 ledger.close()
-            except Exception as exc:
+            except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 errors[thread_idx] = exc
 
         t0 = threading.Thread(target=worker, args=(0,))

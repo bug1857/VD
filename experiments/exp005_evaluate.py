@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from typing import NoReturn
 
 from vdbench.actuation import ActuationIdentityContext, SafeActuationBoundary
@@ -28,7 +28,6 @@ from vdbench.policy import (
 from vdbench.shadow_artifacts import load_persisted_shadow_trace_envelope
 from vdbench.shadow_extraction import extract_window_evidence
 from vdbench.shadow_window import AssembledShadowWindow, assemble_shadow_window
-
 
 WINDOW_ROLES = ("reference", "current-1", "current-2")
 TRACE_COUNT_PER_WINDOW = 4

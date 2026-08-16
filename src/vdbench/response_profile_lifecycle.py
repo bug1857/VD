@@ -23,14 +23,14 @@ Crash semantics:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields
-from datetime import datetime, timezone
-from enum import StrEnum
 import hashlib
 import hmac
 import re
 import unicodedata
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from .artifacts import canonical_json_bytes
 from .response_profile_evidence import (
@@ -48,36 +48,35 @@ from .response_profile_evidence import (
     verify_response_profile_role_manifest,
 )
 
-
 __all__ = [
-    "RUN_BINDING_SCHEMA_VERSION",
-    "OPAQUE_EVIDENCE_SCHEMA_VERSION",
-    "LIFECYCLE_EVENT_SCHEMA_VERSION",
-    "RUN_BINDING_HASH_DOMAIN",
-    "OPAQUE_EVIDENCE_HASH_DOMAIN",
     "LIFECYCLE_EVENT_HASH_DOMAIN",
-    "ResponseProfileLifecycleContractError",
-    "OpaqueEvidenceRole",
+    "LIFECYCLE_EVENT_SCHEMA_VERSION",
+    "OPAQUE_EVIDENCE_HASH_DOMAIN",
+    "OPAQUE_EVIDENCE_SCHEMA_VERSION",
+    "RUN_BINDING_HASH_DOMAIN",
+    "RUN_BINDING_SCHEMA_VERSION",
     "LifecycleEventKind",
-    "ResponseProfileRunBinding",
     "OpaqueEvidenceBlob",
+    "OpaqueEvidenceRole",
+    "ResponseProfileLifecycleContractError",
     "ResponseProfileLifecycleEvent",
     "ResponseProfileLifecycleSnapshot",
-    "build_response_profile_run_binding",
-    "verify_response_profile_run_binding",
-    "response_profile_run_binding_payload",
-    "response_profile_run_binding_document",
+    "ResponseProfileRunBinding",
+    "apply_next_lifecycle_event",
     "build_opaque_evidence_blob",
-    "verify_opaque_evidence_blob",
+    "build_response_profile_lifecycle_event",
+    "build_response_profile_run_binding",
+    "initial_lifecycle_reducer_state",
     "opaque_evidence_descriptor_payload",
     "opaque_evidence_document",
-    "build_response_profile_lifecycle_event",
-    "verify_response_profile_lifecycle_event",
-    "response_profile_lifecycle_event_payload",
-    "response_profile_lifecycle_event_document",
     "reduce_response_profile_lifecycle",
-    "initial_lifecycle_reducer_state",
-    "apply_next_lifecycle_event",
+    "response_profile_lifecycle_event_document",
+    "response_profile_lifecycle_event_payload",
+    "response_profile_run_binding_document",
+    "response_profile_run_binding_payload",
+    "verify_opaque_evidence_blob",
+    "verify_response_profile_lifecycle_event",
+    "verify_response_profile_run_binding",
 ]
 
 
@@ -370,10 +369,10 @@ def _rfc3339_utc(value: object, *, field: str) -> str:
     if type(value) is not str or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise _error("TIMESTAMP_INVALID", f"{field} must be strict RFC3339 UTC")
     try:
-        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        instant = datetime.fromisoformat(value)
     except ValueError as exc:
         raise _error("TIMESTAMP_INVALID", f"{field} has invalid calendar values") from exc
-    if instant.tzinfo is None or instant.utcoffset() != timezone.utc.utcoffset(instant):
+    if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
         raise _error("TIMESTAMP_INVALID", f"{field} must use UTC Z")
     return value
 
@@ -1233,9 +1232,7 @@ def _apply_lifecycle_event(
             ]
             within_index = len(state.block_completion_digests)
             expected = expected_block.positions[within_index]
-            if data.within_block_index != within_index:
-                reason = "POSITION_ORDER_MISMATCH"
-            elif event.position_index != expected.position_index:
+            if data.within_block_index != within_index or event.position_index != expected.position_index:
                 reason = "POSITION_ORDER_MISMATCH"
             elif expected.position_index in state.seen_position_indexes:
                 reason = "POSITION_DUPLICATE"

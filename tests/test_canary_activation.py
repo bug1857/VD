@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import ast
 import base64
-from dataclasses import replace
-from datetime import datetime, timezone
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from vdbench.actuation_persistence import FileAutomaticActionController
+from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
 from vdbench.canary_activation import ActivationTimestamps, CanaryActivationCoordinator
 from vdbench.canary_approval import (
     ApprovalVerificationContext,
@@ -22,22 +24,40 @@ from vdbench.canary_approval import (
     approval_grant_signing_bytes,
     policy_decision_sha256,
 )
-from vdbench.canary_grant_store import CanaryGrantUseStore, GrantUseResult, GrantUseStatus
-from vdbench.canary_lifecycle_audit import CanaryLifecycleAuditRecord, JsonlCanaryLifecycleAuditSink
+from vdbench.canary_grant_store import (
+    CanaryGrantUseStore,
+    GrantUseResult,
+    GrantUseStatus,
+)
+from vdbench.canary_lifecycle_audit import (
+    CanaryLifecycleAuditRecord,
+    JsonlCanaryLifecycleAuditSink,
+)
+from vdbench.canary_route_authority import (
+    CanaryRouteAuthority,
+    RouteAuthoritySnapshot,
+    RouteAuthorityState,
+)
+from vdbench.canary_route_state import (
+    FileCanaryRouteStateStore,
+    RouteState,
+    RouteStateBinding,
+    RouteStateRecord,
+)
 from vdbench.canary_routing import CanaryRoutePlan, build_canary_route_plan
-from vdbench.canary_route_authority import CanaryRouteAuthority, RouteAuthoritySnapshot, RouteAuthorityState
-from vdbench.canary_route_state import FileCanaryRouteStateStore, RouteState, RouteStateBinding, RouteStateRecord
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
     CandidateSelectionRecord,
     WorkloadIdentityBinding,
     build_eligible_workload_manifest,
 )
-from vdbench.actuation_persistence import FileAutomaticActionController
-from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
 from vdbench.config import EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
 from vdbench.drift import build_evidence_provenance
 from vdbench.policy import PolicyAction, PolicyDecision, PolicyMode, SafetyGateResult
 
@@ -398,7 +418,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         )
 
     def test_success_reserves_audits_marks_then_publishes_without_a_route_claim(self) -> None:
-        coordinator, order, store, audit, state, authority, _ = self._coordinator()
+        coordinator, order, _store, audit, state, authority, _ = self._coordinator()
 
         result = self._activate(coordinator)
 
@@ -484,7 +504,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         decision = _real_decision(self.plan)
         grant = _signed_real_grant(self.plan, decision, private_key)
         authority = CanaryRouteAuthority(
-            clock=lambda: datetime(2026, 8, 4, 10, 5, tzinfo=timezone.utc)
+            clock=lambda: datetime(2026, 8, 4, 10, 5, tzinfo=UTC)
         )
         coordinator = CanaryActivationCoordinator(
             grant_store=CanaryGrantUseStore(directory / "grant-ledger.sqlite"),
@@ -574,7 +594,7 @@ class CanaryActivationCoordinatorTests(unittest.TestCase):
         self.assertEqual(authority.claim_calls, 0)
 
     def test_audit_failure_consumes_grant_without_marker_or_authority(self) -> None:
-        coordinator, order, store, audit, state, authority, _ = self._coordinator(
+        coordinator, order, store, _audit, state, authority, _ = self._coordinator(
             audit=FakeAuditSink([], fail=True)
         )
 

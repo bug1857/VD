@@ -153,19 +153,18 @@ Scope:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
-
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation, Metric
@@ -175,12 +174,12 @@ from .lkg_qualification_evidence import (
     LkgQueryObservation,
 )
 from .lkg_qualification_seal import (
+    SEAL_SCHEMA_VERSION,
     LkgPositionClassification,
     LkgPositionStatus,
     LkgRunSeal,
     LkgSealCompletionState,
     LkgSealWorkloadIdentity,
-    SEAL_SCHEMA_VERSION,
     derive_completion_state,
     lkg_run_seal_from_payload,
     seal_payload_document,
@@ -195,10 +194,9 @@ from .lkg_run_binding import (
     lkg_run_binding_sha256,
 )
 
-
 __all__ = [
-    "LkgChainState",
     "LkgAppendResult",
+    "LkgChainState",
     "LkgQualificationLedger",
     "LkgQualificationLedgerError",
     "seal_lkg_qualification_run",
@@ -258,13 +256,13 @@ _INT64_MAX = 2**63 - 1
 
 def _validate_ordered_query_ids(value: object) -> tuple[int, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ValueError("ordered_query_ids must be a sequence of integer query IDs")
+        raise ValueError("ordered_query_ids must be a sequence of integer query IDs")  # domain error type carries the governed reason code  # noqa: TRY004
     ids = tuple(value)
     if not ids:
         raise ValueError("ordered_query_ids must be non-empty")
     for query_id in ids:
         if isinstance(query_id, bool) or not isinstance(query_id, int):
-            raise ValueError(
+            raise ValueError(  # domain error type carries the governed reason code  # noqa: TRY004
                 "every ordered_query_ids entry must be a plain int "
                 "(DATASET-003 query IDs are never strings)"
             )
@@ -773,7 +771,7 @@ class LkgQualificationLedger:
             try:
                 document = json.loads(document_json)
                 if not isinstance(document, dict):
-                    raise ValueError("stored document must be a JSON object")
+                    raise ValueError("stored document must be a JSON object")  # domain error type carries the governed reason code  # noqa: TRY004
                 attempt = _attempt_from_document(document)
             except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 raise _ledger_error("LKG_LEDGER_CORRUPTED", exc) from exc
@@ -1252,7 +1250,7 @@ class LkgQualificationLedger:
         try:
             document = json.loads(document_json)
             if not isinstance(document, dict):
-                raise ValueError("stored seal document must be a JSON object")
+                raise ValueError("stored seal document must be a JSON object")  # domain error type carries the governed reason code  # noqa: TRY004
             seal = lkg_run_seal_from_payload(
                 document, canonical_seal_document_digest=row_canonical_seal_document_digest
             )
@@ -1355,7 +1353,7 @@ def _classify_positions(
 
 
 def _current_rfc3339_utc() -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
 
 
@@ -1384,7 +1382,7 @@ class _FreshLkgEvidence:
 
 
 def _read_fresh_evidence_locked(
-    ledger: "LkgQualificationLedger", connection: sqlite3.Connection
+    ledger: LkgQualificationLedger, connection: sqlite3.Connection
 ) -> _FreshLkgEvidence:
     """Perform every read ``seal_lkg_qualification_run``/``verify_seal``
     need, within the caller's already-open ``BEGIN IMMEDIATE`` transaction

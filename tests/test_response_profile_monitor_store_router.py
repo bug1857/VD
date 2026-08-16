@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 import stat
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from tests.test_response_profile_detector_head import _provenance
 from tests.test_workload_monitor import (
     DETECTOR_SEED,
     FakeAuditSink,
@@ -19,9 +18,6 @@ from tests.test_workload_monitor import (
     _persist_events,
     _stream_key,
 )
-from vdbench.config import Metric
-from vdbench.drift import DetectorState, DriftClassification
-from vdbench.response_profile_detector_head import build_response_profile_detector_head
 from vdbench.response_profile_monitor_store import ResponseProfileMonitorStoreError
 from vdbench.response_profile_monitor_store_router import (
     ResponseProfileMonitorStoreRouter,
@@ -147,9 +143,11 @@ class ResponseProfileMonitorStoreRouterTests(unittest.TestCase):
         # it outright on reopen -- a hardened-store-specific failure mode the
         # router must not paper over.
         db_path.chmod(0o644)
-        with self.assertRaises(ResponseProfileMonitorStoreError):
-            with self._router() as reopened:
-                reopened.load_verified_latest(stream)
+        with (
+            self.assertRaises(ResponseProfileMonitorStoreError),
+            self._router() as reopened,
+        ):
+            reopened.load_verified_latest(stream)
 
     def test_directory_must_be_owner_controlled(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

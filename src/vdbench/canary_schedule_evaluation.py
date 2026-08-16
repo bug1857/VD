@@ -45,7 +45,6 @@ from .canary_workload import (
     SCHEDULE_PRE_SWEEP_COUNT,
 )
 
-
 __all__ = [
     "Stage4ControlSweepResult",
     "Stage4ScheduleEvaluation",

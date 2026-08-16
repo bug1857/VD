@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import json
-from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from vdbench.config import Metric
@@ -284,9 +284,11 @@ class ResponseProfileWorkloadCaptureTests(unittest.TestCase):
         self.assertEqual(manifest["capture_manifest_payload"]["last_source_sequence"], 3599)
         self.assertEqual(manifest["capture_manifest_payload"]["capture_event_count"], 1404)
         self.assertEqual(len(tuple((self.root / "published").iterdir())), 5)
-        with self._capture(FakeSource()) as reopened:
-            with self.assertRaises(ResponseProfileWorkloadCaptureError) as raised:
-                reopened.publish(self.root / "published")
+        with (
+            self._capture(FakeSource()) as reopened,
+            self.assertRaises(ResponseProfileWorkloadCaptureError) as raised,
+        ):
+            reopened.publish(self.root / "published")
         self.assertEqual(raised.exception.code, "CAPTURE_OUTPUT_EXISTS")
 
     def test_first_200_freeze_warmup_before_calibration(self) -> None:
@@ -419,9 +421,11 @@ class ResponseProfileWorkloadCaptureTests(unittest.TestCase):
             for name in ("head", "head_record_sequence", "head_record_sha256", "head_record_persisted_at_utc"):
                 object.__setattr__(forged, name, getattr(latest, name))
             object.__setattr__(forged, "head_record_sha256", _sha("f"))
-            with patch.object(self.monitor, "load_verified_latest", return_value=forged):
-                with self.assertRaises(ResponseProfileWorkloadCaptureError) as raised:
-                    capture.run_once(max_observations=1)
+            with (
+                patch.object(self.monitor, "load_verified_latest", return_value=forged),
+                self.assertRaises(ResponseProfileWorkloadCaptureError) as raised,
+            ):
+                capture.run_once(max_observations=1)
             self.assertEqual(raised.exception.code, "DETECTOR_HEAD_SUBSTITUTED")
 
     def test_normal_later_detector_head_does_not_replace_frozen_trigger(self) -> None:
@@ -454,9 +458,11 @@ class ResponseProfileWorkloadCaptureTests(unittest.TestCase):
         self._persist_trigger()
         raw_head = self.monitor.load_verified_latest(self.stream).head
         with self._capture(FakeSource()) as capture:
-            with patch.object(self.monitor, "load_verified_latest", return_value=raw_head):
-                with self.assertRaises(ResponseProfileWorkloadCaptureError) as raised:
-                    capture.run_once(max_observations=1)
+            with (
+                patch.object(self.monitor, "load_verified_latest", return_value=raw_head),
+                self.assertRaises(ResponseProfileWorkloadCaptureError) as raised,
+            ):
+                capture.run_once(max_observations=1)
             self.assertEqual(raised.exception.code, "DETECTOR_TRIGGER_INVALID")
             self.assertIs(capture.phase, CapturePhase.INVALID)
 

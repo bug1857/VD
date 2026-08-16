@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from math import ceil, comb, isfinite, log, sqrt
 from numbers import Real
 
-
 EXP009_ROUTING_POPULATION_COUNT = 600
 EXP009_CANDIDATE_COUNT = 60
 EXP009_RECALL_AUDIT_COUNT = 1_200
@@ -141,7 +140,7 @@ def one_sided_hoeffding_recall_lower_bound(
     normalized: list[float] = []
     for value in values:
         if isinstance(value, bool) or not isinstance(value, Real):
-            raise ValueError("recall values must be finite and within [0, 1]")
+            raise ValueError("recall values must be finite and within [0, 1]")  # domain error type carries the governed reason code  # noqa: TRY004
         numeric = float(value)
         if not isfinite(numeric) or not 0.0 <= numeric <= 1.0:
             raise ValueError("recall values must be finite and within [0, 1]")

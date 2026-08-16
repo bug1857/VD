@@ -37,15 +37,15 @@ silently redefine what a Gate-C PASS means.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
+import itertools
 import math
 import struct
+from dataclasses import dataclass
+from enum import StrEnum
 
-from .config import Metric, NUMERIC_TOLERANCE
+from .config import NUMERIC_TOLERANCE, Metric
 from .milvus import SearchHit
 from .oracle import OracleHit, OracleResult, threshold_violations, validate_range
-
 
 __all__ = [
     "FlatOracleAgreementKind",
@@ -102,7 +102,7 @@ def _binary32(value: float) -> tuple[bytes, float]:
 
 
 def _is_metric_ordered(values: tuple[float, ...], metric: Metric) -> bool:
-    pairs = zip(values, values[1:])
+    pairs = itertools.pairwise(values)
     if metric is Metric.L2:
         return all(left <= right for left, right in pairs)
     return all(left >= right for left, right in pairs)

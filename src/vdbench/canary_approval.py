@@ -21,26 +21,25 @@ Tests generate an ephemeral in-memory key only to exercise public verification.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
-from datetime import datetime, timedelta
-from enum import Enum
 import base64
 import hashlib
 import json
 import math
 import re
+import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import datetime, timedelta
+from enum import Enum
 from types import MappingProxyType
 from typing import Any, Protocol
-import unicodedata
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .config import HNSW_EF_SWEEP, Metric, THRESHOLD_LABELS
+from .config import HNSW_EF_SWEEP, THRESHOLD_LABELS, Metric
 from .drift import evidence_provenance_valid
 from .policy import PolicyAction, PolicyDecision, PolicyMode
-
 
 __all__ = [
     "APPROVAL_GRANT_SCHEMA_VERSION",
@@ -263,7 +262,7 @@ def _parse_utc(value: object, *, field: str) -> datetime:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise _ApprovalValidationError(f"{field.upper()}_INVALID")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise _ApprovalValidationError(f"{field.upper()}_INVALID") from exc
     if parsed.utcoffset() != timedelta(0):
@@ -352,9 +351,7 @@ def _validate_grant(grant: object, *, require_signature: bool) -> CanaryApproval
         raise _ApprovalValidationError("ROLLBACK_PREAUTHORIZATION_REQUIRED")
     if grant.signature_algorithm != APPROVAL_SIGNATURE_ALGORITHM:
         raise _ApprovalValidationError("SIGNATURE_ALGORITHM_UNSUPPORTED")
-    if require_signature:
-        _signature_bytes(grant.signature)
-    elif grant.signature is not None:
+    if require_signature or grant.signature is not None:
         _signature_bytes(grant.signature)
     return CanaryApprovalGrant(
         grant_id=grant.grant_id,
@@ -481,7 +478,7 @@ def _raw_unsigned_grant_document(grant: CanaryApprovalGrant) -> dict[str, object
 def _unsigned_grant_document(grant: CanaryApprovalGrant) -> dict[str, object]:
     document = _canonicalize(_raw_unsigned_grant_document(grant))
     if not isinstance(document, dict):  # invariant: the input is a mapping
-        raise RuntimeError("canonical grant document is not an object")
+        raise RuntimeError("canonical grant document is not an object")  # domain error type carries the governed reason code  # noqa: TRY004
     return document
 
 
@@ -517,7 +514,7 @@ def approval_grant_from_bytes(payload: bytes) -> CanaryApprovalGrant:
     """Decode one strict signed-grant document, rejecting duplicate/extra fields."""
 
     if not isinstance(payload, bytes):
-        raise ValueError("approval grant payload must be bytes")
+        raise ValueError("approval grant payload must be bytes")  # domain error type carries the governed reason code  # noqa: TRY004
     try:
         parsed = json.loads(
             payload.decode("utf-8"), object_pairs_hook=_no_duplicate_json_fields
@@ -651,7 +648,7 @@ def verify_canary_approval_grant(
         if trust_store.is_grant_revoked(validated.grant_id):
             return _refused("GRANT_REVOKED")
         public_key = trust_store.public_key_for(validated.key_id)
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         return _refused("TRUST_STORE_UNAVAILABLE")
     if not isinstance(public_key, Ed25519PublicKey):
         return _refused("SIGNING_KEY_UNKNOWN")

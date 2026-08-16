@@ -31,10 +31,11 @@ Dependencies:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from .config import Metric, SearchConfiguration
+from .lkg_phase2_readiness_ledger import Phase2ReadinessLedger
 from .lkg_qualification_evaluation import (
     LkgQualificationEvaluation,
     LkgQualificationStatus,
@@ -44,10 +45,8 @@ from .lkg_qualification_evaluation_ledger import (
     LkgQualificationEvaluationLedger,
 )
 from .lkg_qualification_ledger import LkgQualificationLedger
-from .lkg_phase2_readiness_ledger import Phase2ReadinessLedger
 from .lkg_run_binding import LkgRunBinding
 from .search_configuration_digest import search_configuration_sha256
-
 
 __all__ = [
     "LkgPhase3Authority",

@@ -52,12 +52,11 @@ from .response_profile_producer import (
     build_response_profile_search_result,
 )
 
-
 __all__ = [
     "ResponseProfileMilvusClientLike",
-    "StackHealthProbeLike",
     "ResponseProfileMilvusQueryExecutor",
     "ResponseProfileMilvusRuntimeProbe",
+    "StackHealthProbeLike",
     "build_response_profile_milvus_client",
 ]
 
@@ -194,7 +193,7 @@ class ResponseProfileMilvusRuntimeProbe:
             health = self._stack_health_probe.check()
             etcd_healthy = getattr(health, "etcd_healthy", None) is True
             minio_healthy = getattr(health, "minio_healthy", None) is True
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             etcd_healthy = False
             minio_healthy = False
 
@@ -203,7 +202,7 @@ class ResponseProfileMilvusRuntimeProbe:
             value = state.get("state") if isinstance(state, dict) else state
             collection_loaded = getattr(value, "name", str(value)) == "Loaded"
             milvus_healthy = True
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             collection_loaded = False
             milvus_healthy = False
 
@@ -212,7 +211,7 @@ class ResponseProfileMilvusRuntimeProbe:
                 self._harness.index_identity(
                     self._collection_name, self._metric, IndexTrack.HNSW
                 )
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 # A collection that cannot report its own index identity is
                 # not a trustworthy read target, even if load_state reported
                 # Loaded moments earlier.

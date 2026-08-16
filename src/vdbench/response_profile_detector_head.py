@@ -7,9 +7,9 @@ Only the hardened monitor store may issue a verified-latest snapshot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
 import hashlib
 import hmac
+from dataclasses import dataclass, fields
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
@@ -22,15 +22,14 @@ from .drift import (
 )
 from .shadow_event_types import MonitorStreamKey
 
-
 DETECTOR_HEAD_SCHEMA_VERSION = "response-profile-detector-head-v1"
 DETECTOR_HEAD_HASH_DOMAIN = b"VD::RESPONSE_PROFILE_DETECTOR_HEAD::V1\x00"
 
 __all__ = [
-    "DETECTOR_HEAD_SCHEMA_VERSION",
     "DETECTOR_HEAD_HASH_DOMAIN",
-    "ResponseProfileDetectorHeadError",
+    "DETECTOR_HEAD_SCHEMA_VERSION",
     "ResponseProfileDetectorHead",
+    "ResponseProfileDetectorHeadError",
     "build_response_profile_detector_head",
     "response_profile_detector_head_document",
     "response_profile_detector_head_from_document",

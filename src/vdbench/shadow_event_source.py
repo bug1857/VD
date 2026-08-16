@@ -18,23 +18,26 @@ Failure modes:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from datetime import datetime, timedelta
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 from .config import Metric
-from .shadow_artifacts import ShadowTraceArtifactError, load_persisted_shadow_trace_envelope, persist_shadow_trace_envelope
-from .shadow_window import PersistedShadowTraceEnvelope, SHA256_HEX, TRACE_QUERY_COUNT, hash_shadow_audit_trace
+from .shadow_artifacts import (
+    ShadowTraceArtifactError,
+    load_persisted_shadow_trace_envelope,
+    persist_shadow_trace_envelope,
+)
 from .shadow_event_types import (
     MonitorStreamKey,
     PublicationStatus,
@@ -45,7 +48,12 @@ from .shadow_event_types import (
     TracePublicationContext,
     TracePublicationReceipt,
 )
-
+from .shadow_window import (
+    SHA256_HEX,
+    TRACE_QUERY_COUNT,
+    PersistedShadowTraceEnvelope,
+    hash_shadow_audit_trace,
+)
 
 EVENT_SCHEMA_VERSION = "live-shadow-event-v1"
 EVENT_ID_DOMAIN = "live-shadow-event-v1"
@@ -103,7 +111,7 @@ def _parse_rfc3339_utc(value: object) -> datetime:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         raise ShadowEventSourceError("CAPTURE_TIMESTAMP_INVALID")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ShadowEventSourceError("CAPTURE_TIMESTAMP_INVALID") from exc
     if parsed.utcoffset() != timedelta(0):
@@ -462,7 +470,7 @@ class FileShadowTraceEventSource(ShadowTraceEventSource, ShadowTracePublisher):
         if getattr(trace, "complete", None) is not True:
             raise ShadowEventSourceError("TRACE_INCOMPLETE")
         try:
-            metric = Metric(getattr(trace, "metric"))
+            metric = Metric(trace.metric)
         except (TypeError, ValueError) as exc:
             raise ShadowEventSourceError("TRACE_METRIC_INVALID") from exc
         if metric is not context.stream_key.metric:
@@ -603,14 +611,13 @@ class FileShadowTraceEventSource(ShadowTraceEventSource, ShadowTracePublisher):
             raise ShadowEventSourceError("ENVELOPE_INVALID") from exc
         if envelope.expected_trace_sha256 != event.expected_trace_sha256:
             raise ShadowEventSourceError("ENVELOPE_CHECKSUM_MISMATCH")
-        if context is not None:
-            if (
-                envelope.trace_id != context.trace_id
-                or envelope.captured_at_utc != context.captured_at_utc
-                or envelope.sequence_index != context.trace_sequence_index
-                or envelope.declared_observation_count != TRACE_QUERY_COUNT
-            ):
-                raise ShadowEventSourceError("ENVELOPE_CONTEXT_MISMATCH")
+        if context is not None and (
+            envelope.trace_id != context.trace_id
+            or envelope.captured_at_utc != context.captured_at_utc
+            or envelope.sequence_index != context.trace_sequence_index
+            or envelope.declared_observation_count != TRACE_QUERY_COUNT
+        ):
+            raise ShadowEventSourceError("ENVELOPE_CONTEXT_MISMATCH")
 
     def _quarantine(self, pending_path: Path, reason_code: str) -> None:
         # ``exists()`` follows a symbolic link and is therefore false for a

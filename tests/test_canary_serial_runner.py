@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
+from tests.test_canary_admission import _phase3_authority
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.canary_admission import (
     Stage4AdmissionReceipt,
@@ -22,27 +23,31 @@ from vdbench.canary_route_state import RouteStateBinding
 from vdbench.canary_routing import build_canary_route_plan
 from vdbench.canary_runtime_types import Stage4RuntimeReadiness
 from vdbench.canary_schedule import build_stage4_execution_schedule
+from vdbench.canary_serial_runner import (
+    Dataset002ScheduleVectorSource,
+    Stage4SerialRunner,
+    Stage4SlotExecutorOutcome,
+)
 from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
-    SCHEDULE_CONTROL_COUNT,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
-from vdbench.config import Metric, RESULT_LIMIT
+from vdbench.config import RESULT_LIMIT, Metric
 from vdbench.drift import build_evidence_provenance
 from vdbench.lkg_phase3_persistence import LkgPhase3AuthorityReferenceStore
 from vdbench.policy import (
@@ -50,13 +55,6 @@ from vdbench.policy import (
     PolicyDecision,
     PolicyMode,
     SafetyGateResult,
-)
-from tests.test_canary_admission import _phase3_authority
-
-from vdbench.canary_serial_runner import (
-    Dataset002ScheduleVectorSource,
-    Stage4SerialRunner,
-    Stage4SlotExecutorOutcome,
 )
 
 

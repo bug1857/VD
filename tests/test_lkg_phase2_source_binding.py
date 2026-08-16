@@ -5,7 +5,6 @@ from __future__ import annotations
 import unittest
 
 from vdbench.config import ContractViolation
-from vdbench.lkg_qualification_seal import LkgSealWorkloadIdentity
 from vdbench.lkg_phase2_source_binding import (
     EXPECTED_QUERY_COUNT,
     INGESTION_SCHEMA_VERSION,
@@ -35,18 +34,18 @@ def _workload_identity_document() -> dict:
 
 
 def _binding_payload(**overrides) -> dict:
-    payload = dict(
-        source_binding_schema_version=SOURCE_BINDING_SCHEMA_VERSION,
-        source_run_id="run-1",
-        source_run_binding_sha256="b" * 64,
-        source_phase1_ledger_schema_version=PHASE1_LEDGER_SCHEMA_VERSION,
-        source_seal_schema_version=SEAL_SCHEMA_VERSION_PIN,
-        source_run_seal_digest="c" * 64,
-        source_sealed_chain_head_sha256="d" * 64,
-        workload_identity=_workload_identity_document(),
-        qualification_ordered_query_ids_sha256="e" * 64,
-        expected_query_count=EXPECTED_QUERY_COUNT,
-    )
+    payload = {
+        "source_binding_schema_version": SOURCE_BINDING_SCHEMA_VERSION,
+        "source_run_id": "run-1",
+        "source_run_binding_sha256": "b" * 64,
+        "source_phase1_ledger_schema_version": PHASE1_LEDGER_SCHEMA_VERSION,
+        "source_seal_schema_version": SEAL_SCHEMA_VERSION_PIN,
+        "source_run_seal_digest": "c" * 64,
+        "source_sealed_chain_head_sha256": "d" * 64,
+        "workload_identity": _workload_identity_document(),
+        "qualification_ordered_query_ids_sha256": "e" * 64,
+        "expected_query_count": EXPECTED_QUERY_COUNT,
+    }
     payload.update(overrides)
     return payload
 
@@ -70,17 +69,17 @@ _EVIDENCE = _PROVIDER.capture_or_return(
 
 
 def _ingestion_payload(**overrides) -> dict:
-    payload = dict(
-        ingestion_schema_version=INGESTION_SCHEMA_VERSION,
-        source_run_id="run-1",
-        window_index=0,
-        epoch_index=0,
-        original_evidence=readiness_payload_document(_EVIDENCE),
-        original_evidence_digest=_EVIDENCE.canonical_document_digest,
-        source_run_seal_digest="1" * 64,
-        phase2_source_binding_digest="2" * 64,
-        ingested_at_utc="2026-01-01T00:00:01Z",
-    )
+    payload = {
+        "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+        "source_run_id": "run-1",
+        "window_index": 0,
+        "epoch_index": 0,
+        "original_evidence": readiness_payload_document(_EVIDENCE),
+        "original_evidence_digest": _EVIDENCE.canonical_document_digest,
+        "source_run_seal_digest": "1" * 64,
+        "phase2_source_binding_digest": "2" * 64,
+        "ingested_at_utc": "2026-01-01T00:00:01Z",
+    }
     payload.update(overrides)
     return payload
 

@@ -19,8 +19,8 @@ mean of these fixed vectors.
 
 from __future__ import annotations
 
-from math import log, sqrt
 import unittest
+from math import log, sqrt
 
 from vdbench.canary_recall_audit_evaluation import (
     RECALL_AUDIT_EVALUATOR_VERSION,
@@ -39,26 +39,26 @@ from vdbench.dataset002 import DATASET002_SCHEMA_VERSION
 
 
 def _search_configuration(**overrides) -> SearchConfiguration:
-    fields = dict(
-        metric=Metric.COSINE,
-        threshold_label="target-025",
-        radius=0.2,
-        index_track=IndexTrack.HNSW,
-        ef=800,
-        limit=100,
-        consistency_level="Strong",
-    )
+    fields = {
+        "metric": Metric.COSINE,
+        "threshold_label": "target-025",
+        "radius": 0.2,
+        "index_track": IndexTrack.HNSW,
+        "ef": 800,
+        "limit": 100,
+        "consistency_level": "Strong",
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _identity(**overrides) -> WorkloadIdentityBinding:
-    fields = dict(
-        configuration_identity="a" * 16,
-        data_identity="DATASET-001-v1:sha256:" + "b" * 64,
-        flat_binding_id="c" * 16,
-        hnsw_binding_id="d" * 16,
-    )
+    fields = {
+        "configuration_identity": "a" * 16,
+        "data_identity": "DATASET-001-v1:sha256:" + "b" * 64,
+        "flat_binding_id": "c" * 16,
+        "hnsw_binding_id": "d" * 16,
+    }
     fields.update(overrides)
     return WorkloadIdentityBinding(**fields)
 
@@ -67,36 +67,36 @@ _FROZEN_QUERY_IDS_SHA256 = "f" * 64
 
 
 def _binding(**overrides) -> Stage4EvidenceBinding:
-    fields = dict(
-        run_id="exp009-stage4-run-001",
-        source_revision="0" * 40,
-        metric=Metric.COSINE,
-        threshold_stratum="target-025",
-        current_ef=400,
-        candidate_ef=800,
-        last_known_good_ef=400,
-        candidate_search_configuration=_search_configuration(),
-        identity=_identity(),
-        dataset002_manifest_sha256="e" * 64,
-        frozen_recall_audit_ids_sha256=_FROZEN_QUERY_IDS_SHA256,
-        eligible_workload_sha256="1" * 64,
-        candidate_selection_sha256="2" * 64,
-        execution_schedule_sha256="3" * 64,
-        recall_evidence_schema_version="recall-audit-hoeffding-1200-v1",
-        latency_evidence_schema_version="exp009-stage4-execution-schedule-v1",
-    )
+    fields = {
+        "run_id": "exp009-stage4-run-001",
+        "source_revision": "0" * 40,
+        "metric": Metric.COSINE,
+        "threshold_stratum": "target-025",
+        "current_ef": 400,
+        "candidate_ef": 800,
+        "last_known_good_ef": 400,
+        "candidate_search_configuration": _search_configuration(),
+        "identity": _identity(),
+        "dataset002_manifest_sha256": "e" * 64,
+        "frozen_recall_audit_ids_sha256": _FROZEN_QUERY_IDS_SHA256,
+        "eligible_workload_sha256": "1" * 64,
+        "candidate_selection_sha256": "2" * 64,
+        "execution_schedule_sha256": "3" * 64,
+        "recall_evidence_schema_version": "recall-audit-hoeffding-1200-v1",
+        "latency_evidence_schema_version": "exp009-stage4-execution-schedule-v1",
+    }
     fields.update(overrides)
     return Stage4EvidenceBinding(**fields)
 
 
-_CONTEXT = dict(
-    search_configuration=_search_configuration(),
-    identity=_identity(),
-    dataset002_manifest_sha256="e" * 64,
-    dataset002_schema_version=DATASET002_SCHEMA_VERSION,
-    binding=_binding(),
-    frozen_query_ids_sha256=_FROZEN_QUERY_IDS_SHA256,
-)
+_CONTEXT = {
+    "search_configuration": _search_configuration(),
+    "identity": _identity(),
+    "dataset002_manifest_sha256": "e" * 64,
+    "dataset002_schema_version": DATASET002_SCHEMA_VERSION,
+    "binding": _binding(),
+    "frozen_query_ids_sha256": _FROZEN_QUERY_IDS_SHA256,
+}
 
 
 def _obs(query_id: int, capped_recall: float, *, result_cap: int = 100, **overrides):
@@ -110,17 +110,17 @@ def _obs(query_id: int, capped_recall: float, *, result_cap: int = 100, **overri
     candidate_ids = oracle_ids[:matched_count] + tuple(
         range(decoy_base, decoy_base + (result_cap - matched_count))
     )
-    fields = dict(
-        query_id=query_id,
-        search_configuration=_CONTEXT["search_configuration"],
-        identity=_CONTEXT["identity"],
-        dataset002_manifest_sha256=_CONTEXT["dataset002_manifest_sha256"],
-        dataset002_schema_version=_CONTEXT["dataset002_schema_version"],
-        oracle_result_ids=oracle_ids,
-        candidate_result_ids=candidate_ids,
-        producer_run_id=_CONTEXT["binding"].run_id,
-        recorded_at_utc="2026-08-04T00:00:00Z",
-    )
+    fields = {
+        "query_id": query_id,
+        "search_configuration": _CONTEXT["search_configuration"],
+        "identity": _CONTEXT["identity"],
+        "dataset002_manifest_sha256": _CONTEXT["dataset002_manifest_sha256"],
+        "dataset002_schema_version": _CONTEXT["dataset002_schema_version"],
+        "oracle_result_ids": oracle_ids,
+        "candidate_result_ids": candidate_ids,
+        "producer_run_id": _CONTEXT["binding"].run_id,
+        "recorded_at_utc": "2026-08-04T00:00:00Z",
+    }
     fields.update(overrides)
     return RecallAuditObservation(**fields)
 
@@ -176,14 +176,16 @@ class EvaluateRecallAuditEvidenceTests(unittest.TestCase):
             1,
             "0.95",
         ):
-            with self.subTest(bad_floor=bad_floor):
-                with self.assertRaises(ValueError):
-                    evaluate_recall_audit_evidence(
-                        expected_query_ids=self.expected_ids,
-                        observations=observations,
-                        recall_floor=bad_floor,
-                        **_CONTEXT,
-                    )
+            with (
+                self.subTest(bad_floor=bad_floor),
+                self.assertRaises(ValueError),
+            ):
+                evaluate_recall_audit_evidence(
+                    expected_query_ids=self.expected_ids,
+                    observations=observations,
+                    recall_floor=bad_floor,
+                    **_CONTEXT,
+                )
 
     def test_evidence_digest_changes_if_any_observation_changes(self) -> None:
         observations = tuple(_obs(qid, 1.0) for qid in range(EXP009_RECALL_AUDIT_COUNT))

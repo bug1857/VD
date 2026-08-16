@@ -45,8 +45,8 @@ from .response_profile_workload_capture import (
 __all__ = [
     "V2CapturedPopulation",
     "V2PopulationCaptureError",
-    "capture_v2_post_trigger_population",
     "capture_real_v2_post_trigger_population",
+    "capture_v2_post_trigger_population",
 ]
 
 

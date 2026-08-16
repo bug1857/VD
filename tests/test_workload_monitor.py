@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
-from vdbench.config import IndexTrack, Metric
 from vdbench.actuation import (
     ActuationIdentityContext,
     ActuationOutcome,
     SafeActuationBoundary,
 )
+from vdbench.config import IndexTrack, Metric
 from vdbench.drift import (
     EvidenceProvenance,
     Signal,
@@ -48,7 +48,6 @@ from vdbench.workload_monitor import (
     ShadowTraceEvent,
     WorkloadMonitor,
 )
-
 
 REPOSITORY = Path(__file__).parents[1]
 MODULE_PATH = REPOSITORY / "src" / "vdbench" / "workload_monitor.py"

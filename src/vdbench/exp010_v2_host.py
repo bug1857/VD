@@ -26,9 +26,10 @@ Authority:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Self
 
 from .artifacts import sha256_file, verify_dataset_artifacts
 from .config import ContractViolation, Metric
@@ -45,19 +46,18 @@ from .real_detector_attestation_store import (
     SQLiteRealDetectorAttestationStore,
     VerifiedRealDetectorHead,
 )
-from .shadow_event_types import MonitorStreamKey
 from .shadow_attempt_store import SQLiteShadowAttemptStore
+from .shadow_event_types import MonitorStreamKey
 from .v2_shadow_worker import V2ShadowCaptureExecutor, V2ShadowWorker
 from .window_finalization import SQLiteWindowFinalizationStore
 
-
 __all__ = [
+    "EXP010_CONSUMER_ID",
+    "SHADOW_CONSUMER_ID",
+    "Exp010V2HostComposition",
     "Exp010V2HostError",
     "PinnedDatasetIdentity",
     "pin_dataset001_identity",
-    "Exp010V2HostComposition",
-    "SHADOW_CONSUMER_ID",
-    "EXP010_CONSUMER_ID",
 ]
 
 
@@ -244,7 +244,7 @@ class Exp010V2HostComposition:
         return V2GenuineWorkloadObservationSource(
             store=self.response_store,
             consumer_id=EXP010_CONSUMER_ID,
-            clock=self.host._clock,  # noqa: SLF001 - same composition owns both
+            clock=self.host._clock,
             start_source_sequence=start_source_sequence,
         )
 
@@ -260,10 +260,10 @@ class Exp010V2HostComposition:
         for store in reversed(self._stores):
             try:
                 store.close()
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                 pass
 
-    def __enter__(self) -> "Exp010V2HostComposition":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

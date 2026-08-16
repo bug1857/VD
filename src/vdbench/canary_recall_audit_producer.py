@@ -38,16 +38,18 @@ Scope:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 from .canary_recall_audit_ledger import CanaryRecallAuditLedger, RecallAuditObservation
 from .canary_stage4_evidence_binding import Stage4EvidenceBinding
-from .canary_statistics import EXP009_RECALL_AUDIT_COUNT, EXP009_ROUTING_POPULATION_COUNT
+from .canary_statistics import (
+    EXP009_RECALL_AUDIT_COUNT,
+    EXP009_ROUTING_POPULATION_COUNT,
+)
 from .config import IndexTrack, SearchConfiguration
 from .dataset002 import DATASET002_SCHEMA_VERSION
-
 
 __all__ = [
     "FakeDeterministicRecallAuditClient",
@@ -80,7 +82,7 @@ class RecallAuditQueryClientLike(Protocol):
 
     def execute(
         self, *, query_id: int, query_vector: tuple[float, ...]
-    ) -> "RecallAuditClientOutcome": ...
+    ) -> RecallAuditClientOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,12 +255,12 @@ class Stage4RecallAuditProducer:
     def _process_one(self, query_id: int) -> str | None:
         try:
             query_vector = self._query_source.recall_audit_vector(query_id=query_id)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return "VECTOR_SOURCE_FAILURE"
 
         try:
             outcome = self._client.execute(query_id=query_id, query_vector=query_vector)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return "CLIENT_EXCEPTION"
         if not isinstance(outcome, RecallAuditClientOutcome):
             return "CLIENT_OUTCOME_INVALID"

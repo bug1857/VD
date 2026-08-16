@@ -1,7 +1,7 @@
 import ast
+import unittest
 from dataclasses import fields, replace
 from pathlib import Path
-import unittest
 
 from vdbench.actuation import (
     ActuationClientLike,

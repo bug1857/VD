@@ -6,22 +6,22 @@ policy, approval, routing-plan, network, or Milvus dependency.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any, Iterator
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
-from .config import HNSW_EF_SWEEP, Metric, THRESHOLD_LABELS
-
+from .config import HNSW_EF_SWEEP, THRESHOLD_LABELS, Metric
 
 __all__ = [
     "FileCanaryRouteStateStore",
@@ -101,7 +101,7 @@ class _DuplicateJsonField(ValueError):
 
 def _canonical_text(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} is not text")
+        raise ValueError(f"{field} is not text")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if (
         not normalized
@@ -123,10 +123,10 @@ def _timestamp(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _TIMESTAMP_RE.fullmatch(value) is None:
         raise ValueError(f"{field} is not RFC3339 UTC")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{field} is not a valid UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError(f"{field} is not UTC")
     return value
 
@@ -139,7 +139,7 @@ def _reason(value: object) -> str:
 
 def _validate_binding(binding: object) -> RouteStateBinding:
     if not isinstance(binding, RouteStateBinding):
-        raise ValueError("binding is invalid")
+        raise ValueError("binding is invalid")  # domain error type carries the governed reason code  # noqa: TRY004
     if not isinstance(binding.metric, Metric) or binding.threshold_stratum not in THRESHOLD_LABELS:
         raise ValueError("binding metric or stratum is invalid")
     if binding.last_known_good_ef not in tuple(value for value in HNSW_EF_SWEEP if value != 100):

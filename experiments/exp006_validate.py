@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import asdict, replace
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NoReturn
 
 from vdbench.actuation import (
@@ -28,15 +28,23 @@ from vdbench.actuation import (
 from vdbench.config import IndexTrack, Metric
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
-    ShadowAuditStageEvidence, ShadowAuditTrace, ShadowIdentityEvidence, ShadowQueryAuditTrace,
+    ShadowAuditStageEvidence,
+    ShadowAuditTrace,
+    ShadowIdentityEvidence,
+    ShadowQueryAuditTrace,
 )
 from vdbench.oracle import OracleHit, OracleResult
 from vdbench.policy import PolicyAction, PreActionSafety, QualificationResult
 from vdbench.shadow_artifacts import persist_shadow_trace_envelope
 from vdbench.shadow_window import PersistedShadowTraceEnvelope, hash_shadow_audit_trace
 from vdbench.workload_monitor import (
-    DryRunPolicyInputs, FileMonitorStateStore, MonitorAuditRecord, MonitorCycleResult,
-    MonitorStreamKey, ShadowTraceEvent, WorkloadMonitor,
+    DryRunPolicyInputs,
+    FileMonitorStateStore,
+    MonitorAuditRecord,
+    MonitorCycleResult,
+    MonitorStreamKey,
+    ShadowTraceEvent,
+    WorkloadMonitor,
 )
 
 
@@ -480,7 +488,7 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
     audit_checksums = {str(path.relative_to(output_dir)): _sha256(path) for path in audit_paths}
     status = "COMPLETE" if all(scenarios.values()) else "INCOMPLETE"
     manifest = {"execution_mode": "offline", "detector_seed": detector_seed, "python": sys.version, "platform": platform.platform(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "timestamp_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"), "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "invocation": list(sys.argv), "artifact_directory": str(output_dir.resolve()),
         "fixture_sha256": fixture_checksums, "state_sha256": state_checksums,
         "audit_sha256": audit_checksums, "validation_status": status}

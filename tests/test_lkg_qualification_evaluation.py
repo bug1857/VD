@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
 import unittest
+from dataclasses import replace
 
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 from vdbench.lkg_phase2_source_binding import (
@@ -59,7 +59,6 @@ from vdbench.lkg_window_readiness import (
     readiness_payload_document,
     readiness_payload_document_digest,
 )
-
 
 RUN_BINDING_SHA256 = "a" * 64
 SEAL_DIGEST = "e" * 64
@@ -333,14 +332,16 @@ class TestArtifactContracts(unittest.TestCase):
         ):
             payload = evaluation_contract_payload_document(_contract())
             payload[field] = alternate
-            with self.subTest(field=field, alternate=alternate):
-                with self.assertRaises(ContractViolation):
-                    lkg_qualification_evaluation_contract_from_payload(
-                        payload,
-                        canonical_contract_digest=(
-                            evaluation_contract_payload_document_digest(payload)
-                        ),
-                    )
+            with (
+                self.subTest(field=field, alternate=alternate),
+                self.assertRaises(ContractViolation),
+            ):
+                lkg_qualification_evaluation_contract_from_payload(
+                    payload,
+                    canonical_contract_digest=(
+                        evaluation_contract_payload_document_digest(payload)
+                    ),
+                )
 
     def test_ef_rule_round_trip_and_eligibility(self):
         rule = default_lkg_ef_eligibility_rule()
@@ -372,16 +373,18 @@ class TestArtifactContracts(unittest.TestCase):
                 default_lkg_qualification_semantics_rule()
             )
             payload["required_readiness_dimensions"] = dimensions
-            with self.subTest(dimensions=dimensions):
-                with self.assertRaises(ContractViolation):
-                    lkg_qualification_semantics_rule_from_payload(
-                        payload,
-                        canonical_rule_digest=(
-                            qualification_semantics_rule_payload_document_digest(
-                                payload
-                            )
-                        ),
-                    )
+            with (
+                self.subTest(dimensions=dimensions),
+                self.assertRaises(ContractViolation),
+            ):
+                lkg_qualification_semantics_rule_from_payload(
+                    payload,
+                    canonical_rule_digest=(
+                        qualification_semantics_rule_payload_document_digest(
+                            payload
+                        )
+                    ),
+                )
 
     def test_window_epoch_and_final_round_trip(self):
         evaluation = _passing_run()
@@ -415,14 +418,16 @@ class TestArtifactContracts(unittest.TestCase):
         missing = dict(payload)
         del missing["recall_floor"]
         for candidate in (unknown, missing):
-            with self.subTest(candidate=candidate):
-                with self.assertRaises(ContractViolation):
-                    lkg_qualification_evaluation_contract_from_payload(
-                        candidate,
-                        canonical_contract_digest=evaluation_contract_payload_document_digest(
-                            candidate
-                        ),
-                    )
+            with (
+                self.subTest(candidate=candidate),
+                self.assertRaises(ContractViolation),
+            ):
+                lkg_qualification_evaluation_contract_from_payload(
+                    candidate,
+                    canonical_contract_digest=evaluation_contract_payload_document_digest(
+                        candidate
+                    ),
+                )
 
     def test_malformed_type_and_digest_rejected(self):
         payload = evaluation_contract_payload_document(_contract())
@@ -533,14 +538,16 @@ class TestArtifactContracts(unittest.TestCase):
         for field, value in (("status", "INCOMPLETE"), ("qualified", False)):
             payload = evaluation_payload_document(evaluation)
             payload[field] = value
-            with self.subTest(field=field):
-                with self.assertRaises(ContractViolation):
-                    lkg_qualification_evaluation_from_payload(
-                        payload,
-                        canonical_evaluation_digest=evaluation_payload_document_digest(
-                            payload
-                        ),
-                    )
+            with (
+                self.subTest(field=field),
+                self.assertRaises(ContractViolation),
+            ):
+                lkg_qualification_evaluation_from_payload(
+                    payload,
+                    canonical_evaluation_digest=evaluation_payload_document_digest(
+                        payload
+                    ),
+                )
 
     def test_final_contract_rejects_epoch_statistic_status_contradiction(self):
         payload = evaluation_payload_document(_passing_run())

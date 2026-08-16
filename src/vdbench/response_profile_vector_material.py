@@ -93,15 +93,14 @@ from .response_profile_semantic import (
     oracle_manifest_document,
 )
 
-
 __all__ = [
     "VECTOR_MATERIAL_SCHEMA_VERSION",
     "ResponseProfileVectorMaterialError",
     "VerifiedResponseProfileVectorMaterial",
-    "response_profile_vector_material_document",
     "load_response_profile_vector_material",
-    "response_profile_run_binding_from_document",
     "response_profile_oracle_manifest_from_document",
+    "response_profile_run_binding_from_document",
+    "response_profile_vector_material_document",
 ]
 
 

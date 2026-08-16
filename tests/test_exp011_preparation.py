@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import ast
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.test_exp011_live_acquisition import (
     COLLECTION,
     DIMENSIONS,
-    _Fixture,
     _FakeMilvusClient,
     _FakeStackHealthProbe,
+    _Fixture,
 )
 from vdbench.config import Metric
 from vdbench.drift import DetectorState, DriftClassification
@@ -31,7 +31,6 @@ from vdbench.exp011_preparation import (
 from vdbench.response_profile_detector_head import build_response_profile_detector_head
 from vdbench.response_profile_monitor_store import ResponseProfileMonitorStateStore
 from vdbench.workload_monitor import MonitorStreamState
-
 
 MODULE_PATH = Path(__file__).parents[1] / "src" / "vdbench" / "exp011_preparation.py"
 
@@ -170,24 +169,26 @@ class Exp011PreparationTests(unittest.TestCase):
         fixture = _Fixture()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self._store(root / "monitor.sqlite3", fixture) as store:
-                with self.assertRaises(Exp011PreparationError):
-                    prepare_exp011_acquisition_inputs(
-                        output_dir=root / "prepared",
-                        monitor_store=store,
-                        stream_key=fixture.control.stream_key,
-                        population=fixture.run_binding.population,
-                        warmup_role_manifest=fixture.run_binding.warmup_role_manifest,
-                        oracle_records=(),
-                        run_id="exp011-missing-oracle",
-                        created_at_utc="2026-08-10T23:59:59Z",
-                        source_revision=fixture.static_identity.source_revision,
-                        search_configurations=fixture.static_identity.search_configurations,
-                        hnsw_index_identity=fixture.static_identity.hnsw_index_identity,
-                        data_identity=fixture.static_identity.data_identity,
-                        environment_manifest_sha256=fixture.static_identity.environment_manifest_sha256,
-                        frozen_at_utc="2026-08-10T23:59:59.500000Z",
-                    )
+            with (
+                self._store(root / "monitor.sqlite3", fixture) as store,
+                self.assertRaises(Exp011PreparationError),
+            ):
+                prepare_exp011_acquisition_inputs(
+                    output_dir=root / "prepared",
+                    monitor_store=store,
+                    stream_key=fixture.control.stream_key,
+                    population=fixture.run_binding.population,
+                    warmup_role_manifest=fixture.run_binding.warmup_role_manifest,
+                    oracle_records=(),
+                    run_id="exp011-missing-oracle",
+                    created_at_utc="2026-08-10T23:59:59Z",
+                    source_revision=fixture.static_identity.source_revision,
+                    search_configurations=fixture.static_identity.search_configurations,
+                    hnsw_index_identity=fixture.static_identity.hnsw_index_identity,
+                    data_identity=fixture.static_identity.data_identity,
+                    environment_manifest_sha256=fixture.static_identity.environment_manifest_sha256,
+                    frozen_at_utc="2026-08-10T23:59:59.500000Z",
+                )
             self.assertFalse((root / "prepared").exists())
 
     def test_module_has_no_milvus_policy_grant_route_or_actuation_dependency(self) -> None:

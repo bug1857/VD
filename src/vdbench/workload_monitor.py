@@ -18,18 +18,28 @@ Failure modes:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from enum import StrEnum
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from pathlib import Path
 from typing import Protocol
 
 from .config import Metric
-from .drift import DriftDecision, EvidenceProvenance, WindowEvidence, evaluate_drift_decision
+from .drift import (
+    DriftDecision,
+    EvidenceProvenance,
+    WindowEvidence,
+    evaluate_drift_decision,
+)
+from .monitor_evidence import (
+    MonitorEvidenceCodecError,
+    decode_persisted_window_evidence,
+    encode_persisted_window_evidence,
+)
 from .policy import (
     PolicyAction,
     PolicyDecision,
@@ -39,20 +49,25 @@ from .policy import (
     ResponseEstimate,
     evaluate_tuning_policy,
 )
-from .shadow_artifacts import ShadowTraceArtifactError, load_persisted_shadow_trace_envelope
-from .shadow_extraction import extract_window_evidence
-from .monitor_evidence import (
-    MonitorEvidenceCodecError,
-    decode_persisted_window_evidence,
-    encode_persisted_window_evidence,
-)
-from .shadow_window import AssembledShadowWindow, PersistedShadowTraceEnvelope, assemble_shadow_window
-from .shadow_event_types import MonitorStreamKey, ShadowTraceEvent, ShadowTraceEventSource
 from .response_profile_detector_head import (
     ResponseProfileDetectorHead,
     build_response_profile_detector_head,
 )
-
+from .shadow_artifacts import (
+    ShadowTraceArtifactError,
+    load_persisted_shadow_trace_envelope,
+)
+from .shadow_event_types import (
+    MonitorStreamKey,
+    ShadowTraceEvent,
+    ShadowTraceEventSource,
+)
+from .shadow_extraction import extract_window_evidence
+from .shadow_window import (
+    AssembledShadowWindow,
+    PersistedShadowTraceEnvelope,
+    assemble_shadow_window,
+)
 
 _SCHEMA_VERSION = "workload-monitor-state-v2"
 _SHA256_HEX = frozenset("0123456789abcdef")
@@ -241,7 +256,7 @@ class WorkloadMonitor:
         detector_seed: int,
     ) -> None:
         if isinstance(detector_seed, bool) or not isinstance(detector_seed, int):
-            raise ValueError("detector_seed must be an integer")
+            raise ValueError("detector_seed must be an integer")  # domain error type carries the governed reason code  # noqa: TRY004
         self.source = source
         self.state_store = state_store
         self.policy_input_provider = policy_input_provider
@@ -416,7 +431,7 @@ class WorkloadMonitor:
             policy_decision=advance.policy_decision,
         )
 
-    def _advance_ready_windows(self, state: MonitorStreamState) -> "_AdvanceResult":
+    def _advance_ready_windows(self, state: MonitorStreamState) -> _AdvanceResult:
         assembled: AssembledShadowWindow | None = None
         decision: DriftDecision | None = None
         policy: PolicyDecision | None = None
@@ -475,7 +490,7 @@ class WorkloadMonitor:
                     metric=state.stream_key.metric,
                     detector_seed=self.detector_seed,
                 )
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 reasons = ("EXTRACTION_RAISED",)
                 state = _block_window(state, window, *reasons)
                 break
@@ -529,7 +544,7 @@ class WorkloadMonitor:
                 inputs = self.policy_input_provider.resolve(
                     decision=decision, provenance=decision.evidence_provenance
                 )
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 reasons = ("POLICY_INPUT_UNAVAILABLE",)
                 state = _block_window(state, window, *reasons)
                 break
@@ -913,7 +928,7 @@ def _record_from_document(value: object) -> MonitorAuditRecord:
         or not isinstance(value["event_trace_sha256"], list)
         or not isinstance(value["reason_codes"], list)
     ):
-        raise ValueError("audit record array schema mismatch")
+        raise ValueError("audit record array schema mismatch")  # domain error type carries the governed reason code  # noqa: TRY004
     return MonitorAuditRecord(
         record_id=value["record_id"], stream_key=_key_from_document(value["stream_key"]),
         window_id=value["window_id"], window_sequence=value["window_sequence"],

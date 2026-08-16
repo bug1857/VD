@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
 import unittest
+from dataclasses import replace
 
 from vdbench.config import IndexTrack, Metric
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
-    CollectionIdentityBinding,
     ShadowAuditStageEvidence,
     ShadowAuditTrace,
     ShadowIdentityEvidence,

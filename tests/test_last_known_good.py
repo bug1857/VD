@@ -1,12 +1,12 @@
 import ast
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.drift import (
     DetectorState,

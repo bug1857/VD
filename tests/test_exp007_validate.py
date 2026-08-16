@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from experiments.exp007_validate import Exp007ValidationError, run_validation
@@ -81,8 +81,8 @@ class Exp007ValidationTests(unittest.TestCase):
             self.assertEqual(
                 set(manifest["symlink_target_sha256"]),
                 {
-                    "safety/symlinked/rejected/"
-                    "c1fc6eb6c60ea528f299b7c21a140c46e6ce26ccc9792d048d6e141117b6f757.json"
+                    ("safety/symlinked/rejected/"
+                    "c1fc6eb6c60ea528f299b7c21a140c46e6ce26ccc9792d048d6e141117b6f757.json")
                 },
             )
 
@@ -92,9 +92,8 @@ class Exp007ValidationTests(unittest.TestCase):
             with patch(
                 "experiments.exp007_validate._scenario_backpressure",
                 return_value=(False, {"forced": True}),
-            ):
-                with self.assertRaisesRegex(Exp007ValidationError, "backpressure"):
-                    run_validation(output_dir=output, detector_seed=20260804)
+            ), self.assertRaisesRegex(Exp007ValidationError, "backpressure"):
+                run_validation(output_dir=output, detector_seed=20260804)
 
             raw_result = json.loads((output / "raw_result.json").read_text(encoding="utf-8"))
             manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))

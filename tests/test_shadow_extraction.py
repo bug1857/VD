@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import ast
+import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
-import unittest
 
 from vdbench.config import IndexTrack, Metric
-from vdbench.drift import AuditSelection, Signal, SignalEvidence, select_audit_sample
+from vdbench.drift import Signal, SignalEvidence, select_audit_sample
 from vdbench.milvus import CollectionIdentity, SearchHit
 from vdbench.milvus_actuation import (
     ShadowAuditStageEvidence,

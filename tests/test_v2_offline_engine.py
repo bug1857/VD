@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import fields, replace
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields, replace
+from pathlib import Path
 
 from tests.test_policy import decide
 from tests.test_response_profile_milvus_adapter import (
@@ -18,7 +18,10 @@ from vdbench.drift import (
     build_evidence_provenance,
 )
 from vdbench.exp011_live_acquisition import run_exp011_live_acquisition
-from vdbench.exp011_preparation import Exp011PreparationError, prepare_exp011_acquisition_inputs
+from vdbench.exp011_preparation import (
+    Exp011PreparationError,
+    prepare_exp011_acquisition_inputs,
+)
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
 from vdbench.host_window_detector_v2 import (
     SQLiteHostWindowDetectorV2Store,

@@ -30,8 +30,8 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from .host_window_detector_v2 import (
@@ -42,6 +42,14 @@ from .host_window_detector_v2 import (
 from .host_window_lineage import CommittedHostObservation
 from .milvus_actuation import ShadowAuditTrace
 from .real_detector_attestation import position_evidence_sha256
+from .shadow_attempt_store import (
+    ShadowAttemptPermit,
+    ShadowAttemptStatus,
+    ShadowAttemptStoreError,
+    SQLiteShadowAttemptStore,
+    build_shadow_attempt_identity,
+    expected_shadow_trace_id,
+)
 from .shadow_window import (
     TRACE_COUNT,
     TRACE_QUERY_COUNT,
@@ -52,21 +60,12 @@ from .shadow_window import (
     hash_shadow_audit_trace,
     validate_persisted_shadow_trace_envelope,
 )
-from .shadow_attempt_store import (
-    ShadowAttemptPermit,
-    ShadowAttemptStatus,
-    ShadowAttemptStoreError,
-    SQLiteShadowAttemptStore,
-    build_shadow_attempt_identity,
-    expected_shadow_trace_id,
-)
-
 
 __all__ = [
-    "V2ShadowWorkerError",
     "V2ShadowCaptureExecutor",
     "V2ShadowWindowBundle",
     "V2ShadowWorker",
+    "V2ShadowWorkerError",
 ]
 
 
@@ -137,7 +136,7 @@ class V2ShadowWorker:
         self,
         *,
         capture_executor: V2ShadowCaptureExecutor,
-        captured_at_clock: "Callable[[], str]",
+        captured_at_clock: Callable[[], str],
         attempt_store: SQLiteShadowAttemptStore,
     ) -> None:
         """`captured_at_clock` timestamps each durable lifecycle boundary.
@@ -262,7 +261,7 @@ class V2ShadowWorker:
                 trace = self._executor.capture(
                     slice_sources, trace_sequence_index=trace_index
                 )
-            except Exception as exc:  # noqa: BLE001 - injected physical boundary
+            except Exception as exc:
                 error_type = type(exc).__name__
                 self._fail_started_attempt(
                     identity=identity,
@@ -305,7 +304,7 @@ class V2ShadowWorker:
                 trace_validation_reasons = validate_persisted_shadow_trace_envelope(
                     envelope
                 )
-            except Exception as exc:  # noqa: BLE001 - canonicalization boundary
+            except Exception as exc:
                 error_type = type(exc).__name__
                 self._fail_started_attempt(
                     identity=identity,

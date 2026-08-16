@@ -10,20 +10,21 @@ Milvus, grant, or routing code.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields
 import base64
 import fcntl
 import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import threading
 import unicodedata
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Self
 
 import numpy as np
 
@@ -462,7 +463,7 @@ class SQLiteHostResponseCommitStore:
             self.close()
             raise
 
-    def __enter__(self) -> "SQLiteHostResponseCommitStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

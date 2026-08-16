@@ -19,14 +19,14 @@ PyMilvus nor accesses a live database.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
-from enum import StrEnum
 import json
 import os
 import sys
 import time
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 
 import numpy as np
 

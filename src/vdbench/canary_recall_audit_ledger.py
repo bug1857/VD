@@ -33,24 +33,23 @@ Scope:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import unicodedata
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .artifacts import canonical_json_bytes, sha256_file, write_immutable_json
 from .canary_workload import WorkloadIdentityBinding
 from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 from .oracle import capped_threshold_recall
-
 
 __all__ = [
     "CanaryRecallAuditLedger",
@@ -101,7 +100,7 @@ def _ledger_error(code: str, cause: BaseException | None = None) -> RecallAuditL
 
 def _canonical_text(value: object, *, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
+        raise ValueError(f"{field} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if (
         not normalized
@@ -124,10 +123,10 @@ def _timestamp(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ValueError(f"{field} must be RFC3339 UTC ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{field} must be a valid RFC3339 UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError(f"{field} must use UTC")
     return value
 
@@ -150,7 +149,7 @@ def _typed_result_ids(value: object, *, field: str) -> tuple[int, ...]:
     duplicated here."""
 
     if not isinstance(value, (tuple, list)):
-        raise ValueError(f"{field} must be a tuple or list of integers")
+        raise ValueError(f"{field} must be a tuple or list of integers")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized: list[int] = []
     for item in value:
         if isinstance(item, bool) or not isinstance(item, int) or item < 0:
@@ -218,7 +217,7 @@ class RecallAuditObservation:
         object.__setattr__(self, "query_id", _non_negative_int(self.query_id, field="query_id"))
 
         if not isinstance(self.search_configuration, SearchConfiguration):
-            raise ValueError("search_configuration must be a SearchConfiguration")
+            raise ValueError("search_configuration must be a SearchConfiguration")  # domain error type carries the governed reason code  # noqa: TRY004
         self.search_configuration.validate()
         if self.search_configuration.index_track is not IndexTrack.HNSW:
             raise ValueError("search_configuration.index_track must be HNSW for a candidate ef")
@@ -226,7 +225,7 @@ class RecallAuditObservation:
             raise ValueError("search_configuration.ef must be set for a candidate observation")
 
         if not isinstance(self.identity, WorkloadIdentityBinding):
-            raise ValueError("identity must be a WorkloadIdentityBinding")
+            raise ValueError("identity must be a WorkloadIdentityBinding")  # domain error type carries the governed reason code  # noqa: TRY004
         try:
             self.identity.validate()
         except ContractViolation as exc:

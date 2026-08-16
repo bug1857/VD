@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import inspect
-import json
-from pathlib import Path
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from vdbench.config import IndexTrack, Metric
@@ -23,6 +22,12 @@ from vdbench.milvus_actuation import (
 from vdbench.oracle import OracleHit, OracleResult
 from vdbench.policy import PreActionSafety, QualificationResult
 from vdbench.shadow_artifacts import load_persisted_shadow_trace_envelope
+from vdbench.shadow_event_source import (
+    FileShadowTraceEventSource,
+    PublicationStatus,
+    ShadowEventSourceError,
+    TracePublicationContext,
+)
 from vdbench.workload_monitor import (
     DryRunPolicyInputs,
     FileMonitorStateStore,
@@ -30,13 +35,6 @@ from vdbench.workload_monitor import (
     MonitorRecordStatus,
     MonitorStreamKey,
     WorkloadMonitor,
-)
-
-from vdbench.shadow_event_source import (
-    FileShadowTraceEventSource,
-    PublicationStatus,
-    ShadowEventSourceError,
-    TracePublicationContext,
 )
 
 
@@ -347,9 +345,11 @@ class ShadowEventSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "outbox"
             source = FileShadowTraceEventSource(root, max_pending_events=4, max_pending_bytes=4096)
-            with patch.object(source, "_publish_event_document", side_effect=OSError("synthetic failure")):
-                with self.assertRaisesRegex(OSError, "synthetic failure"):
-                    source.publish(trace=_trace(), context=_context())
+            with (
+                patch.object(source, "_publish_event_document", side_effect=OSError("synthetic failure")),
+                self.assertRaisesRegex(OSError, "synthetic failure"),
+            ):
+                source.publish(trace=_trace(), context=_context())
             self.assertEqual(source.poll(limit=4), ())
             self.assertEqual(len(source.orphaned_trace_paths()), 1)
 
@@ -421,7 +421,7 @@ class ShadowEventSourceTests(unittest.TestCase):
             self.assertEqual(evaluated[0].policy_action, "NO_CHANGE")
 
     def test_module_has_no_policy_actuation_or_live_database_dependency(self) -> None:
-        import vdbench.shadow_event_source as shadow_event_source
+        from vdbench import shadow_event_source
 
         tree = ast.parse(inspect.getsource(shadow_event_source))
         imported = {

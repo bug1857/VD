@@ -9,11 +9,10 @@ automatic action method to run.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 
@@ -55,7 +54,6 @@ from vdbench.workload_monitor import (
     WorkloadMonitor,
 )
 
-
 DETECTOR_SEED = 20260805
 CONFIGURATION_ID = "exp008-offline-config-v1"
 DATA_ID = "exp008-offline-data-v1"
@@ -63,7 +61,7 @@ DATA_ID = "exp008-offline-data-v1"
 
 class _UtcStepClock:
     def __init__(self) -> None:
-        self._value = datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc)
+        self._value = datetime(2026, 8, 3, 12, 0, 0, tzinfo=UTC)
 
     def __call__(self) -> str:
         value = self._value

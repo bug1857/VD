@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
-from vdbench.config import ENV001_PINS
-from vdbench.exp009_stage4_preflight import PreflightEvidenceTarget, target_from_artifacts
-from vdbench.milvus_actuation import StackHealth
 from experiments.exp009_stage4_preflight import PreflightInvocationError, run_preflight
+from vdbench.config import ENV001_PINS
+from vdbench.exp009_stage4_preflight import (
+    PreflightEvidenceTarget,
+    target_from_artifacts,
+)
+from vdbench.milvus_actuation import StackHealth
 
 
 class _HealthyProbe:
@@ -63,17 +66,19 @@ class Exp009Stage4PreflightCliTests(unittest.TestCase):
 
     def test_non_pinned_uri_fails_before_client_construction(self) -> None:
         calls: list[str] = []
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(PreflightInvocationError, "URI_NOT_PINNED"):
-                run_preflight(
-                    output_dir=Path(directory) / "evidence",
-                    target=self.target,
-                    repository=Path.cwd(),
-                    uri="http://example.invalid:19530",
-                    client_factory=lambda uri: calls.append(uri) or _Client(self.target),
-                    health_probe_factory=lambda: _HealthyProbe(),
-                    utc_now=lambda: "2026-08-04T16:00:00Z",
-                )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaisesRegex(PreflightInvocationError, "URI_NOT_PINNED"),
+        ):
+            run_preflight(
+                output_dir=Path(directory) / "evidence",
+                target=self.target,
+                repository=Path.cwd(),
+                uri="http://example.invalid:19530",
+                client_factory=lambda uri: calls.append(uri) or _Client(self.target),
+                health_probe_factory=lambda: _HealthyProbe(),
+                utc_now=lambda: "2026-08-04T16:00:00Z",
+            )
         self.assertEqual(calls, [])
 
     def test_incomplete_capture_raises_only_after_persisting_evidence(self) -> None:

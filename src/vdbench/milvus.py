@@ -6,9 +6,10 @@ an in-memory fake and never require or contact a live Milvus service.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt

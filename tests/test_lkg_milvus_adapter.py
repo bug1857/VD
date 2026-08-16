@@ -9,7 +9,6 @@ that one response only.
 from __future__ import annotations
 
 import ast
-import math
 import unittest
 from pathlib import Path
 
@@ -56,14 +55,14 @@ class LkgMilvusAdapterRequestContractTests(unittest.TestCase):
         self.query_vector = np.array([0.1, 0.2, 0.3, 0.4], dtype="<f4")
 
     def _search(self, **overrides):
-        kwargs = dict(
-            query_id=1,
-            query_vector=self.query_vector,
-            metric=Metric.L2,
-            threshold_stratum="target-075",
-            ef=400,
-            radius=5.0,
-        )
+        kwargs = {
+            "query_id": 1,
+            "query_vector": self.query_vector,
+            "metric": Metric.L2,
+            "threshold_stratum": "target-075",
+            "ef": 400,
+            "radius": 5.0,
+        }
         kwargs.update(overrides)
         return self.adapter.search(**kwargs)
 
@@ -146,7 +145,7 @@ class LkgMilvusAdapterTimingTests(unittest.TestCase):
         calls_at_search_time: list[int] = []
 
         class TimestampingClient(RecordingMilvusClient):
-            def search(inner_self, **kwargs):  # noqa: N805
+            def search(inner_self, **kwargs):
                 calls_at_search_time.append(len(inner_self.search_calls))
                 return super().search(**kwargs)
 

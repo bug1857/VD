@@ -17,36 +17,36 @@ from vdbench.lkg_run_binding import (
 
 
 def _configuration(**overrides: object) -> SearchConfiguration:
-    fields: dict[str, object] = dict(
-        metric=Metric.L2,
-        threshold_label="target-075",
-        radius=5.0,
-        index_track=IndexTrack.HNSW,
-        ef=400,
-    )
+    fields: dict[str, object] = {
+        "metric": Metric.L2,
+        "threshold_label": "target-075",
+        "radius": 5.0,
+        "index_track": IndexTrack.HNSW,
+        "ef": 400,
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _binding(**overrides: object) -> LkgRunBinding:
-    fields: dict[str, object] = dict(
-        run_id="run-1",
-        producer_identity="producer-v1",
-        search_configuration=_configuration(),
-        collection_name="lkg_l2_hnsw",
-        base_data_identity="data-v1",
-        index_identity="index-v1",
-        qualification_dataset_id="DATASET-003",
-        qualification_dataset_version="DATASET-003-v1",
-        qualification_manifest_sha256="a" * 64,
-        qualification_query_role="lkg_qualification",
-        qualification_query_id_array_sha256="b" * 64,
-        qualification_ordered_query_ids_sha256="d" * 64,
-        qualification_query_array_sha256="c" * 64,
-        qualification_expected_query_count=2_400,
-        environment_identity="env-v1",
-        source_revision="deadbeef",
-    )
+    fields: dict[str, object] = {
+        "run_id": "run-1",
+        "producer_identity": "producer-v1",
+        "search_configuration": _configuration(),
+        "collection_name": "lkg_l2_hnsw",
+        "base_data_identity": "data-v1",
+        "index_identity": "index-v1",
+        "qualification_dataset_id": "DATASET-003",
+        "qualification_dataset_version": "DATASET-003-v1",
+        "qualification_manifest_sha256": "a" * 64,
+        "qualification_query_role": "lkg_qualification",
+        "qualification_query_id_array_sha256": "b" * 64,
+        "qualification_ordered_query_ids_sha256": "d" * 64,
+        "qualification_query_array_sha256": "c" * 64,
+        "qualification_expected_query_count": 2_400,
+        "environment_identity": "env-v1",
+        "source_revision": "deadbeef",
+    }
     fields.update(overrides)
     return LkgRunBinding(**fields)
 
@@ -227,8 +227,9 @@ class LkgRunBindingDigestTests(unittest.TestCase):
         self.assertEqual(binding.sha256, lkg_run_binding_sha256(binding))
 
     def test_digest_is_the_domain_prefix_concatenated_with_canonical_bytes(self) -> None:
-        from vdbench.artifacts import canonical_json_bytes
         import hashlib
+
+        from vdbench.artifacts import canonical_json_bytes
 
         binding = _binding()
         expected = hashlib.sha256(

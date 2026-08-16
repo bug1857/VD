@@ -50,8 +50,8 @@ from .config import (
     Metric,
     SearchConfiguration,
 )
-from .flat_oracle_agreement import compare_flat_oracle_hits
 from .drift import AUDIT_QUERY_COUNT, SENTINEL_EF, canonical_serialize_tuple
+from .flat_oracle_agreement import compare_flat_oracle_hits
 from .milvus import ClientLike, CollectionIdentity, MilvusHarness, SearchHit
 from .oracle import (
     OracleResult,
@@ -585,7 +585,7 @@ class MilvusActuationClient:
                 query=query,
                 configuration=configuration,
             )
-        except Exception as exc:  # noqa: BLE001 - injected client boundary
+        except Exception as exc:  # injected client boundary  # noqa: BLE001
             end = self.clock_ns()
             return _SearchOutcome(
                 hits=None,
@@ -893,7 +893,7 @@ class MilvusActuationClient:
                     success=matches,
                 ),
             )
-        except Exception as exc:  # noqa: BLE001 - injected client boundary
+        except Exception as exc:  # injected client boundary  # noqa: BLE001
             return _IdentityCapture(
                 snapshot=None,
                 binding_match=False,
@@ -1229,14 +1229,14 @@ class MilvusActuationClient:
                     else load_state
                 )
                 track_loaded = getattr(state, "name", str(state)) == "Loaded"
-            except Exception as exc:  # noqa: BLE001 - injected client boundary
+            except Exception as exc:  # injected client boundary  # noqa: BLE001
                 track_loaded = False
                 details.append(f"{track.value} load check failed: {type(exc).__name__}")
             loaded &= track_loaded
             try:
                 actual = self.harness.index_identity(name, metric, track)
                 track_identity = self.workload.identity_bindings[key].matches(actual)
-            except Exception as exc:  # noqa: BLE001 - injected client boundary
+            except Exception as exc:  # injected client boundary  # noqa: BLE001
                 track_identity = False
                 details.append(
                     f"{track.value} identity check failed: {type(exc).__name__}"
@@ -1250,7 +1250,7 @@ class MilvusActuationClient:
             minio_healthy = stack_health.minio_healthy is True
             if stack_health.detail:
                 details.append(stack_health.detail)
-        except Exception as exc:  # noqa: BLE001 - injected health-probe boundary
+        except Exception as exc:  # injected health-probe boundary  # noqa: BLE001
             etcd_healthy = False
             minio_healthy = False
             details.append(f"stack health probe failed: {type(exc).__name__}")

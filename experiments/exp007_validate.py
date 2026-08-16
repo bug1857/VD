@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import asdict
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NoReturn
 from unittest.mock import patch
 
@@ -46,7 +46,6 @@ from vdbench.workload_monitor import (
     MonitorStreamKey,
     WorkloadMonitor,
 )
-
 
 EXP007_DETECTOR_SEED = 20260804
 EXP007_FIXTURE_SEED = 20260805
@@ -563,7 +562,7 @@ def _scenario_composition(root: Path) -> tuple[bool, dict[str, object]]:
     )
     forbidden = tuple(sorted(
         name for name in imported
-        if name == "pymilvus" or name.endswith(".policy") or name.endswith(".actuation") or name.endswith(".milvus_actuation")
+        if name == "pymilvus" or name.endswith((".policy", ".actuation", ".milvus_actuation"))
     ))
     source_text = source_path.read_text(encoding="utf-8")
     no_prohibited = not forbidden and "WorkloadMonitor" not in source_text
@@ -724,7 +723,7 @@ def run_validation(*, output_dir: Path, detector_seed: int) -> dict[str, object]
         "execution_mode": "offline",
         "detector_seed": detector_seed,
         "fixture_scheduling_seed": EXP007_FIXTURE_SEED,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "working_tree_porcelain": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "python": sys.version,

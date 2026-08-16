@@ -5,9 +5,9 @@ from __future__ import annotations
 import ast
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from vdbench.canary_route_state import (
     FileCanaryRouteStateStore,
@@ -15,7 +15,6 @@ from vdbench.canary_route_state import (
     RouteStateBinding,
 )
 from vdbench.config import Metric
-
 
 _TIMESTAMP = "2026-08-04T07:00:00Z"
 _RECOVERY_TIMESTAMP = "2026-08-04T07:01:00Z"

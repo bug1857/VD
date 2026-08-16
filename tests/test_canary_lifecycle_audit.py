@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from vdbench.canary_lifecycle_audit import (
     CanaryLifecycleAuditRecord,
+    JsonlCanaryLifecycleAuditSink,
     LifecycleAuditCorruptedError,
     LifecycleAuditDuplicateError,
-    JsonlCanaryLifecycleAuditSink,
     lifecycle_event_id,
 )
 

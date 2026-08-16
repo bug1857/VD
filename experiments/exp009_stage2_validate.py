@@ -9,20 +9,18 @@ already-committed repository revision.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
 import tempfile
-from typing import Any
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
 
 from vdbench.artifacts import git_state, sha256_file
-
 
 __all__ = [
     "STAGE2_SUITE_FILENAMES",
@@ -355,7 +353,7 @@ def run_validation(
         "stage": 2,
         "validation_status": status,
         "execution_mode": "offline",
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "git": {"commit": commit, "dirty": False},
         "python": sys.version,
         "platform": platform.platform(),

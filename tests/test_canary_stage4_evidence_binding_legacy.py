@@ -5,17 +5,15 @@ from __future__ import annotations
 import unittest
 
 from vdbench.canary_recall_audit_evaluation import evaluate_recall_audit_evidence
-from vdbench.canary_statistics import EXP009_RECALL_AUDIT_COUNT
 from vdbench.canary_recall_audit_producer import Stage4RecallAuditProducer
+from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_stage4_evidence_binding_legacy import (
     LEGACY_STAGE4_EVIDENCE_BINDING_V1_SCHEMA_VERSION,
     LegacyStage4EvidenceBindingV1,
     parse_legacy_stage4_evidence_binding_v1,
 )
-from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_stage4_latency_evidence import build_stage4_latency_evidence
-from vdbench.canary_stage4_decision import combine_stage4_decision
-
+from vdbench.canary_statistics import EXP009_RECALL_AUDIT_COUNT
 
 _V1_DOCUMENT = {
     "schema_version": "stage4-evidence-binding-v1",

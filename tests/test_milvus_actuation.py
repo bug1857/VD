@@ -346,7 +346,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
         candidate_before = adapter.candidate_ef
 
         with self.assertRaises(AttributeError):
-            getattr(adapter, "start_canary")
+            adapter.start_canary  # the expression under test must be evaluated for its side effect  # the expression must be evaluated for its side effect  # noqa: B018
 
         self.assertFalse(hasattr(adapter, "start_canary"))
         self.assertEqual(adapter.default_ef, default_before)
@@ -657,7 +657,7 @@ class MilvusActuationAdapterTests(unittest.TestCase):
     def test_declared_flat_identity_mismatch_fails_restoration_verification(
         self,
     ) -> None:
-        _, client, _, _, adapter = fixture_components()
+        _, _client, _, _, adapter = fixture_components()
         adapter.stop_candidate()
         adapter.restore_last_known_good(400)
 

@@ -34,18 +34,17 @@ from vdbench.lkg_qualification_ledger import (
     verify_seal,
 )
 from vdbench.lkg_qualification_seal import (
+    SEAL_SCHEMA_VERSION,
     LkgPositionClassification,
     LkgPositionStatus,
     LkgRunSeal,
     LkgSealCompletionState,
     LkgSealWorkloadIdentity,
-    SEAL_SCHEMA_VERSION,
     lkg_run_seal_from_payload,
     seal_payload_document,
     seal_payload_document_digest,
 )
-from vdbench.lkg_run_binding import LkgRunBinding, ORDERED_QUERY_IDS_DIGEST_DOMAIN
-
+from vdbench.lkg_run_binding import ORDERED_QUERY_IDS_DIGEST_DOMAIN, LkgRunBinding
 
 _ORDERED_QUERY_IDS = (10, 20, 30, 40, 50)
 
@@ -68,36 +67,36 @@ _ORDERED_QUERY_IDS_SHA256 = _ordered_query_ids_sha256(_ORDERED_QUERY_IDS)
 
 
 def _configuration(**overrides) -> SearchConfiguration:
-    fields = dict(
-        metric=Metric.L2,
-        threshold_label="target-075",
-        radius=5.0,
-        index_track=IndexTrack.HNSW,
-        ef=400,
-    )
+    fields = {
+        "metric": Metric.L2,
+        "threshold_label": "target-075",
+        "radius": 5.0,
+        "index_track": IndexTrack.HNSW,
+        "ef": 400,
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _binding(**overrides) -> LkgRunBinding:
-    fields = dict(
-        run_id="run-1",
-        producer_identity="producer-v1",
-        search_configuration=_configuration(),
-        collection_name="lkg_l2_hnsw",
-        base_data_identity="data-v1",
-        index_identity="index-v1",
-        qualification_dataset_id="DATASET-003",
-        qualification_dataset_version="DATASET-003-v1",
-        qualification_manifest_sha256="a" * 64,
-        qualification_query_role="lkg_qualification",
-        qualification_query_id_array_sha256="b" * 64,
-        qualification_ordered_query_ids_sha256=_ORDERED_QUERY_IDS_SHA256,
-        qualification_query_array_sha256="c" * 64,
-        qualification_expected_query_count=len(_ORDERED_QUERY_IDS),
-        environment_identity="env-v1",
-        source_revision="deadbeef",
-    )
+    fields = {
+        "run_id": "run-1",
+        "producer_identity": "producer-v1",
+        "search_configuration": _configuration(),
+        "collection_name": "lkg_l2_hnsw",
+        "base_data_identity": "data-v1",
+        "index_identity": "index-v1",
+        "qualification_dataset_id": "DATASET-003",
+        "qualification_dataset_version": "DATASET-003-v1",
+        "qualification_manifest_sha256": "a" * 64,
+        "qualification_query_role": "lkg_qualification",
+        "qualification_query_id_array_sha256": "b" * 64,
+        "qualification_ordered_query_ids_sha256": _ORDERED_QUERY_IDS_SHA256,
+        "qualification_query_array_sha256": "c" * 64,
+        "qualification_expected_query_count": len(_ORDERED_QUERY_IDS),
+        "environment_identity": "env-v1",
+        "source_revision": "deadbeef",
+    }
     fields.update(overrides)
     return LkgRunBinding(**fields)
 
@@ -169,34 +168,34 @@ def _all_clean_positions(ordered_query_ids: tuple[int, ...] = _ORDERED_QUERY_IDS
 
 def _seal(**overrides) -> LkgRunSeal:
     positions = overrides.pop("position_classifications", _all_clean_positions())
-    fields = dict(
-        seal_schema_version=SEAL_SCHEMA_VERSION,
-        run_id="run-1",
-        run_binding_sha256="a" * 64,
-        phase1_ledger_schema_version=5,
-        workload_identity=LkgSealWorkloadIdentity(
+    fields = {
+        "seal_schema_version": SEAL_SCHEMA_VERSION,
+        "run_id": "run-1",
+        "run_binding_sha256": "a" * 64,
+        "phase1_ledger_schema_version": 5,
+        "workload_identity": LkgSealWorkloadIdentity(
             dataset_id="DATASET-003",
             dataset_version="DATASET-003-v1",
             manifest_sha256="b" * 64,
             query_role="lkg_qualification",
         ),
-        expected_query_count=len(_ORDERED_QUERY_IDS),
-        qualification_ordered_query_ids_sha256=_ORDERED_QUERY_IDS_SHA256,
-        final_chain_head_sha256="c" * 64,
-        position_classifications=positions,
-        successful_position_count=len(_ORDERED_QUERY_IDS),
-        failed_position_count=0,
-        malformed_position_count=0,
-        missing_position_count=0,
-        successful_attempt_count=len(_ORDERED_QUERY_IDS),
-        failed_attempt_count=0,
-        total_durable_attempt_count=len(_ORDERED_QUERY_IDS),
-        completion_state=LkgSealCompletionState.ALL_POSITIONS_SUCCESSFUL,
-        expected_completion_state=LkgSealCompletionState.ALL_POSITIONS_SUCCESSFUL,
-        seal_reason="ALL_5_POSITIONS_ATTEMPTED",
-        sealed_at_utc="2026-08-07T00:00:00Z",
-        canonical_seal_document_digest="d" * 64,
-    )
+        "expected_query_count": len(_ORDERED_QUERY_IDS),
+        "qualification_ordered_query_ids_sha256": _ORDERED_QUERY_IDS_SHA256,
+        "final_chain_head_sha256": "c" * 64,
+        "position_classifications": positions,
+        "successful_position_count": len(_ORDERED_QUERY_IDS),
+        "failed_position_count": 0,
+        "malformed_position_count": 0,
+        "missing_position_count": 0,
+        "successful_attempt_count": len(_ORDERED_QUERY_IDS),
+        "failed_attempt_count": 0,
+        "total_durable_attempt_count": len(_ORDERED_QUERY_IDS),
+        "completion_state": LkgSealCompletionState.ALL_POSITIONS_SUCCESSFUL,
+        "expected_completion_state": LkgSealCompletionState.ALL_POSITIONS_SUCCESSFUL,
+        "seal_reason": "ALL_5_POSITIONS_ATTEMPTED",
+        "sealed_at_utc": "2026-08-07T00:00:00Z",
+        "canonical_seal_document_digest": "d" * 64,
+    }
     fields.update(overrides)
     return LkgRunSeal(**fields)
 
@@ -1164,7 +1163,7 @@ class LkgQualificationSealTests(unittest.TestCase):
                         seal_reason="ALL_5_POSITIONS_ATTEMPTED",
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 -- captured for assertion below
+            except Exception as exc:  # - captured for assertion below  # noqa: BLE001
                 seal_errors.append(exc)
 
         with mock.patch.object(
@@ -1212,7 +1211,7 @@ class LkgQualificationSealTests(unittest.TestCase):
         def run_append() -> None:
             try:
                 append_results.append(ledger.append(_success_attempt(50, 4)))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 append_errors.append(exc)
 
         with mock.patch.object(
@@ -1274,7 +1273,7 @@ class LkgQualificationSealTests(unittest.TestCase):
                     expected_completion_state=LkgSealCompletionState.ALL_POSITIONS_SUCCESSFUL,
                     seal_reason="ALL_5_POSITIONS_ATTEMPTED",
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 errors[name] = exc
 
         with mock.patch.object(

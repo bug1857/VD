@@ -10,26 +10,29 @@ Neither path creates collections or calls any canary or restore operation.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
-from pathlib import Path
 import subprocess
-from typing import Any, Protocol
-
-import numpy as np
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol
 
 from .actuation import QueryId, ShadowActuationContext, ShadowResult
-from .artifacts import canonical_json_bytes, sha256_file, verify_dataset_artifacts, write_immutable_json
-from .config import ENV001_PINS, IndexTrack, Metric, THRESHOLD_LABELS
-from .milvus import CollectionIdentity, INDEX_NAME, MilvusHarness
+from .artifacts import (
+    canonical_json_bytes,
+    sha256_file,
+    verify_dataset_artifacts,
+    write_immutable_json,
+)
+from .config import THRESHOLD_LABELS, IndexTrack, Metric
+from .milvus import CollectionIdentity, MilvusHarness
 from .milvus_actuation import (
     ActuationWorkload,
-    CanaryBounds,
     CanaryBoundEstimatorLike,
+    CanaryBounds,
     CollectionIdentityBinding,
     MilvusActuationClient,
     ShadowAuditTrace,
@@ -38,9 +41,15 @@ from .milvus_actuation import (
     StackHealthProbeLike,
 )
 from .runner import load_dataset
-from .shadow_artifacts import load_persisted_shadow_trace_envelope, persist_shadow_trace_envelope
-from .shadow_window import PersistedShadowTraceEnvelope, assemble_shadow_window, hash_shadow_audit_trace
-
+from .shadow_artifacts import (
+    load_persisted_shadow_trace_envelope,
+    persist_shadow_trace_envelope,
+)
+from .shadow_window import (
+    PersistedShadowTraceEnvelope,
+    assemble_shadow_window,
+    hash_shadow_audit_trace,
+)
 
 IDENTITY_BASELINE_SCHEMA_VERSION = "exp005-identity-baseline-v1"
 CAPTURE_MANIFEST_SCHEMA_VERSION = "exp005-live-shadow-capture-v1"
@@ -172,7 +181,7 @@ def _identity_from_payload(value: object, *, expected_track: IndexTrack) -> Coll
         raise Exp005AcquisitionError("BASELINE_IDENTITY_INVALID")
     try:
         description = _json_value(value["description"])
-    except Exp005AcquisitionError:
+    except Exp005AcquisitionError:  # the re-raise preserves the original traceback deliberately  # noqa: TRY203
         raise
     return CollectionIdentity(collection_name, metric, index_track, description)
 
@@ -301,7 +310,7 @@ class _StrictUtcClock:
         self._last: datetime | None = None
 
     def __call__(self) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._last is not None and now <= self._last:
             now = self._last + timedelta(microseconds=1)
         self._last = now
@@ -583,7 +592,7 @@ def _preflight_live_adapter(
             raw_state = state.get("state") if isinstance(state, dict) else state
             loaded = getattr(raw_state, "name", str(raw_state)) == "Loaded"
             actual = adapter.harness.index_identity(name, baseline.metric, track)
-        except Exception as exc:  # noqa: BLE001 - external client boundary
+        except Exception as exc:
             raise Exp005AcquisitionError(f"PREFLIGHT_READ_FAILED:{track.value}:{type(exc).__name__}") from exc
         matches = binding.matches(actual)
         evidence["tracks"][track.value] = {

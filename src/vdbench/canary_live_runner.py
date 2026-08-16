@@ -21,11 +21,12 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import re
 import unicodedata
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol
 
 from .canary_activation import (
     ActivationAttempt,
@@ -55,27 +56,26 @@ from .canary_rollback import (
 )
 from .canary_route_authority import RouteClaim
 from .canary_route_state import RouteStateBinding
-from .canary_runtime_types import Stage4RuntimeReadiness, Stage4SlotSafety
 from .canary_routing import CanaryRoutePlan
+from .canary_runtime_types import Stage4RuntimeReadiness, Stage4SlotSafety
 from .canary_schedule import (
     Stage4ExecutionSchedule,
     Stage4ScheduleStep,
     Stage4ScheduleStepKind,
 )
-from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 from .canary_serial_runner import Dataset002ScheduleVectorSource
+from .canary_stage4_evidence_binding import Stage4EvidenceBinding
 from .canary_workload import CandidateSelectionRecord, EligibleWorkloadManifest
 from .host_observation import RangeQueryRequest, ServedQueryOutcome
 from .lkg_phase3_binding import LkgPhase3AuthorityPair
 from .policy import PolicyDecision
 from .shadow_event_types import MonitorStreamKey
 
-
 __all__ = [
-    "Stage4LkgAuthorityProvider",
     "Stage4LiveRunRequest",
     "Stage4LiveRunResult",
     "Stage4LiveRunner",
+    "Stage4LkgAuthorityProvider",
     "Stage4SlotSafety",
 ]
 
@@ -105,7 +105,7 @@ class _ServingPort(Protocol):
 class _RuntimeProbePort(Protocol):
     def preflight(self, *, binding: object) -> Stage4RuntimeReadiness: ...
 
-    def slot_safety(self, *, binding: object) -> "Stage4SlotSafety": ...
+    def slot_safety(self, *, binding: object) -> Stage4SlotSafety: ...
 
 
 class Stage4LkgAuthorityProvider(Protocol):
@@ -377,7 +377,7 @@ class Stage4LiveRunner:
                     runtime=runtime,
                 )
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None
         return value if isinstance(value, Stage4AdmissionResult) else None
 
@@ -391,18 +391,18 @@ class Stage4LiveRunner:
                 binding=self._request.runtime_binding,
                 timestamps=self._request.activation_timestamps,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None
         return value if isinstance(value, ActivationAttempt) else None
 
     def _execute_slot(self, step: Stage4ScheduleStep) -> _SlotExecution:
         try:
             start = self._clock()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _SlotExecution(None, False, "CLOCK_START_INVALID", None)
         try:
             start_recorded_at = self._timestamp()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _SlotExecution(None, False, "UTC_CLOCK_INVALID", None)
         try:
             start_result = self._ledger.start_slot(
@@ -429,7 +429,7 @@ class Stage4LiveRunner:
 
         try:
             vector = self._source.vector_for_step(step)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(
                 step, start, "QUERY_SOURCE_FAILURE", dispatched=False,
                 started_record_sha256=started_record_sha256,
@@ -453,14 +453,14 @@ class Stage4LiveRunner:
 
         try:
             request = self._range_request(step, vector)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(
                 step, start, "SERVING_REQUEST_INVALID", before=before, dispatched=False,
                 started_record_sha256=started_record_sha256,
             )
         try:
             started = self._clock()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(
                 step, start, "CLOCK_START_INVALID", before=before, dispatched=False,
                 started_record_sha256=started_record_sha256,
@@ -470,14 +470,14 @@ class Stage4LiveRunner:
         # commit above is the only thing that made even this point reachable.
         try:
             outcome = self._serving.execute(request)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(
                 step, started, "SERVING_EXCEPTION", before=before, dispatched=True,
                 started_record_sha256=started_record_sha256,
             )
         try:
             finished = self._clock()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return self._failure(
                 step, started, "CLOCK_FINISH_INVALID", before=before, dispatched=True,
                 started_record_sha256=started_record_sha256,
@@ -537,7 +537,7 @@ class Stage4LiveRunner:
                 latency_ms=(finished - started) / 1_000_000.0,
                 reason_code=None,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             # A durable STARTED marker is left orphaned here deliberately --
             # this boundary must not fabricate a terminal record it cannot
             # trust its own inputs enough to build.  progress() will report
@@ -554,7 +554,7 @@ class Stage4LiveRunner:
     def _claim_matches(self, step: Stage4ScheduleStep) -> bool:
         try:
             claim = self._authority.resolve_and_claim(step.occurrence_id)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return False
         return bool(
             isinstance(claim, RouteClaim)
@@ -594,7 +594,7 @@ class Stage4LiveRunner:
             value = self._runtime_probe.slot_safety(
                 binding=self._request.runtime_binding
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None
         return value if isinstance(value, Stage4SlotSafety) else None
 
@@ -603,7 +603,7 @@ class Stage4LiveRunner:
     ) -> RollbackResult:
         try:
             occurred_at_utc = self._timestamp()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             # This prevalidated timestamp is solely a fail-safe fallback when
             # the runtime UTC clock is unavailable; it avoids stranding a route.
             occurred_at_utc = self._request.activation_timestamps.failure_at_utc
@@ -622,7 +622,7 @@ class Stage4LiveRunner:
                     None,
                 )
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return RollbackResult(False, False, "ROLLBACK_UNAVAILABLE", None, None, False)
         return (
             result
@@ -663,7 +663,7 @@ class Stage4LiveRunner:
                 latency_ms=(end - start) / 1_000_000.0,
                 reason_code=reason,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             # Same deliberate orphan-on-untrustworthy-input rule as the
             # success path in _execute_slot: no fabricated terminal record.
             return _SlotExecution(None, dispatched, "CLOCK_OR_TIMESTAMP_INVALID", started_record_sha256)
@@ -679,13 +679,13 @@ class Stage4LiveRunner:
         value = self._utc_now()
         try:
             parsed = (
-                datetime.fromisoformat(value[:-1] + "+00:00")
+                datetime.fromisoformat(value)
                 if isinstance(value, str) and value.endswith("Z")
                 else None
             )
         except ValueError:
             parsed = None
-        if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
             raise RuntimeError("UTC_CLOCK_INVALID")
         return value
 
@@ -745,12 +745,12 @@ def _valid_utc(value: object) -> bool:
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
     return bool(
         parsed.tzinfo is not None
-        and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+        and parsed.utcoffset() == UTC.utcoffset(parsed)
     )
 
 

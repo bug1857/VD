@@ -17,16 +17,16 @@ Failure modes:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
-from typing import Any, TypeAlias
 import unicodedata
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, TypeAlias
 
 from .actuation import (
     ActuationAuditRecord,
@@ -35,7 +35,7 @@ from .actuation import (
     RollbackActuationContext,
     RollbackVerification,
 )
-from .config import Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, Metric
 from .drift import EvidenceProvenance, evidence_provenance_valid
 from .policy import ACTUATION_LADDER, PolicyAction, SafetyGateResult
 
@@ -223,7 +223,7 @@ def _valid_rfc3339_utc(value: object) -> bool:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
     offset = parsed.utcoffset()
@@ -232,7 +232,7 @@ def _valid_rfc3339_utc(value: object) -> bool:
 
 def _current_rfc3339_utc() -> str:
     return (
-        datetime.now(timezone.utc)
+        datetime.now(UTC)
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )

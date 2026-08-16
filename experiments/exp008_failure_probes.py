@@ -9,20 +9,24 @@ contained before a trace can become monitor input.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass, is_dataclass, replace
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import sys
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, is_dataclass, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any
 
 import numpy as np
 
-from vdbench.artifacts import canonical_json_bytes, git_state, sha256_file, write_immutable_json
+from vdbench.artifacts import (
+    canonical_json_bytes,
+    git_state,
+    sha256_file,
+    write_immutable_json,
+)
 from vdbench.config import RESULT_LIMIT, Metric
 from vdbench.exp008_acquisition import (
     EXP008_DETECTOR_SEED,
@@ -42,7 +46,6 @@ from vdbench.host_observation import (
     TracePublicationReceipt,
     WorkerCycleResult,
 )
-
 
 __all__ = [
     "EXP008FailureProbeError",
@@ -104,7 +107,7 @@ class _StrictUtcClock:
         self._last: datetime | None = None
 
     def __call__(self) -> str:
-        value = datetime.now(timezone.utc)
+        value = datetime.now(UTC)
         if self._last is not None and value <= self._last:
             value = self._last + timedelta(microseconds=1)
         self._last = value
@@ -187,7 +190,7 @@ def _json_value(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if hasattr(value, "value"):
-        return getattr(value, "value")
+        return value.value
     return value
 
 
@@ -548,7 +551,7 @@ def run_failure_probes(
         if not closed:
             try:
                 runtime.close()
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                 pass
         try:
             write_immutable_json(
@@ -563,7 +566,7 @@ def run_failure_probes(
                     ),
                 },
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
         raise
 

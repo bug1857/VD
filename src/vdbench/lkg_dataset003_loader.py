@@ -31,9 +31,9 @@ Failure modes:
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -41,7 +41,6 @@ import numpy.typing as npt
 from .artifacts import sha256_file
 from .config import ContractViolation
 from .dataset003 import verify_dataset003_artifacts
-
 
 __all__ = ["LkgDataset003Workload", "load_dataset003_workload"]
 

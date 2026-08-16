@@ -11,24 +11,24 @@ from __future__ import annotations
 import unittest
 
 from vdbench.config import (
+    THRESHOLD_LABELS,
     ContractViolation,
     IndexTrack,
     Metric,
     SearchConfiguration,
-    THRESHOLD_LABELS,
 )
 
 
 def _config(**overrides: object) -> SearchConfiguration:
-    fields: dict[str, object] = dict(
-        metric=Metric.COSINE,
-        threshold_label="target-025",
-        radius=0.2,
-        index_track=IndexTrack.HNSW,
-        ef=800,
-        limit=100,
-        consistency_level="Strong",
-    )
+    fields: dict[str, object] = {
+        "metric": Metric.COSINE,
+        "threshold_label": "target-025",
+        "radius": 0.2,
+        "index_track": IndexTrack.HNSW,
+        "ef": 800,
+        "limit": 100,
+        "consistency_level": "Strong",
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
@@ -144,14 +144,14 @@ class SearchConfigurationValidateRootHardeningTests(unittest.TestCase):
 
     def test_invalid_inputs_raise_contract_violation_with_stable_messages(self) -> None:
         cases = (
-            (dict(radius=False), "radius must be a real number"),
-            (dict(radius=float("nan")), "radius must be finite"),
-            (dict(limit=100.0), "limit must be an integer"),
-            (dict(limit=99), "limit must equal 100"),
-            (dict(ef=800.0), "HNSW ef must be an integer"),
-            (dict(metric="COSINE"), "metric must be a Metric enum member"),
-            (dict(index_track="HNSW"), "index_track must be an IndexTrack enum member"),
-            (dict(threshold_label="bogus"), "threshold_label must be one of"),
+            ({"radius": False}, "radius must be a real number"),
+            ({"radius": float("nan")}, "radius must be finite"),
+            ({"limit": 100.0}, "limit must be an integer"),
+            ({"limit": 99}, "limit must equal 100"),
+            ({"ef": 800.0}, "HNSW ef must be an integer"),
+            ({"metric": "COSINE"}, "metric must be a Metric enum member"),
+            ({"index_track": "HNSW"}, "index_track must be an IndexTrack enum member"),
+            ({"threshold_label": "bogus"}, "threshold_label must be one of"),
         )
         for overrides, expected_substring in cases:
             with self.subTest(overrides=overrides):

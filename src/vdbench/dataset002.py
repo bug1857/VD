@@ -21,23 +21,22 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from .artifacts import canonical_json_bytes, sha256_file, verify_dataset_artifacts
-from .config import ContractViolation, Metric, RESULT_LIMIT, THRESHOLD_LABELS
+from .config import RESULT_LIMIT, THRESHOLD_LABELS, ContractViolation, Metric
 from .oracle import OracleResult, exact_range_search
-
 
 DATASET002_SCHEMA_VERSION = 1
 DATASET002_ARTIFACTS = (
@@ -389,7 +388,7 @@ def _validate_bundle(bundle: Dataset002Bundle) -> None:
             or len(np.unique(ids)) != ids.size
         ):
             raise ContractViolation("DATASET-002 bundle arrays are invalid")
-    if set(int(value) for value in bundle.routing_ids).intersection(int(value) for value in bundle.recall_audit_ids):
+    if {int(value) for value in bundle.routing_ids}.intersection(int(value) for value in bundle.recall_audit_ids):
         raise ContractViolation("DATASET-002 bundle has routing/recall-audit role overlap")
     expected = generate_dataset002(bundle.spec)
     if not (
@@ -466,7 +465,7 @@ def _verify_sums(output_dir: Path) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
         raise ContractViolation("DATASET-002 checksum inventory is unreadable") from exc
-    expected_files = set((*DATASET002_ARTIFACTS, _MANIFEST_NAME))
+    expected_files = {*DATASET002_ARTIFACTS, _MANIFEST_NAME}
     entries: dict[str, str] = {}
     for line in lines:
         try:
@@ -506,8 +505,8 @@ def _load_output_arrays(output_dir: Path, spec: Dataset002Spec) -> tuple[npt.NDA
             or len(np.unique(ids)) != len(ids)
         ):
             raise ContractViolation("DATASET-002 arrays violate the schema")
-    routing_set = set(int(value) for value in routing_ids)
-    audit_set = set(int(value) for value in audit_ids)
+    routing_set = {int(value) for value in routing_ids}
+    audit_set = {int(value) for value in audit_ids}
     if routing_set.intersection(audit_set):
         raise ContractViolation("DATASET-002 routing/recall-audit role overlap")
     return (
@@ -662,7 +661,7 @@ def _verify_dataset002_structure(
         if entry["file"] != filename or not path.is_file() or entry["bytes"] != path.stat().st_size or entry["sha256"] != sha256_file(path):
             raise ContractViolation(f"DATASET-002 artifact checksum mismatch: {filename}")
     _verify_sums(output)
-    expected_files = set((*DATASET002_ARTIFACTS, _MANIFEST_NAME, _SUMS_NAME))
+    expected_files = {*DATASET002_ARTIFACTS, _MANIFEST_NAME, _SUMS_NAME}
     try:
         actual_files = {path.name for path in output.iterdir()}
     except OSError as exc:

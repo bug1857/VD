@@ -52,10 +52,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .canary_recall_audit_evaluation import EvaluationStatus, Stage4RecallAuditEvaluation
+from .canary_recall_audit_evaluation import (
+    EvaluationStatus,
+    Stage4RecallAuditEvaluation,
+)
 from .canary_schedule_evaluation import Stage4ScheduleEvaluation
 from .canary_stage4_latency_evidence import Stage4LatencyEvidence
-
 
 __all__ = [
     "Stage4Decision",

@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .lkg_phase3_authority import LkgPhase3Authority
     from .lkg_phase3_persistence import (
-        PersistedLkgPhase3AuthorityReference,
         VerifiedLatestLkgPhase3AuthorityReference,
     )
 

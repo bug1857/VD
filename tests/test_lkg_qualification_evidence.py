@@ -17,18 +17,18 @@ _RUN_BINDING_SHA256 = "b" * 64
 
 
 def _observation_kwargs(**overrides: object) -> dict[str, object]:
-    fields: dict[str, object] = dict(
-        query_id=1,
-        metric=Metric.L2,
-        threshold_stratum="target-075",
-        ef=400,
-        recall=1.0,
-        latency_ms=1.2,
-        start_ns=1_000,
-        end_ns=2_000,
-        exact_cardinality=10,
-        threshold_violation_count=0,
-    )
+    fields: dict[str, object] = {
+        "query_id": 1,
+        "metric": Metric.L2,
+        "threshold_stratum": "target-075",
+        "ef": 400,
+        "recall": 1.0,
+        "latency_ms": 1.2,
+        "start_ns": 1_000,
+        "end_ns": 2_000,
+        "exact_cardinality": 10,
+        "threshold_violation_count": 0,
+    }
     fields.update(overrides)
     return fields
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import fields
 import unittest
+from dataclasses import fields
 
 from vdbench.config import Metric
 from vdbench.drift import build_evidence_provenance
@@ -105,9 +105,11 @@ class ResponseProfileControlTests(unittest.TestCase):
             {"trigger_window_sequence": False},
             {"frozen_at_utc": "2026-13-11T00:00:00Z"},
         ):
-            with self.subTest(changes=changes):
-                with self.assertRaises((ResponseProfileControlError, ValueError)):
-                    _control(**changes)
+            with (
+                self.subTest(changes=changes),
+                self.assertRaises((ResponseProfileControlError, ValueError)),
+            ):
+                _control(**changes)
 
     def test_control_must_follow_the_bound_durable_head_record(self) -> None:
         for persisted_at in (

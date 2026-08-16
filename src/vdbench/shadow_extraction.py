@@ -16,10 +16,10 @@ from .drift import (
     ELIGIBLE_QUERY_COUNT,
     RESULT_LIMIT,
     AuditSelection,
+    EvidenceProvenance,
     RecallAuditSample,
     Signal,
     SignalEvidence,
-    EvidenceProvenance,
     WindowEvidence,
     build_evidence_provenance,
     canonical_serialize_tuple,
@@ -35,7 +35,6 @@ from .milvus_actuation import (
     ShadowQueryAuditTrace,
 )
 from .shadow_window import AssembledShadowWindow, PersistedShadowTraceEnvelope
-
 
 _IDENTITY_FIELDS = (
     ("data_identity", "DATA_IDENTITY"),
@@ -305,7 +304,7 @@ def _run_signal(
 ) -> SignalEvidence:
     try:
         return operation()
-    except Exception as exc:
+    except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         _append(reasons, f"SIGNAL_TEST_EXCEPTION:{signal.value}")
         return _signal_failure(
             signal,

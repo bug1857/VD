@@ -9,17 +9,17 @@ evaluation, audit write, network, or Milvus I/O.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
 import re
 import threading
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Protocol
 
-from .canary_routing import CanaryRouteKind, RouteResolution
 from .canary_route_state import RouteState, RouteStateRecord
+from .canary_routing import CanaryRouteKind, RouteResolution
 from .config import Metric
-
 
 __all__ = [
     "CanaryRouteAuthority",
@@ -190,12 +190,12 @@ class CanaryRouteAuthority:
     def _read_clock_unlocked(self) -> datetime | None:
         try:
             value = self._clock()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None
         if not isinstance(value, datetime) or value.tzinfo is None:
             return None
         try:
-            if value.utcoffset() != timezone.utc.utcoffset(value):
+            if value.utcoffset() != UTC.utcoffset(value):
                 return None
         except (TypeError, ValueError):
             return None
@@ -251,16 +251,16 @@ _RFC3339_UTC_RE = re.compile(
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_utc(value: object) -> datetime:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError("ROUTE_APPROVAL_EXPIRY_INVALID")
     return parsed

@@ -43,8 +43,9 @@ import hashlib
 import os
 import stat
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import Self
 
 from .response_profile_monitor_store import (
     ResponseProfileMonitorStateStore,
@@ -54,8 +55,8 @@ from .shadow_event_types import MonitorStreamKey
 from .workload_monitor import MonitorStreamState
 
 __all__ = [
-    "ResponseProfileMonitorStoreRouterError",
     "ResponseProfileMonitorStoreRouter",
+    "ResponseProfileMonitorStoreRouterError",
 ]
 
 
@@ -102,7 +103,7 @@ class ResponseProfileMonitorStoreRouter:
         self._stores: dict[str, ResponseProfileMonitorStateStore] = {}
         self._closed = False
 
-    def __enter__(self) -> "ResponseProfileMonitorStoreRouter":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

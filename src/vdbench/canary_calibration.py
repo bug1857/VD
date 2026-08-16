@@ -19,8 +19,8 @@ Limitations:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from numbers import Real
 
 import numpy as np
@@ -32,7 +32,6 @@ from .canary_statistics import (
     EXP009_ROUTING_POPULATION_COUNT,
     exp009_latency_bound_contract,
 )
-
 
 FINITE_POPULATION_CALIBRATION_SEED = 20260810
 FINITE_POPULATION_CALIBRATION_REPLAYS = 100_000
@@ -178,7 +177,7 @@ def _seed(value: object) -> int:
 
 def _probability(value: object, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{field} must be finite and within [0, 1]")
+        raise ValueError(f"{field} must be finite and within [0, 1]")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = float(value)
     if not math.isfinite(normalized) or not 0.0 <= normalized <= 1.0:
         raise ValueError(f"{field} must be finite and within [0, 1]")

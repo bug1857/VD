@@ -24,7 +24,6 @@ routes, or mutates Milvus state.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import replace
 import hashlib
 import io
 import json
@@ -32,12 +31,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+import vdbench.canary_stage4_qualification_report as report_module
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.canary_execution_ledger import Stage4ExecutionLedger, Stage4SlotObservation
 from vdbench.canary_recall_audit_evaluation import RECALL_AUDIT_EVALUATOR_VERSION
-from vdbench.canary_recall_audit_ledger import CanaryRecallAuditLedger, RecallAuditObservation
+from vdbench.canary_recall_audit_ledger import (
+    CanaryRecallAuditLedger,
+    RecallAuditObservation,
+)
 from vdbench.canary_routing import build_canary_route_plan
 from vdbench.canary_schedule import build_stage4_execution_schedule
 from vdbench.canary_stage4_decision import Stage4DecisionStatus
@@ -46,26 +50,24 @@ from vdbench.canary_stage4_qualification_report import HUMAN_AUTHORIZATION_NOTIC
 from vdbench.canary_statistics import EXP009_RECALL_AUDIT_COUNT
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.dataset002 import DATASET002_SCHEMA_VERSION
-
-import vdbench.canary_stage4_qualification_report as report_module
 
 
 def _sha(value: str | bytes) -> str:
@@ -81,8 +83,8 @@ _FROZEN_QUERY_IDS_BYTES = json.dumps(list(range(EXP009_RECALL_AUDIT_COUNT))).enc
 _FROZEN_QUERY_IDS_SHA256 = hashlib.sha256(_FROZEN_QUERY_IDS_BYTES).hexdigest()
 
 
-_CONTEXT = dict(
-    search_configuration=SearchConfiguration(
+_CONTEXT = {
+    "search_configuration": SearchConfiguration(
         metric=Metric.L2,
         threshold_label="target-075",
         radius=0.6,
@@ -91,15 +93,15 @@ _CONTEXT = dict(
         limit=100,
         consistency_level="Strong",
     ),
-    identity=WorkloadIdentityBinding(
+    "identity": WorkloadIdentityBinding(
         configuration_identity="a" * 16,
         data_identity="DATASET-001-v1:sha256:" + "b" * 64,
         flat_binding_id="c" * 16,
         hnsw_binding_id="d" * 16,
     ),
-    dataset002_manifest_sha256="e" * 64,
-    dataset002_schema_version=DATASET002_SCHEMA_VERSION,
-)
+    "dataset002_manifest_sha256": "e" * 64,
+    "dataset002_schema_version": DATASET002_SCHEMA_VERSION,
+}
 
 
 def _build_schedule():
@@ -519,7 +521,7 @@ class QualificationReportCliTests(unittest.TestCase):
     def test_recall_only_report_self_identifies_and_never_claims_qualification(self) -> None:
         run_id = self.binding.run_id
         _populate_ledger(self.ledger_path, run_id=run_id, binding_sha256=self.binding_sha256, all_perfect=True)
-        completed = subprocess.run(
+        completed = subprocess.run(  # exit status is asserted explicitly by the caller  # noqa: PLW1510
             [
                 sys.executable, "-m", "vdbench.canary_stage4_qualification_report",
                 "--report-kind", "recall-only",
@@ -555,7 +557,7 @@ class QualificationReportCliTests(unittest.TestCase):
 
     def test_full_qualification_reports_incomplete_when_latency_not_supplied(self) -> None:
         _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True)
-        completed = subprocess.run(
+        completed = subprocess.run(  # exit status is asserted explicitly by the caller  # noqa: PLW1510
             [
                 sys.executable, "-m", "vdbench.canary_stage4_qualification_report",
                 "--report-kind", "full-qualification",
@@ -644,7 +646,7 @@ class QualificationReportCliTests(unittest.TestCase):
         holds regardless of the recall verdict, so a small population is
         sufficient -- the report is emitted either way."""
         _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True, count=5)
-        completed = subprocess.run(
+        completed = subprocess.run(  # exit status is asserted explicitly by the caller  # noqa: PLW1510
             [
                 sys.executable, "-m", "vdbench.canary_stage4_qualification_report",
                 "--report-kind", "recall-only",
@@ -669,7 +671,7 @@ class QualificationReportCliTests(unittest.TestCase):
         _populate_ledger(self.ledger_path, run_id="run-pass", binding_sha256=self.binding_sha256, all_perfect=True, count=5)
         outputs = []
         for _ in range(2):
-            completed = subprocess.run(
+            completed = subprocess.run(  # exit status is asserted explicitly by the caller  # noqa: PLW1510
                 [
                     sys.executable, "-m", "vdbench.canary_stage4_qualification_report",
                     "--report-kind", "recall-only",

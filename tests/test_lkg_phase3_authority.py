@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
+from vdbench.lkg_phase2_readiness_ledger import Phase2ReadinessLedger
 from vdbench.lkg_phase3_authority import (
     LkgPhase3Authority,
     resolve_lkg_phase3_authority,
@@ -19,11 +20,9 @@ from vdbench.lkg_qualification_evaluation_ledger import (
     LkgQualificationEvaluationLedger,
 )
 from vdbench.lkg_qualification_ledger import LkgQualificationLedger
-from vdbench.lkg_phase2_readiness_ledger import Phase2ReadinessLedger
 from vdbench.lkg_run_binding import LkgRunBinding
 from vdbench.policy import QualificationResult
 from vdbench.search_configuration_digest import search_configuration_sha256
-
 
 _EVALUATION_DIGEST = "e" * 64
 

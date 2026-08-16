@@ -7,10 +7,10 @@ import unittest
 
 from vdbench.config import ContractViolation
 from vdbench.lkg_window_readiness import (
+    READINESS_SCHEMA_VERSION,
     FakeLkgWindowOperationalReadinessProvider,
     LkgWindowOperationalReadinessEvidence,
     LkgWindowOperationalReadinessProviderError,
-    READINESS_SCHEMA_VERSION,
     lkg_window_operational_readiness_evidence_from_payload,
     parse_rfc3339_utc_instant,
     readiness_payload_document,
@@ -20,29 +20,29 @@ from vdbench.lkg_window_readiness import (
 
 
 def _evidence(**overrides) -> LkgWindowOperationalReadinessEvidence:
-    payload = dict(
-        readiness_schema_version=READINESS_SCHEMA_VERSION,
-        source_run_id="run-1",
-        source_run_binding_sha256="a" * 64,
-        window_index=0,
-        epoch_index=0,
-        first_attempt_sequence=0,
-        last_attempt_sequence=199,
-        readiness_check_id="chk-1",
-        provider_run_id="provider-run-1",
-        health_checked=True,
-        health_passed=True,
-        health_evidence_source_identity="fake-health-source",
-        health_evidence_source_digest="b" * 64,
-        rollback_tested=True,
-        rollback_ready=True,
-        rollback_evidence_source_identity="fake-rollback-source",
-        rollback_evidence_source_digest="c" * 64,
-        checked_at_utc="2026-01-01T00:00:00Z",
-        check_start_ns=0,
-        check_end_ns=1_000,
-        reason_codes=[],
-    )
+    payload = {
+        "readiness_schema_version": READINESS_SCHEMA_VERSION,
+        "source_run_id": "run-1",
+        "source_run_binding_sha256": "a" * 64,
+        "window_index": 0,
+        "epoch_index": 0,
+        "first_attempt_sequence": 0,
+        "last_attempt_sequence": 199,
+        "readiness_check_id": "chk-1",
+        "provider_run_id": "provider-run-1",
+        "health_checked": True,
+        "health_passed": True,
+        "health_evidence_source_identity": "fake-health-source",
+        "health_evidence_source_digest": "b" * 64,
+        "rollback_tested": True,
+        "rollback_ready": True,
+        "rollback_evidence_source_identity": "fake-rollback-source",
+        "rollback_evidence_source_digest": "c" * 64,
+        "checked_at_utc": "2026-01-01T00:00:00Z",
+        "check_start_ns": 0,
+        "check_end_ns": 1_000,
+        "reason_codes": [],
+    }
     payload.update(overrides)
     digest = readiness_payload_document_digest(payload)
     return lkg_window_operational_readiness_evidence_from_payload(payload, canonical_document_digest=digest)
@@ -151,10 +151,10 @@ class Rfc3339UtcTests(unittest.TestCase):
 
 class FakeProviderTests(unittest.TestCase):
     def _context(self, **overrides):
-        fields = dict(
-            source_run_id="run-1", source_run_binding_sha256="a" * 64,
-            window_index=0, epoch_index=0, first_attempt_sequence=0, last_attempt_sequence=199,
-        )
+        fields = {
+            "source_run_id": "run-1", "source_run_binding_sha256": "a" * 64,
+            "window_index": 0, "epoch_index": 0, "first_attempt_sequence": 0, "last_attempt_sequence": 199,
+        }
         fields.update(overrides)
         return fields
 

@@ -17,13 +17,18 @@ import json
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
-import unittest
 
 from vdbench import lkg_phase2_readiness_ledger
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
+from vdbench.lkg_phase2_readiness_ledger import (
+    Phase2ReadinessLedger,
+    Phase2ReadinessLedgerError,
+    _require_readiness_chronology,
+)
 from vdbench.lkg_qualification_evidence import (
     LkgAttemptStatus,
     build_lkg_query_attempt,
@@ -37,13 +42,7 @@ from vdbench.lkg_qualification_ledger import (
 )
 from vdbench.lkg_qualification_seal import LkgSealCompletionState
 from vdbench.lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
-from vdbench.lkg_phase2_readiness_ledger import (
-    Phase2ReadinessLedger,
-    Phase2ReadinessLedgerError,
-    _require_readiness_chronology,
-)
 from vdbench.lkg_window_readiness import FakeLkgWindowOperationalReadinessProvider
-
 
 _ORDERED_QUERY_IDS = tuple(range(10, 2410))  # 2400 queries, the fixed geometry
 
@@ -53,32 +52,32 @@ def _ordered_query_ids_sha256(ids: tuple[int, ...]) -> str:
 
 
 def _configuration(**overrides) -> SearchConfiguration:
-    fields = dict(
-        metric=Metric.L2, threshold_label="target-075", radius=5.0, index_track=IndexTrack.HNSW, ef=400
-    )
+    fields = {
+        "metric": Metric.L2, "threshold_label": "target-075", "radius": 5.0, "index_track": IndexTrack.HNSW, "ef": 400
+    }
     fields.update(overrides)
     return SearchConfiguration(**fields)
 
 
 def _binding(**overrides) -> LkgRunBinding:
-    fields = dict(
-        run_id="run-1",
-        producer_identity="producer-v1",
-        search_configuration=_configuration(),
-        collection_name="lkg_l2_hnsw",
-        base_data_identity="data-v1",
-        index_identity="index-v1",
-        qualification_dataset_id="DATASET-003",
-        qualification_dataset_version="DATASET-003-v1",
-        qualification_manifest_sha256="a" * 64,
-        qualification_query_role="lkg_qualification",
-        qualification_query_id_array_sha256="b" * 64,
-        qualification_ordered_query_ids_sha256=_ordered_query_ids_sha256(_ORDERED_QUERY_IDS),
-        qualification_query_array_sha256="c" * 64,
-        qualification_expected_query_count=len(_ORDERED_QUERY_IDS),
-        environment_identity="env-v1",
-        source_revision="deadbeef",
-    )
+    fields = {
+        "run_id": "run-1",
+        "producer_identity": "producer-v1",
+        "search_configuration": _configuration(),
+        "collection_name": "lkg_l2_hnsw",
+        "base_data_identity": "data-v1",
+        "index_identity": "index-v1",
+        "qualification_dataset_id": "DATASET-003",
+        "qualification_dataset_version": "DATASET-003-v1",
+        "qualification_manifest_sha256": "a" * 64,
+        "qualification_query_role": "lkg_qualification",
+        "qualification_query_id_array_sha256": "b" * 64,
+        "qualification_ordered_query_ids_sha256": _ordered_query_ids_sha256(_ORDERED_QUERY_IDS),
+        "qualification_query_array_sha256": "c" * 64,
+        "qualification_expected_query_count": len(_ORDERED_QUERY_IDS),
+        "environment_identity": "env-v1",
+        "source_revision": "deadbeef",
+    }
     fields.update(overrides)
     return LkgRunBinding(**fields)
 
@@ -213,7 +212,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
     # -- binding -------------------------------------------------------------
 
     def test_binding_against_freshly_sealed_run_succeeds(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, _phase2 = self._prepare_sealed_run_with_window_0()
         self.assertTrue(self.phase2_path.exists())
 
     def test_binding_against_unsealed_run_raises_source_seal_missing(self) -> None:
@@ -225,7 +224,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception.__cause__), "LKG_SEAL_MISSING")
 
     def test_reopening_validates_instead_of_rebinding(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        phase1, _provider, _phase2 = self._prepare_sealed_run_with_window_0()
         Phase2ReadinessLedger(self.phase2_path, phase1_ledger=phase1)  # reopen, must not raise
         connection = sqlite3.connect(self.phase2_path)
         try:
@@ -235,7 +234,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(count, 1)
 
     def test_binding_detects_tampered_phase1_seal(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         self._tamper_raw(
             self.phase1_path,
             [("UPDATE lkg_qualification_attempts SET query_id = 999999 WHERE insertion_seq = 1", ())],
@@ -304,7 +303,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
     # -- ingestion -------------------------------------------------------------
 
     def test_first_ingestion_succeeds_and_chain_verifies(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         ingestion = phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         self.assertEqual(ingestion.window_index, 0)
         verified = phase2.verify_window_readiness_ingestion(0)
@@ -353,7 +352,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual([row[0] for row in rows], [1, 0])
 
     def test_crash_after_commit_before_response_provider_never_reached_on_retry(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         first = phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
 
         class _ExplodingProvider:
@@ -365,7 +364,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(second.ingested_at_utc, first.ingested_at_utc)
 
     def test_reingest_different_check_id_rejected(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
             phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-other", window_index=0)
@@ -384,23 +383,26 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         # sealing in wall-clock terms is not enforceable by the fake
         # provider's own clock, so this test constructs the violation
         # directly to prove the ledger's own re-check catches it.
-        from vdbench.lkg_window_readiness import readiness_payload_document_digest, lkg_window_operational_readiness_evidence_from_payload
+        from vdbench.lkg_window_readiness import (
+            lkg_window_operational_readiness_evidence_from_payload,
+            readiness_payload_document_digest,
+        )
 
-        after_seal_instant = datetime.fromisoformat(seal.sealed_at_utc[:-1] + "+00:00").replace(
-            year=datetime.fromisoformat(seal.sealed_at_utc[:-1] + "+00:00").year + 1
+        after_seal_instant = datetime.fromisoformat(seal.sealed_at_utc).replace(
+            year=datetime.fromisoformat(seal.sealed_at_utc).year + 1
         )
         after_seal_utc = after_seal_instant.strftime("%Y-%m-%dT%H:%M:%S.") + f"{after_seal_instant.microsecond:06d}Z"
 
-        payload = dict(
-            readiness_schema_version=1, source_run_id="run-1", source_run_binding_sha256=_BINDING.sha256,
-            window_index=0, epoch_index=0, first_attempt_sequence=0, last_attempt_sequence=199,
-            readiness_check_id="chk-late", provider_run_id="provider-run-late",
-            health_checked=True, health_passed=True,
-            health_evidence_source_identity="x", health_evidence_source_digest="a" * 64,
-            rollback_tested=True, rollback_ready=True,
-            rollback_evidence_source_identity="y", rollback_evidence_source_digest="b" * 64,
-            checked_at_utc=after_seal_utc, check_start_ns=0, check_end_ns=1, reason_codes=[],
-        )
+        payload = {
+            "readiness_schema_version": 1, "source_run_id": "run-1", "source_run_binding_sha256": _BINDING.sha256,
+            "window_index": 0, "epoch_index": 0, "first_attempt_sequence": 0, "last_attempt_sequence": 199,
+            "readiness_check_id": "chk-late", "provider_run_id": "provider-run-late",
+            "health_checked": True, "health_passed": True,
+            "health_evidence_source_identity": "x", "health_evidence_source_digest": "a" * 64,
+            "rollback_tested": True, "rollback_ready": True,
+            "rollback_evidence_source_identity": "y", "rollback_evidence_source_digest": "b" * 64,
+            "checked_at_utc": after_seal_utc, "check_start_ns": 0, "check_end_ns": 1, "reason_codes": [],
+        }
         digest = readiness_payload_document_digest(payload)
         late_evidence = lkg_window_operational_readiness_evidence_from_payload(payload, canonical_document_digest=digest)
 
@@ -414,12 +416,14 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "READINESS_CHECKED_AFTER_SEAL")
 
     def test_ingested_at_utc_generated_before_seal_is_rejected(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
-        with mock.patch.object(
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        with (
+            mock.patch.object(
             lkg_phase2_readiness_ledger, "_current_rfc3339_utc", return_value="2000-01-01T00:00:00Z"
+        ),
+            self.assertRaises(Phase2ReadinessLedgerError) as cm,
         ):
-            with self.assertRaises(Phase2ReadinessLedgerError) as cm:
-                phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
+            phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         self.assertEqual(str(cm.exception), "INGESTION_TIMESTAMP_BEFORE_SEAL")
 
     # -- chronology helper (direct, exhaustive boundary matrix) -------------
@@ -489,7 +493,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
             connection.close()
 
     def test_ingestion_update_rejected_by_trigger(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         connection = sqlite3.connect(self.phase2_path)
         try:
@@ -500,7 +504,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
             connection.close()
 
     def test_ingestion_delete_rejected_by_trigger(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         connection = sqlite3.connect(self.phase2_path)
         try:
@@ -539,14 +543,14 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
     # -- external-writer tamper detection (FK off, triggers dropped) ---------
 
     def test_binding_document_json_missing_field_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         self._tamper_binding_document(lambda doc: {k: v for k, v in doc.items() if k != "source_run_seal_digest"})
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
             phase2.all_verified_ingestions()
         self.assertEqual(str(cm.exception), "PHASE2_SOURCE_BINDING_CORRUPTED")
 
     def test_binding_document_json_unknown_field_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         def add_field(doc):
             doc = dict(doc)
             doc["bogus"] = "x"
@@ -557,7 +561,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "PHASE2_SOURCE_BINDING_CORRUPTED")
 
     def test_binding_document_json_noncanonical_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         connection = sqlite3.connect(self.phase2_path)
         try:
             connection.execute("DROP TRIGGER IF EXISTS phase2_source_binding_no_update")
@@ -576,7 +580,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "PHASE2_SOURCE_BINDING_CORRUPTED")
 
     def test_binding_document_json_value_tamper_columns_unchanged_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         def change_value(doc):
             doc = dict(doc)
             doc["source_run_id"] = "run-1-but-tampered"
@@ -587,7 +591,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "PHASE2_SOURCE_BINDING_CORRUPTED")
 
     def test_binding_denormalized_column_tamper_with_document_unchanged_is_column_mismatch(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, _provider, phase2 = self._prepare_sealed_run_with_window_0()
         connection = sqlite3.connect(self.phase2_path)
         try:
             connection.execute("PRAGMA foreign_keys = OFF")
@@ -646,7 +650,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
             connection.close()
 
     def test_ingestion_document_json_missing_field_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         self._tamper_ingestion_document(lambda doc: {k: v for k, v in doc.items() if k != "ingested_at_utc"})
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
@@ -654,7 +658,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "WINDOW_READINESS_INGESTION_CORRUPTED")
 
     def test_ingestion_document_json_unknown_field_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         def add_field(doc):
             doc = dict(doc)
@@ -666,7 +670,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "WINDOW_READINESS_INGESTION_CORRUPTED")
 
     def test_ingestion_document_json_noncanonical_corrupted(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         self._tamper_ingestion_document(lambda doc: dict(reversed(list(doc.items()))))
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
@@ -674,7 +678,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "WINDOW_READINESS_INGESTION_CORRUPTED")
 
     def test_ingestion_denormalized_column_tamper_is_column_mismatch(self) -> None:
-        phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
+        _phase1, provider, phase2 = self._prepare_sealed_run_with_window_0()
         phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
         connection = sqlite3.connect(self.phase2_path)
         try:
@@ -726,21 +730,21 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
             connection.close()
 
     def test_chain_previous_tamper_isolated_is_chain_invalid(self) -> None:
-        phase1, provider, phase2 = self._prepare_two_ingested_windows()
+        _phase1, _provider, phase2 = self._prepare_two_ingested_windows()
         self._tamper_chain_column_only("previous_chain_sha256")
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
             phase2.all_verified_ingestions()
         self.assertEqual(str(cm.exception), "WINDOW_READINESS_INGESTION_CHAIN_INVALID")
 
     def test_chain_sha256_tamper_isolated_is_chain_invalid(self) -> None:
-        phase1, provider, phase2 = self._prepare_two_ingested_windows()
+        _phase1, _provider, phase2 = self._prepare_two_ingested_windows()
         self._tamper_chain_column_only("chain_sha256")
         with self.assertRaises(Phase2ReadinessLedgerError) as cm:
             phase2.all_verified_ingestions()
         self.assertEqual(str(cm.exception), "WINDOW_READINESS_INGESTION_CHAIN_INVALID")
 
     def test_untampered_window_verification_fails_when_another_row_chain_damaged(self) -> None:
-        phase1, provider, phase2 = self._prepare_two_ingested_windows()
+        _phase1, _provider, phase2 = self._prepare_two_ingested_windows()
         # Damage window 0's chain_sha256; verifying window 1 (untouched)
         # must still fail, since verification always re-derives the
         # COMPLETE chain, not merely the requested row's own link.
@@ -774,7 +778,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
                 results.append(
                     phase2.ingest_window_readiness(provider=provider, readiness_check_id="chk-w0", window_index=0)
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 errors.append(exc)
 
         with mock.patch.object(
@@ -820,7 +824,7 @@ class Phase2ReadinessLedgerTests(unittest.TestCase):
                 results[name] = ledger.ingest_window_readiness(
                     provider=provider, readiness_check_id="chk-w0", window_index=0
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 errors[name] = exc
 
         with mock.patch.object(

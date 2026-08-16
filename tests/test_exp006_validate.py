@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from experiments.exp006_validate import ValidationError, _write, run_validation
@@ -18,9 +18,8 @@ class Exp006ValidationTests(unittest.TestCase):
             with patch(
                 "experiments.exp006_validate.os.link",
                 side_effect=OSError("synthetic publish failure"),
-            ):
-                with self.assertRaisesRegex(OSError, "synthetic publish failure"):
-                    _write(target, {"status": "test"})
+            ), self.assertRaisesRegex(OSError, "synthetic publish failure"):
+                _write(target, {"status": "test"})
 
             self.assertFalse(target.exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
@@ -122,9 +121,8 @@ class Exp006ValidationTests(unittest.TestCase):
             with patch(
                 "experiments.exp006_validate._integrity_and_backpressure",
                 return_value=({}, False),
-            ):
-                with self.assertRaisesRegex(ValidationError, "backpressure"):
-                    run_validation(output_dir=output, detector_seed=20260804)
+            ), self.assertRaisesRegex(ValidationError, "backpressure"):
+                run_validation(output_dir=output, detector_seed=20260804)
 
             raw_result = json.loads(
                 (output / "raw_result.json").read_text(encoding="utf-8")

@@ -10,10 +10,11 @@ itself is the real, unchanged ADR-002/ADR-003 pipeline.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
+from tests.test_shadow_extraction import _identity, _query
 from vdbench.config import IndexTrack, Metric
 from vdbench.drift import (
     DetectorState,
@@ -25,7 +26,6 @@ from vdbench.host_observation import CompletedRangeQueryObservation, ServedQuery
 from vdbench.host_window_detector_v2 import (
     HostWindowV2Status,
     SQLiteHostWindowDetectorV2Store,
-    V2DetectorHead,
     build_v2_shadow_position,
     build_v2_shadow_window,
 )
@@ -44,8 +44,8 @@ from vdbench.real_detector_attestation_store import (
     SQLiteRealDetectorAttestationStore,
     VerifiedRealDetectorHead,
 )
-from vdbench.shadow_event_types import MonitorStreamKey
 from vdbench.shadow_attempt_store import SQLiteShadowAttemptStore
+from vdbench.shadow_event_types import MonitorStreamKey
 from vdbench.shadow_window import (
     TRACE_COUNT,
     TRACE_QUERY_COUNT,
@@ -55,8 +55,6 @@ from vdbench.shadow_window import (
     hash_shadow_audit_trace,
 )
 from vdbench.v2_shadow_worker import V2ShadowWorker, V2ShadowWorkerError
-
-from tests.test_shadow_extraction import _identity, _query
 
 ATTESTATION_MODULE = (
     Path(__file__).parents[1] / "src" / "vdbench" / "real_detector_attestation.py"

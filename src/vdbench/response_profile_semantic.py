@@ -10,15 +10,15 @@ authority.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, fields
-from enum import StrEnum
 import hashlib
 import hmac
 import json
 import math
 import re
 import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
+from enum import StrEnum
 
 from .artifacts import canonical_json_bytes
 from .config import IndexTrack, Metric, SearchConfiguration
@@ -27,8 +27,13 @@ from .oracle import capped_threshold_recall, threshold_violations
 from .response_profile import (
     OBSERVATION_COUNT,
     SUPPORTED_EFS,
-    ResponseProfileEfObservation,
     ResponseProfileCalibrationEvidence,
+    # Named in the `except` tuple below. Without this import the tuple raises
+    # NameError before it can match, so every failure of
+    # `compute_response_profile_estimates` escaped as NameError instead of the
+    # intended fail-closed SEMANTIC_REPORT_INVALID.
+    ResponseProfileContractError,
+    ResponseProfileEfObservation,
     ResponseProfileIdentity,
     ResponseProfileQueryObservation,
     compute_response_profile_estimates,
@@ -63,43 +68,42 @@ from .search_configuration_digest import (
     search_configuration_sha256,
 )
 
-
 __all__ = [
-    "ORACLE_RECORD_SCHEMA_VERSION",
-    "ORACLE_MANIFEST_SCHEMA_VERSION",
-    "WARMUP_EXECUTION_SCHEMA_VERSION",
-    "RUNTIME_SNAPSHOT_SCHEMA_VERSION",
     "MEASURED_RESULT_SCHEMA_VERSION",
-    "SEMANTIC_REPORT_SCHEMA_VERSION",
+    "ORACLE_MANIFEST_SCHEMA_VERSION",
+    "ORACLE_RECORD_SCHEMA_VERSION",
     "RAW_EVIDENCE_ROOT_SCHEMA_VERSION",
-    "ResponseProfileSemanticError",
+    "RUNTIME_SNAPSHOT_SCHEMA_VERSION",
+    "SEMANTIC_REPORT_SCHEMA_VERSION",
+    "WARMUP_EXECUTION_SCHEMA_VERSION",
     "MeasuredResultOutcome",
-    "RuntimeSnapshotPhase",
-    "ResponseProfileOracleRecord",
     "ResponseProfileOracleManifest",
-    "ResponseProfileSemanticExpectation",
+    "ResponseProfileOracleRecord",
     "ResponseProfileSemanticBundle",
-    "ResponseProfileStaticIdentity",
     "ResponseProfileSemanticEncoder",
+    "ResponseProfileSemanticError",
+    "ResponseProfileSemanticExpectation",
     "ResponseProfileSemanticReport",
     "ResponseProfileSemanticVerification",
-    "build_response_profile_oracle_record",
-    "build_response_profile_oracle_manifest",
-    "build_response_profile_static_identity",
-    "response_profile_static_identity_document",
-    "response_profile_static_identity_from_document",
+    "ResponseProfileStaticIdentity",
+    "RuntimeSnapshotPhase",
     "build_response_profile_identity_from_static",
+    "build_response_profile_oracle_manifest",
+    "build_response_profile_oracle_record",
     "build_response_profile_semantic_encoder",
     "build_response_profile_semantic_encoder_from_static",
-    "oracle_record_document",
-    "oracle_manifest_document",
-    "encode_warmup_execution",
-    "encode_runtime_snapshot",
+    "build_response_profile_static_identity",
     "encode_measured_result",
-    "verify_response_profile_semantic_bundle",
-    "semantic_report_payload",
-    "response_profile_semantic_identity_payload",
+    "encode_runtime_snapshot",
+    "encode_warmup_execution",
+    "oracle_manifest_document",
+    "oracle_record_document",
     "raw_evidence_root_payload",
+    "response_profile_semantic_identity_payload",
+    "response_profile_static_identity_document",
+    "response_profile_static_identity_from_document",
+    "semantic_report_payload",
+    "verify_response_profile_semantic_bundle",
 ]
 
 

@@ -21,17 +21,17 @@ Extension points:
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import threading
 from types import MappingProxyType
 from typing import Protocol
 
 import numpy as np
 
 from .actuation import ShadowActuationContext, ShadowResult
-from .config import IndexTrack, Metric, SearchConfiguration
+from .config import IndexTrack, SearchConfiguration
 from .drift import AUDIT_QUERY_COUNT, SENTINEL_EF
 from .host_observation import CompletedRangeQueryObservation
 from .milvus import ClientLike, CollectionIdentity, MilvusHarness
@@ -43,7 +43,6 @@ from .milvus_actuation import (
     StackHealthProbeLike,
 )
 from .shadow_event_types import MonitorStreamKey
-
 
 __all__ = [
     "HostShadowExecutionError",
@@ -171,7 +170,7 @@ class MilvusHostShadowExecutor:
                     candidate_ef=plan.candidate_ef,
                     last_known_good_ef=plan.last_known_good_ef,
                 )
-            except Exception:  # injected read-only adapter boundary
+            except Exception:  # injected read-only adapter boundary  # noqa: BLE001
                 shadow_failure = True
             finally:
                 try:

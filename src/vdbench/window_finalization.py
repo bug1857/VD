@@ -9,20 +9,21 @@ never creates detector, policy, grant, routing, or actuation authority.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from enum import StrEnum
 import fcntl
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import threading
 import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Self
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
@@ -44,10 +45,10 @@ from .v2_shadow_worker import V2ShadowWindowBundle
 
 __all__ = [
     "PreparedWindowFinalization",
+    "SQLiteWindowFinalizationStore",
     "WindowFinalizationError",
     "WindowFinalizationPhase",
     "WindowFinalizationState",
-    "SQLiteWindowFinalizationStore",
     "build_prepared_window_finalization",
     "restore_prepared_evaluation",
 ]
@@ -692,7 +693,7 @@ class SQLiteWindowFinalizationStore:
             self.close()
             raise
 
-    def __enter__(self) -> "SQLiteWindowFinalizationStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

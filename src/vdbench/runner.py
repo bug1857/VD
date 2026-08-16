@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,16 +17,16 @@ from .artifacts import (
     write_immutable_json,
 )
 from .config import (
-    EXP001_DATASET_SPEC,
     ENV001_PINS,
+    EXP001_DATASET_SPEC,
     IndexTrack,
     Metric,
     SearchConfiguration,
     build_search_configurations,
 )
 from .dataset import DatasetBundle, boundary_fixtures
-from .milvus import MilvusHarness, collection_name
 from .metrics import summarize_records
+from .milvus import MilvusHarness, collection_name
 from .oracle import OracleResult, exact_range_search
 from .protocol import build_schedule, configuration_manifest, run_protocol
 
@@ -170,7 +170,7 @@ def execute_live(
         dataset_manifest_sha256=sha256_file(dataset_dir / "generation_manifest.json"),
         schedule=configuration_manifest(configurations, schedule),
         collection_prefix=collection_prefix,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
     write_immutable_json(run_dir / "run_manifest.json", manifest)
     sink = JsonlSink(run_dir / "raw_queries.jsonl")

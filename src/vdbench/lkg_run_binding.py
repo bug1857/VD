@@ -45,16 +45,15 @@ from .search_configuration_digest import (
     search_configuration_document,
 )
 
-
 __all__ = [
     "LKG_RUN_BINDING_DOCUMENT_SCHEMA_VERSION",
     "LKG_RUN_BINDING_HASH_DOMAIN",
     "ORDERED_QUERY_IDS_DIGEST_DOMAIN",
     "LkgRunBinding",
-    "lkg_run_binding_document",
-    "lkg_run_binding_sha256",
-    "lkg_run_binding_from_document",
     "lkg_ordered_query_ids_sha256",
+    "lkg_run_binding_document",
+    "lkg_run_binding_from_document",
+    "lkg_run_binding_sha256",
 ]
 
 
@@ -150,21 +149,21 @@ class LkgRunBinding:
     """
 
     __slots__ = (
-        "run_id",
-        "producer_identity",
-        "search_configuration",
-        "collection_name",
         "base_data_identity",
+        "collection_name",
+        "environment_identity",
         "index_identity",
+        "producer_identity",
         "qualification_dataset_id",
         "qualification_dataset_version",
+        "qualification_expected_query_count",
         "qualification_manifest_sha256",
-        "qualification_query_role",
-        "qualification_query_id_array_sha256",
         "qualification_ordered_query_ids_sha256",
         "qualification_query_array_sha256",
-        "qualification_expected_query_count",
-        "environment_identity",
+        "qualification_query_id_array_sha256",
+        "qualification_query_role",
+        "run_id",
+        "search_configuration",
         "source_revision",
     )
 

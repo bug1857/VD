@@ -12,8 +12,9 @@ from vdbench.drift import (
     RecallAuditSample,
     Signal,
     SignalEvidence,
-    canonical_serialize_tuple,
+    _prepare_mmd,
     build_evidence_provenance,
+    canonical_serialize_tuple,
     derive_permutation_seed,
     deterministic_permutation_p_value,
     evaluate_drift_decision,
@@ -25,9 +26,7 @@ from vdbench.drift import (
     recall_signal_test,
     select_audit_sample,
     two_sample_ks_statistic,
-    _prepare_mmd,
 )
-
 
 EFFECT_FLOORS = {
     Signal.QUERY_VECTOR: 0.01,

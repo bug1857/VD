@@ -18,11 +18,13 @@ the permanent regression is kept here.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -298,16 +300,49 @@ class FailClosedSemanticsTests(unittest.TestCase):
     def test_best_effort_capture_failure_yields_an_explicit_terminal_record(
         self,
     ) -> None:
-        """The injected physical boundary stays broad, but never silent."""
+        """The injected physical boundary stays broad, but never silent.
+
+        Asserted structurally rather than by matching a lint annotation: the
+        handler around the injected `capture(...)` call must catch broadly,
+        persist a terminal record before doing anything else, and then re-raise.
+        A comment can be reformatted; this shape cannot change without the
+        fail-closed contract changing with it.
+        """
 
         from vdbench import v2_shadow_worker
 
-        source = inspect.getsource(v2_shadow_worker)
-        # The one broad handler is annotated and immediately persists a
-        # terminal FAILED record with a stable failure code.
-        self.assertIn("noqa: BLE001 - injected physical boundary", source)
-        self.assertIn("SHADOW_CAPTURE_EXCEPTION", source)
-        self.assertIn("_fail_started_attempt", source)
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(v2_shadow_worker.V2ShadowWorker.build))
+        )
+        broad: list[ast.ExceptHandler] = [
+            handler
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Try)
+            for handler in node.handlers
+            # `except Exception` -- the deliberately broad injected boundary.
+            if isinstance(handler.type, ast.Name) and handler.type.id == "Exception"
+        ]
+        self.assertTrue(broad, "the injected capture boundary must stay broad")
+
+        for handler in broad:
+            calls = {
+                inner.func.attr
+                for inner in ast.walk(handler)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+            }
+            self.assertIn(
+                "_fail_started_attempt",
+                calls,
+                "a broad capture failure must persist a terminal record",
+            )
+            self.assertTrue(
+                any(isinstance(inner, ast.Raise) for inner in ast.walk(handler)),
+                "a broad capture failure must never be swallowed",
+            )
+
+        # The stable failure code still reaches the durable record.
+        self.assertIn("SHADOW_CAPTURE_EXCEPTION", inspect.getsource(v2_shadow_worker))
 
 
 class MonotonicCausalAuthorityTests(unittest.TestCase):

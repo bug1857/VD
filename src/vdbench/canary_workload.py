@@ -12,17 +12,17 @@ That remains a separately captured Stage-4 condition under ADR-008.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import secrets
 import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -32,9 +32,14 @@ from .canary_statistics import (
     EXP009_CANDIDATE_COUNT,
     EXP009_ROUTING_POPULATION_COUNT,
 )
-from .config import ContractViolation, HNSW_EF_SWEEP, Metric, RESULT_LIMIT, THRESHOLD_LABELS
+from .config import (
+    HNSW_EF_SWEEP,
+    RESULT_LIMIT,
+    THRESHOLD_LABELS,
+    ContractViolation,
+    Metric,
+)
 from .dataset002 import verify_dataset002_artifacts
-
 
 ELIGIBLE_WORKLOAD_SCHEMA_VERSION = "exp009-eligible-workload-manifest-v2"
 CANDIDATE_SELECTION_SCHEMA_VERSION = "exp009-candidate-selection-record-v1"
@@ -76,16 +81,16 @@ def _utc_timestamp(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _UTC_RE.fullmatch(value) is None:
         raise ContractViolation(f"{field} must be an RFC3339 UTC timestamp")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ContractViolation(f"{field} has invalid calendar values") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ContractViolation(f"{field} must use UTC Z")
     return value
 
 
 def _timestamp_instant(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return datetime.fromisoformat(value)
 
 
 def _sha256(value: object, *, field: str) -> str:

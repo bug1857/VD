@@ -44,9 +44,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
+from .artifacts import canonical_json_bytes
 from .canary_execution_ledger import Stage4ExecutionLedger, Stage4LedgerError
 from .canary_recall_audit_evaluation import (
     EvaluationStatus,
@@ -63,17 +64,20 @@ from .canary_schedule import (
     Stage4ScheduleStepKind,
 )
 from .canary_schedule_evaluation import Stage4ScheduleEvaluation
-from .canary_stage4_decision import Stage4Decision, Stage4DecisionStatus, combine_stage4_decision
+from .canary_stage4_decision import (
+    Stage4Decision,
+    Stage4DecisionStatus,
+    combine_stage4_decision,
+)
 from .canary_stage4_evidence_binding import Stage4EvidenceBinding
-from .canary_stage4_latency_evidence import Stage4LatencyEvidence, build_stage4_latency_evidence
+from .canary_stage4_latency_evidence import (
+    build_stage4_latency_evidence,
+)
 from .canary_workload import WorkloadIdentityBinding
 from .config import ContractViolation, IndexTrack, Metric, SearchConfiguration
-from .artifacts import canonical_json_bytes
 from .search_configuration_digest import (
     SEARCH_CONFIGURATION_DOCUMENT_SCHEMA_VERSION,
-    search_configuration_document,
 )
-
 
 __all__ = [
     "HUMAN_AUTHORIZATION_NOTICE",
@@ -265,7 +269,7 @@ def _binding_from_document(document: dict) -> Stage4EvidenceBinding:
             raise ValueError("candidate_search_configuration schema_version is unsupported")
         identity_document = document["identity"]
         if not isinstance(identity_document, dict):
-            raise ValueError("identity must be a document")
+            raise ValueError("identity must be a document")  # domain error type carries the governed reason code  # noqa: TRY004
 
         candidate_search_configuration = SearchConfiguration(
             metric=Metric(sc_doc["metric"]),

@@ -31,12 +31,14 @@ Authority:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 from typing import Protocol
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
+from .drift import _EFFECT_FLOORS as _DETECTOR_EFFECT_FLOORS
+from .drift import _SIGNAL_ORDER as _DETECTOR_SIGNAL_ORDER
 from .drift import (
     AUDIT_QUERY_COUNT,
     ELIGIBLE_QUERY_COUNT,
@@ -52,8 +54,6 @@ from .drift import (
     WindowEvidence,
     evaluate_drift_decision,
 )
-from .drift import _EFFECT_FLOORS as _DETECTOR_EFFECT_FLOORS
-from .drift import _SIGNAL_ORDER as _DETECTOR_SIGNAL_ORDER
 from .host_window_detector_v2 import (
     HostWindowV2Status,
     V2DetectorHead,
@@ -68,18 +68,17 @@ from .shadow_window import (
     AssembledShadowWindow,
 )
 
-
 __all__ = [
     "ATTESTATION_SCHEMA_VERSION",
     "POSITION_EVIDENCE_SCHEMA_VERSION",
-    "RealDetectorAttestationError",
-    "RealDetectorAttestation",
+    "GovernedV2DetectorEvaluator",
     "PreviousAttestedEvidence",
     "PreviousAttestedEvidenceSource",
-    "GovernedV2DetectorEvaluator",
+    "RealDetectorAttestation",
+    "RealDetectorAttestationError",
+    "attestation_document",
     "detector_contract_identity",
     "position_evidence_sha256",
-    "attestation_document",
 ]
 
 

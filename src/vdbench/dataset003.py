@@ -39,21 +39,24 @@ Scope:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
 import os
-from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from .artifacts import canonical_json_bytes, sha256_file, verify_dataset_artifacts
-from .config import ContractViolation, EXP001_DATASET_SPEC
-from .dataset002 import DATASET002_QUERY_IDENTITY_SCOPE, verify_dataset002_query_identity
-
+from .config import EXP001_DATASET_SPEC, ContractViolation
+from .dataset002 import (
+    DATASET002_QUERY_IDENTITY_SCOPE,
+    verify_dataset002_query_identity,
+)
 
 DATASET003_SCHEMA_VERSION = 1
 LKG_QUALIFICATION_ROLE = "lkg_qualification"
@@ -328,7 +331,7 @@ def _validate_no_cross_dataset_overlap(
     routing_ids: npt.NDArray[np.int64],
     recall_audit_ids: npt.NDArray[np.int64],
 ) -> None:
-    lkg_set = set(int(value) for value in lkg_qualification_ids)
+    lkg_set = {int(value) for value in lkg_qualification_ids}
     if len(lkg_set) != lkg_qualification_ids.size:
         raise ContractViolation("DATASET-003 lkg_qualification_ids contains duplicates")
     if lkg_set.intersection(int(value) for value in base_ids):
@@ -434,7 +437,7 @@ def _verify_sums(output_dir: Path) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
         raise ContractViolation("DATASET-003 checksum inventory is unreadable") from exc
-    expected_files = set((*DATASET003_ARTIFACTS, _MANIFEST_NAME))
+    expected_files = {*DATASET003_ARTIFACTS, _MANIFEST_NAME}
     entries: dict[str, str] = {}
     for line in lines:
         try:
@@ -500,7 +503,7 @@ def verify_dataset003_artifacts(
         if entry["file"] != filename or not path.is_file() or entry["bytes"] != path.stat().st_size or entry["sha256"] != sha256_file(path):
             raise ContractViolation(f"DATASET-003 artifact checksum mismatch: {filename}")
     _verify_sums(output)
-    expected_files = set((*DATASET003_ARTIFACTS, _MANIFEST_NAME, _SUMS_NAME))
+    expected_files = {*DATASET003_ARTIFACTS, _MANIFEST_NAME, _SUMS_NAME}
     try:
         actual_files = {path.name for path in output.iterdir()}
     except OSError as exc:
@@ -546,10 +549,10 @@ __all__ = [
     "DATASET003_ARTIFACTS",
     "DATASET003_SCHEMA_VERSION",
     "DATASET003_SPEC",
-    "Dataset003Bundle",
-    "Dataset003Spec",
     "LKG_QUALIFICATION_ID_OFFSET",
     "LKG_QUALIFICATION_ROLE",
+    "Dataset003Bundle",
+    "Dataset003Spec",
     "generate_dataset003",
     "verify_dataset003_artifacts",
     "write_dataset003_artifacts",

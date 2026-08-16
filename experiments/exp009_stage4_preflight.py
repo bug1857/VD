@@ -9,8 +9,9 @@ records only health, collection-load, and index-identity facts.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
 import json
+from collections.abc import Callable
+from datetime import UTC
 from pathlib import Path
 from typing import Protocol
 
@@ -22,7 +23,6 @@ from vdbench.exp009_stage4_preflight import (
     target_from_artifacts,
     verify_preflight_evidence,
 )
-
 
 __all__ = ["PreflightInvocationError", "run_preflight"]
 
@@ -101,9 +101,9 @@ def _default_health_probe_factory() -> DockerSocketHealthProbe:
 
 
 def _utc_now() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def main() -> None:

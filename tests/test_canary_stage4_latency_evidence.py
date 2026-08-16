@@ -10,11 +10,11 @@ evidence may ever be combined with recall evidence.
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.canary_execution_ledger import Stage4ExecutionLedger, Stage4SlotObservation
@@ -28,23 +28,23 @@ from vdbench.canary_stage4_latency_evidence import (
 )
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
-from vdbench.config import IndexTrack, Metric, RESULT_LIMIT, SearchConfiguration
+from vdbench.config import RESULT_LIMIT, IndexTrack, Metric, SearchConfiguration
 
 
 def _sha(text: str) -> str:
@@ -113,15 +113,15 @@ def _build_schedule(*, radius: float = 0.75):
 
 
 def _binding_for(schedule, **overrides) -> Stage4EvidenceBinding:
-    fields = dict(
-        run_id="exp009-stage4-latency-test",
-        source_revision="0" * 40,
-        metric=schedule.metric,
-        threshold_stratum=schedule.threshold_stratum,
-        current_ef=schedule.last_known_good_ef,
-        candidate_ef=schedule.candidate_ef,
-        last_known_good_ef=schedule.last_known_good_ef,
-        candidate_search_configuration=SearchConfiguration(
+    fields = {
+        "run_id": "exp009-stage4-latency-test",
+        "source_revision": "0" * 40,
+        "metric": schedule.metric,
+        "threshold_stratum": schedule.threshold_stratum,
+        "current_ef": schedule.last_known_good_ef,
+        "candidate_ef": schedule.candidate_ef,
+        "last_known_good_ef": schedule.last_known_good_ef,
+        "candidate_search_configuration": SearchConfiguration(
             metric=schedule.metric,
             threshold_label=schedule.threshold_stratum,
             radius=0.75,
@@ -130,15 +130,15 @@ def _binding_for(schedule, **overrides) -> Stage4EvidenceBinding:
             limit=RESULT_LIMIT,
             consistency_level="Strong",
         ),
-        identity=WorkloadIdentityBinding("config", "data", "flat", "hnsw"),
-        dataset002_manifest_sha256=_sha("dataset002"),
-        frozen_recall_audit_ids_sha256=_sha("frozen-ids"),
-        eligible_workload_sha256=_sha("eligible-workload"),
-        candidate_selection_sha256=_sha("candidate-selection"),
-        execution_schedule_sha256=schedule.schedule_sha256,
-        recall_evidence_schema_version="recall-audit-hoeffding-1200-v1",
-        latency_evidence_schema_version="exp009-stage4-execution-schedule-v1",
-    )
+        "identity": WorkloadIdentityBinding("config", "data", "flat", "hnsw"),
+        "dataset002_manifest_sha256": _sha("dataset002"),
+        "frozen_recall_audit_ids_sha256": _sha("frozen-ids"),
+        "eligible_workload_sha256": _sha("eligible-workload"),
+        "candidate_selection_sha256": _sha("candidate-selection"),
+        "execution_schedule_sha256": schedule.schedule_sha256,
+        "recall_evidence_schema_version": "recall-audit-hoeffding-1200-v1",
+        "latency_evidence_schema_version": "exp009-stage4-execution-schedule-v1",
+    }
     fields.update(overrides)
     return Stage4EvidenceBinding(**fields)
 

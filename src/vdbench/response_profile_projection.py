@@ -13,7 +13,6 @@ from .response_profile_root_pin import (
     verify_root_pinned_response_profile_evidence,
 )
 
-
 __all__ = ["project_root_pinned_response_profile"]
 
 

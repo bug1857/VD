@@ -10,29 +10,41 @@ adapter anywhere in this file.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
 from vdbench.artifacts import write_dataset_artifacts
 from vdbench.config import (
     EXP001_DATASET_SPEC,
-    ContractViolation,
     IndexTrack,
     Metric,
     SearchConfiguration,
 )
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import DATASET002_SPEC, generate_dataset002, write_dataset002_artifacts
-from vdbench.dataset003 import Dataset003Spec, generate_dataset003, write_dataset003_artifacts
-from vdbench.lkg_dataset003_loader import LkgDataset003Workload, load_dataset003_workload
+from vdbench.dataset002 import (
+    DATASET002_SPEC,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
+from vdbench.dataset003 import (
+    Dataset003Spec,
+    generate_dataset003,
+    write_dataset003_artifacts,
+)
+from vdbench.lkg_dataset003_loader import (
+    LkgDataset003Workload,
+    load_dataset003_workload,
+)
 from vdbench.lkg_milvus_adapter import LkgMilvusAdapter
 from vdbench.lkg_qualification_evidence import LkgAttemptStatus
-from vdbench.lkg_qualification_ledger import LkgQualificationLedger, LkgQualificationLedgerError
+from vdbench.lkg_qualification_ledger import (
+    LkgQualificationLedger,
+)
 from vdbench.lkg_qualification_producer import (
     LkgQualificationProducer,
     LkgQualificationProducerResult,
@@ -166,31 +178,31 @@ class LkgQualificationProducerTests(unittest.TestCase):
         )
 
     def _binding(self, **overrides) -> LkgRunBinding:
-        fields = dict(
-            run_id="run-1",
-            producer_identity="producer-v1",
-            search_configuration=self.search_configuration,
-            collection_name=HNSW_NAME,
-            base_data_identity="data-v1",
-            index_identity="index-v1",
-            qualification_dataset_id=self.workload.dataset_id,
-            qualification_dataset_version=self.workload.dataset_version,
-            qualification_manifest_sha256=self.workload.manifest_sha256,
-            qualification_query_role=self.workload.query_role,
-            qualification_query_id_array_sha256=self.workload.query_id_array_sha256,
-            qualification_ordered_query_ids_sha256=lkg_ordered_query_ids_sha256(
+        fields = {
+            "run_id": "run-1",
+            "producer_identity": "producer-v1",
+            "search_configuration": self.search_configuration,
+            "collection_name": HNSW_NAME,
+            "base_data_identity": "data-v1",
+            "index_identity": "index-v1",
+            "qualification_dataset_id": self.workload.dataset_id,
+            "qualification_dataset_version": self.workload.dataset_version,
+            "qualification_manifest_sha256": self.workload.manifest_sha256,
+            "qualification_query_role": self.workload.query_role,
+            "qualification_query_id_array_sha256": self.workload.query_id_array_sha256,
+            "qualification_ordered_query_ids_sha256": lkg_ordered_query_ids_sha256(
                 self.workload.query_ids
             ),
-            qualification_query_array_sha256=self.workload.query_array_sha256,
-            qualification_expected_query_count=len(self.workload.query_ids),
-            environment_identity="env-v1",
-            source_revision="deadbeef",
-        )
+            "qualification_query_array_sha256": self.workload.query_array_sha256,
+            "qualification_expected_query_count": len(self.workload.query_ids),
+            "environment_identity": "env-v1",
+            "source_revision": "deadbeef",
+        }
         fields.update(overrides)
         return LkgRunBinding(**fields)
 
     def _runner(self, client, clock_ns=None) -> LkgQualificationRunner:
-        kwargs = dict(dimensions=4, hnsw_collection_name=HNSW_NAME)
+        kwargs = {"dimensions": 4, "hnsw_collection_name": HNSW_NAME}
         if clock_ns is not None:
             kwargs["clock_ns"] = clock_ns
         adapter = LkgMilvusAdapter(client, **kwargs)
@@ -307,14 +319,14 @@ class LkgQualificationProducerTests(unittest.TestCase):
             base_ids=self.bundle001.ids, base_vectors=self.bundle001.base_vectors
         )
         conflicting_runner = self._runner(
-            conflicting_client, clock_ns=lambda counter=iter((5_000, 6_000)): next(counter)
+            conflicting_client, clock_ns=lambda counter=iter((5_000, 6_000)): next(counter)  # the iterator default is the fixture under test  # noqa: B008
         )
         seeding_producer = self._producer(runner=conflicting_runner)
         seeding_producer._process_one(query_id=query_id, attempt_sequence=0, attempt_number=1)
         self.assertEqual(len(self.ledger.records()), 1)
 
         differing_runner = self._runner(
-            self.client, clock_ns=lambda counter=iter((7_000, 9_000)): next(counter)
+            self.client, clock_ns=lambda counter=iter((7_000, 9_000)): next(counter)  # the iterator default is the fixture under test  # noqa: B008
         )
         racing_producer = self._producer(ledger=self._reopen_ledger(), runner=differing_runner)
         reason = racing_producer._process_one(
@@ -523,16 +535,16 @@ class LkgQualificationProducerTests(unittest.TestCase):
     # -- blocker 4: complete DATASET-003 workload-binding mismatches, zero dispatch --
 
     def _tampered_workload(self, **overrides) -> LkgDataset003Workload:
-        fields = dict(
-            query_ids=self.workload.query_ids,
-            query_vectors=self.workload.query_vectors,
-            dataset_id=self.workload.dataset_id,
-            dataset_version=self.workload.dataset_version,
-            manifest_sha256=self.workload.manifest_sha256,
-            query_role=self.workload.query_role,
-            query_id_array_sha256=self.workload.query_id_array_sha256,
-            query_array_sha256=self.workload.query_array_sha256,
-        )
+        fields = {
+            "query_ids": self.workload.query_ids,
+            "query_vectors": self.workload.query_vectors,
+            "dataset_id": self.workload.dataset_id,
+            "dataset_version": self.workload.dataset_version,
+            "manifest_sha256": self.workload.manifest_sha256,
+            "query_role": self.workload.query_role,
+            "query_id_array_sha256": self.workload.query_id_array_sha256,
+            "query_array_sha256": self.workload.query_array_sha256,
+        }
         fields.update(overrides)
         return LkgDataset003Workload(**fields)
 

@@ -21,17 +21,17 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
 import hashlib
 import math
 import re
 import unicodedata
+from dataclasses import dataclass, fields, replace
+from datetime import UTC, datetime
 
 from .artifacts import canonical_json_bytes
 from .canary_route_state import RouteStateBinding
-from .canary_runtime_types import Stage4RuntimeReadiness
 from .canary_routing import CanaryRoutePlan, build_canary_route_plan
+from .canary_runtime_types import Stage4RuntimeReadiness
 from .canary_schedule import (
     Stage4ExecutionSchedule,
     build_stage4_execution_schedule,
@@ -55,7 +55,6 @@ from .policy import (
     SafetyGateResult,
 )
 from .search_configuration_digest import search_configuration_sha256
-
 
 __all__ = [
     "Stage4AdmissionReceipt",
@@ -347,7 +346,7 @@ def _validate_artifact_binding(
         request.manifest.validate()
         request.selection.validate()
         rebuilt = build_canary_route_plan(request.manifest, request.selection)
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         _append_once(reasons, "WORKLOAD_OR_SELECTION_VERIFICATION_FAILED")
         return None
     if request.plan != rebuilt:
@@ -709,7 +708,7 @@ def _valid_utc(value: object) -> bool:
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
-    return parsed.tzinfo is not None and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+    return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)

@@ -8,17 +8,18 @@ configuration and are outside the Stage 1 boundary.
 
 from __future__ import annotations
 
+import hashlib
+import itertools
+import json
+import math
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-import hashlib
-import json
-import math
 from numbers import Integral, Real
-import re
-import unicodedata
 
-from .config import IndexTrack, Metric, NUMERIC_TOLERANCE
+from .config import NUMERIC_TOLERANCE, IndexTrack, Metric
 from .drift import canonical_serialize_tuple
 from .flat_oracle_agreement import (
     FlatOracleAgreementKind,
@@ -31,8 +32,13 @@ from .milvus_actuation import (
     ShadowIdentityEvidence,
     ShadowQueryAuditTrace,
 )
-from .oracle import OracleHit, OracleResult, capped_threshold_recall, threshold_violations, validate_range
-
+from .oracle import (
+    OracleHit,
+    OracleResult,
+    capped_threshold_recall,
+    threshold_violations,
+    validate_range,
+)
 
 TRACE_PAYLOAD_SCHEMA_VERSION = "shadow-trace-payload-v1"
 WINDOW_MANIFEST_SCHEMA_VERSION = "assembled-shadow-window-manifest-v1"
@@ -361,7 +367,7 @@ def _valid_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or RFC3339_UTC.fullmatch(value) is None:
         return None
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
@@ -504,7 +510,7 @@ def _validate_query(
             _add(reasons, "QUERY_CONFIGURATION_INCONSISTENT")
         return ids
 
-    flat_ids = valid_hits(query.flat_hits, label="flat")
+    valid_hits(query.flat_hits, label="flat")
     sentinel_ids = valid_hits(query.sentinel_hits, label="sentinel")
     agreement = compare_flat_oracle_hits(
         flat_hits=query.flat_hits,
@@ -659,9 +665,7 @@ def validate_persisted_shadow_trace_envelope(
     reasons: list[str] = []
     if not isinstance(envelope, PersistedShadowTraceEnvelope):
         return ("ENVELOPE_INVALID",)
-    if not isinstance(envelope.trace_id, str) or not envelope.trace_id:
-        _add(reasons, "TRACE_ID_INVALID")
-    elif unicodedata.normalize("NFC", envelope.trace_id) != envelope.trace_id:
+    if not isinstance(envelope.trace_id, str) or not envelope.trace_id or unicodedata.normalize("NFC", envelope.trace_id) != envelope.trace_id:
         _add(reasons, "TRACE_ID_INVALID")
     if _valid_timestamp(envelope.captured_at_utc) is None:
         _add(reasons, "TIMESTAMP_INVALID")
@@ -773,7 +777,7 @@ def assemble_shadow_window(
             _add(reasons, "TRACE_PAYLOAD_SHA256_MISMATCH")
         facts.append(facts_for_trace)
     if len(timestamps) == len(valid_envelopes) and any(
-        later <= earlier for earlier, later in zip(timestamps, timestamps[1:])
+        later <= earlier for earlier, later in itertools.pairwise(timestamps)
     ):
         _add(reasons, "TIMESTAMP_NOT_STRICTLY_INCREASING")
     trace_hashes = [fact.trace_sha256 for fact in facts]

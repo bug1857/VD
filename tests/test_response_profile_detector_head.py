@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import fields
 import unittest
+from dataclasses import fields
 
 from vdbench.config import Metric
 from vdbench.drift import (
@@ -84,9 +84,11 @@ class ResponseProfileDetectorHeadTests(unittest.TestCase):
             _forge(_head(), window_sequence=False),
             _forge(_head(), detector_head_sha256=_digest("0")),
         ):
-            with self.subTest(value=value):
-                with self.assertRaises(ResponseProfileDetectorHeadError):
-                    verify_response_profile_detector_head(value)
+            with (
+                self.subTest(value=value),
+                self.assertRaises(ResponseProfileDetectorHeadError),
+            ):
+                verify_response_profile_detector_head(value)
 
     def test_stream_and_provenance_mismatch_fails_closed(self) -> None:
         with self.assertRaises(ResponseProfileDetectorHeadError) as raised:
@@ -105,9 +107,11 @@ class ResponseProfileDetectorHeadTests(unittest.TestCase):
 
     def test_sequence_before_first_evaluation_is_rejected(self) -> None:
         for value in (False, 0, 1):
-            with self.subTest(value=value):
-                with self.assertRaises(ResponseProfileDetectorHeadError):
-                    _head(window_sequence=value)
+            with (
+                self.subTest(value=value),
+                self.assertRaises(ResponseProfileDetectorHeadError),
+            ):
+                _head(window_sequence=value)
 
 
 if __name__ == "__main__":

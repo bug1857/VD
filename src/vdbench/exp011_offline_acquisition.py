@@ -33,21 +33,26 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass, fields
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
 from .artifacts import canonical_json_bytes, write_immutable_json
 from .config import IndexTrack, Metric, SearchConfiguration
-from .drift import DetectorState, DriftClassification, EvidenceProvenance, build_evidence_provenance
-from .response_profile import ResponseProfileIdentity, SUPPORTED_EFS
+from .drift import (
+    DetectorState,
+    DriftClassification,
+    EvidenceProvenance,
+    build_evidence_provenance,
+)
+from .response_profile import SUPPORTED_EFS, ResponseProfileIdentity
 from .response_profile_control import build_response_profile_control
 from .response_profile_detector_head import build_response_profile_detector_head
 from .response_profile_evidence import (
@@ -98,12 +103,12 @@ from .shadow_event_types import MonitorStreamKey
 from .workload_monitor import MonitorStreamState
 
 __all__ = [
-    "Exp011OfflineError",
-    "Exp011OfflineScenarioResult",
-    "Exp011OfflineResult",
     "EVIDENCE_STATUS",
-    "run_exp011_offline",
+    "Exp011OfflineError",
+    "Exp011OfflineResult",
+    "Exp011OfflineScenarioResult",
     "main",
+    "run_exp011_offline",
 ]
 
 EVIDENCE_STATUS = "STRUCTURAL_OFFLINE_NOT_PROSPECTIVE_EVIDENCE"
@@ -129,7 +134,7 @@ class Exp011OfflineResult:
 
 
 def _default_utc_now() -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
 
 

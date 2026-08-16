@@ -26,13 +26,13 @@ Extension points:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-import math
 from numbers import Integral
 
-from .config import Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, Metric
 from .drift import (
     DetectorState,
     DriftClassification,
@@ -1302,7 +1302,7 @@ def evaluate_tuning_policy(
 
 
     if not isinstance(mode, PolicyMode):
-        raise ValueError("mode must be DRY_RUN or CANARY_ENABLED")
+        raise ValueError("mode must be DRY_RUN or CANARY_ENABLED")  # domain error type carries the governed reason code  # noqa: TRY004
     if not isinstance(detector, DriftDecision):
         raise TypeError("detector must be a DriftDecision")
 
@@ -1675,6 +1675,7 @@ def evaluate_tuning_policy(
 __all__ = [
     "ABSOLUTE_LATENCY_CEILING_MS",
     "ACTUATION_LADDER",
+    "RECALL_FLOOR",
     "CanaryObservation",
     "PolicyAction",
     "PolicyDecision",
@@ -1682,7 +1683,6 @@ __all__ = [
     "PreActionSafety",
     "QualificationResult",
     "QualificationWindow",
-    "RECALL_FLOOR",
     "ResponseEstimate",
     "SafetyGateResult",
     "evaluate_tuning_policy",

@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import fields
 import ast
-from pathlib import Path
 import unittest
+from dataclasses import fields
+from pathlib import Path
 
-from tests.test_response_profile_semantic import _SemanticFixture, _digest
+from tests.test_response_profile_semantic import _digest, _SemanticFixture
 from vdbench.response_profile import ResponseProfileIdentity
 from vdbench.response_profile_projection import project_root_pinned_response_profile
 from vdbench.response_profile_root_pin import (
-    RootPinnedResponseProfileEvidence,
     ResponseProfileRootPinError,
+    RootPinnedResponseProfileEvidence,
     issue_root_pinned_response_profile_evidence,
     root_pinned_response_profile_evidence_payload,
     verify_root_pinned_response_profile_evidence,
 )
-
 
 ROOT_MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_root_pin.py"
 PROJECTION_MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_projection.py"
@@ -70,13 +69,15 @@ class ResponseProfileRootPinTests(unittest.TestCase):
             ("digest", _forge(self.capability, capability_sha256=_digest("f"))),
             ("count", _forge(self.capability, observations=self.capability.observations[:-1])),
         ):
-            with self.subTest(label=label):
-                with self.assertRaises(ResponseProfileRootPinError):
-                    verify_root_pinned_response_profile_evidence(
-                        forged,
-                        expected_raw_evidence_sha256=EXPECTED_ROOT,
-                        expected_identity=self.fixture.identity,
-                    )
+            with (
+                self.subTest(label=label),
+                self.assertRaises(ResponseProfileRootPinError),
+            ):
+                verify_root_pinned_response_profile_evidence(
+                    forged,
+                    expected_raw_evidence_sha256=EXPECTED_ROOT,
+                    expected_identity=self.fixture.identity,
+                )
 
     def test_expected_identity_mismatch_fails_closed(self) -> None:
         identity = self.fixture.identity

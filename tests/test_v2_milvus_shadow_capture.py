@@ -8,13 +8,13 @@ service is contacted, and no real search is issued. The adapter's own
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from vdbench.config import IndexTrack, Metric, SearchConfiguration
+from vdbench.config import IndexTrack, Metric
 from vdbench.host_observation import CompletedRangeQueryObservation, ServedQueryOutcome
 from vdbench.host_window_lineage import SQLiteHostResponseCommitStore
 from vdbench.milvus import CollectionIdentity
@@ -119,24 +119,23 @@ class _OracleBackedClient:
 
 def _observations(count: int, *, dimensions: int = 128):
     generator = np.random.Generator(np.random.PCG64(4242))
-    with tempfile.TemporaryDirectory() as directory:
-        with SQLiteHostResponseCommitStore(
-            Path(directory) / "source.sqlite3",
-            stream_key=_stream(),
-            source_revision=_REVISION,
-            environment_manifest_sha256=_ENVIRONMENT,
-        ) as store:
-            for index in range(count):
-                vector = generator.standard_normal(dimensions).astype("<f4")
-                store.commit_response(
-                    CompletedRangeQueryObservation(
-                        index, "2026-08-12T00:00:00Z", _stream(),
-                        tuple(float(v) for v in vector), _RADIUS, 0.0, 100, _SERVED_EF,
-                        ServedQueryOutcome(True, False, 1, 1.0),
-                    ),
-                    committed_at_utc="2026-08-12T00:00:00Z",
-                )
-            return store.poll(consumer_id="fixture", limit=count)
+    with tempfile.TemporaryDirectory() as directory, SQLiteHostResponseCommitStore(
+        Path(directory) / "source.sqlite3",
+        stream_key=_stream(),
+        source_revision=_REVISION,
+        environment_manifest_sha256=_ENVIRONMENT,
+    ) as store:
+        for index in range(count):
+            vector = generator.standard_normal(dimensions).astype("<f4")
+            store.commit_response(
+                CompletedRangeQueryObservation(
+                    index, "2026-08-12T00:00:00Z", _stream(),
+                    tuple(float(v) for v in vector), _RADIUS, 0.0, 100, _SERVED_EF,
+                    ServedQueryOutcome(True, False, 1, 1.0),
+                ),
+                committed_at_utc="2026-08-12T00:00:00Z",
+            )
+        return store.poll(consumer_id="fixture", limit=count)
 
 
 def _executor(client) -> V2MilvusShadowCaptureExecutor:

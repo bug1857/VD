@@ -33,7 +33,7 @@ import re
 import sqlite3
 import stat
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .artifacts import canonical_json_bytes
@@ -65,10 +65,9 @@ from .lkg_window_readiness import (
     readiness_payload_document,
 )
 
-
 __all__ = [
-    "Phase2ReadinessLedgerError",
     "Phase2ReadinessLedger",
+    "Phase2ReadinessLedgerError",
 ]
 
 
@@ -119,7 +118,7 @@ def _verify_phase1_seal_or_translate(phase1_ledger: LkgQualificationLedger) -> L
 
 
 def _current_rfc3339_utc() -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
 
 
@@ -506,7 +505,7 @@ class Phase2ReadinessLedger:
         try:
             document = json.loads(binding_document_json)
             if not isinstance(document, dict):
-                raise ValueError("stored binding document must be a JSON object")
+                raise ValueError("stored binding document must be a JSON object")  # domain error type carries the governed reason code  # noqa: TRY004
             binding = phase2_source_binding_from_payload(
                 document, canonical_source_binding_digest=row_canonical_digest
             )
@@ -576,7 +575,7 @@ class Phase2ReadinessLedger:
             try:
                 document = json.loads(ingestion_document_json)
                 if not isinstance(document, dict):
-                    raise ValueError("stored ingestion document must be a JSON object")
+                    raise ValueError("stored ingestion document must be a JSON object")  # domain error type carries the governed reason code  # noqa: TRY004
                 ingestion = lkg_window_readiness_ingestion_from_payload(
                     document, canonical_ingestion_digest=row_canonical_digest
                 )

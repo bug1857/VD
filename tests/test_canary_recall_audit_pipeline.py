@@ -30,10 +30,10 @@ running index remains a separate, later, explicitly-authorized phase.
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from vdbench.artifacts import canonical_json_bytes
@@ -44,28 +44,35 @@ from vdbench.canary_recall_audit_evaluation import (
     build_recall_audit_report,
     evaluate_recall_audit_evidence,
 )
-from vdbench.canary_recall_audit_ledger import CanaryRecallAuditLedger, RecallAuditObservation
+from vdbench.canary_recall_audit_ledger import (
+    CanaryRecallAuditLedger,
+    RecallAuditObservation,
+)
 from vdbench.canary_routing import build_canary_route_plan
 from vdbench.canary_schedule import build_stage4_execution_schedule
-from vdbench.canary_stage4_decision import Stage4Decision, Stage4DecisionStatus, combine_stage4_decision
+from vdbench.canary_stage4_decision import (
+    Stage4Decision,
+    Stage4DecisionStatus,
+    combine_stage4_decision,
+)
 from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_stage4_latency_evidence import build_stage4_latency_evidence
 from vdbench.canary_stage4_qualification_report import build_qualification_document
 from vdbench.canary_statistics import EXP009_RECALL_AUDIT_COUNT
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
@@ -170,8 +177,8 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
         self.addCleanup(self._tempdir.cleanup)
         self.ledger_path = Path(self._tempdir.name) / "pipeline_recall_audit.sqlite3"
         self.latency_ledger_path = Path(self._tempdir.name) / "pipeline_latency.sqlite3"
-        self.context = dict(
-            search_configuration=SearchConfiguration(
+        self.context = {
+            "search_configuration": SearchConfiguration(
                 metric=Metric.COSINE,
                 threshold_label="target-025",
                 radius=0.2,
@@ -180,15 +187,15 @@ class RecallAuditPipelineRealEndToEndTests(unittest.TestCase):
                 limit=100,
                 consistency_level="Strong",
             ),
-            identity=WorkloadIdentityBinding(
+            "identity": WorkloadIdentityBinding(
                 configuration_identity="a" * 16,
                 data_identity="DATASET-001-v1:sha256:" + "b" * 64,
                 flat_binding_id="c" * 16,
                 hnsw_binding_id="d" * 16,
             ),
-            dataset002_manifest_sha256="e" * 64,
-            dataset002_schema_version=DATASET002_SCHEMA_VERSION,
-        )
+            "dataset002_manifest_sha256": "e" * 64,
+            "dataset002_schema_version": DATASET002_SCHEMA_VERSION,
+        }
         self.frozen_query_ids = frozenset(range(EXP009_RECALL_AUDIT_COUNT))
         self.frozen_query_ids_sha256 = _sha(",".join(str(i) for i in sorted(self.frozen_query_ids)))
         self.schedule = _build_schedule(

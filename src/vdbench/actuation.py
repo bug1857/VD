@@ -18,14 +18,14 @@ Failure modes:
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-import re
-import unicodedata
 from typing import Protocol, TypeAlias
 
-from .config import Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, Metric
 from .drift import EvidenceProvenance
 from .policy import (
     ACTUATION_LADDER,
@@ -191,7 +191,7 @@ def _valid_rfc3339_utc(value: object) -> bool:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
     offset = parsed.utcoffset()
@@ -539,7 +539,7 @@ class SafeActuationBoundary:
                 context=context,
             ):
                 failure_reason = "ROLLBACK_VERIFICATION_FAILED"
-        except Exception as exc:  # rollback exception is always fail-closed
+        except Exception as exc:  # rollback exception is always fail-closed  # noqa: BLE001
             failure_reason = f"ROLLBACK_CLIENT_EXCEPTION:{type(exc).__name__}"
 
         if failure_reason is not None:

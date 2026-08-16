@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import fields
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields
+from pathlib import Path
 
 from vdbench.config import Metric
 from vdbench.drift import (

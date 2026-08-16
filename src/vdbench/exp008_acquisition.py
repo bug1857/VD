@@ -10,32 +10,37 @@ and exposes no configuration-mutation operation.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timedelta, timezone
-from enum import Enum
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass, is_dataclass
+from datetime import UTC, datetime, timedelta
+from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Protocol
 
 import numpy as np
 
 from .actuation import ShadowActuationContext, ShadowResult
-from .artifacts import canonical_json_bytes, git_state, sha256_file, write_immutable_json
+from .artifacts import (
+    canonical_json_bytes,
+    git_state,
+    sha256_file,
+    write_immutable_json,
+)
 from .config import ENV001_PINS, RESULT_LIMIT, IndexTrack, Metric
+from .docker_health import DockerSocketHealthProbe
 from .exp005_acquisition import (
     Exp005AcquisitionError,
     IdentityBaseline,
     derive_exp005_identities,
     load_identity_baseline,
 )
-from .docker_health import DockerSocketHealthProbe
 from .host_observation import (
     BackgroundShadowWorker,
     BoundedHostObservationRecorder,
@@ -77,18 +82,17 @@ from .workload_monitor import (
     WorkloadMonitor,
 )
 
-
 __all__ = [
     "EXP008_DETECTOR_SEED",
     "EXP008AcquisitionError",
-    "Exp008Configuration",
     "Exp008CaptureResult",
-    "Exp008Runtime",
+    "Exp008Configuration",
     "Exp008RunResult",
+    "Exp008Runtime",
     "Exp008Stream",
     "build_live_runtime",
-    "capture_host_resource_snapshot",
     "capture_exp008",
+    "capture_host_resource_snapshot",
     "finalize_exp008",
     "prepare_exp008_configuration",
     "run_exp008",
@@ -187,7 +191,7 @@ class _StrictUtcClock:
         self._last: datetime | None = None
 
     def __call__(self) -> str:
-        value = datetime.now(timezone.utc)
+        value = datetime.now(UTC)
         if self._last is not None and value <= self._last:
             value = self._last + timedelta(microseconds=1)
         self._last = value
@@ -896,7 +900,7 @@ def capture_exp008(
         if not closed:
             try:
                 runtime.close()
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                 pass
         failure = {
             "schema_version": _RUN_SCHEMA_VERSION,
@@ -909,7 +913,7 @@ def capture_exp008(
         }
         try:
             write_immutable_json(root / "failure.json", failure)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
         raise
 

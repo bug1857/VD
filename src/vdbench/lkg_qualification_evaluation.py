@@ -28,62 +28,65 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation, SearchConfiguration
-from .lkg_qualification_evidence import LkgAttemptStatus, LkgQueryAttempt
-from .lkg_qualification_seal import LkgPositionClassification, LkgPositionStatus, LkgRunSeal
 from .lkg_phase2_source_binding import LkgWindowReadinessIngestion
+from .lkg_qualification_evidence import LkgAttemptStatus, LkgQueryAttempt
+from .lkg_qualification_seal import (
+    LkgPositionClassification,
+    LkgPositionStatus,
+    LkgRunSeal,
+)
 from .policy import ACTUATION_LADDER
 from .search_configuration_digest import search_configuration_sha256
 
-
 __all__ = [
-    "LkgQualificationStatus",
-    "EVALUATION_CONTRACT_SCHEMA_VERSION",
-    "EVALUATION_CONTRACT_DOMAIN",
-    "LkgQualificationEvaluationContract",
-    "evaluation_contract_payload_document",
-    "evaluation_contract_payload_document_digest",
-    "lkg_qualification_evaluation_contract_from_payload",
-    "EF_ELIGIBILITY_RULE_SCHEMA_VERSION",
     "EF_ELIGIBILITY_RULE_DOMAIN",
+    "EF_ELIGIBILITY_RULE_SCHEMA_VERSION",
+    "EPOCH_EVALUATION_DOMAIN",
+    "EPOCH_EVALUATION_SCHEMA_VERSION",
+    "EVALUATION_CONTRACT_DOMAIN",
+    "EVALUATION_CONTRACT_SCHEMA_VERSION",
+    "QUALIFICATION_EVALUATION_DOMAIN",
+    "QUALIFICATION_EVALUATION_SCHEMA_VERSION",
+    "QUALIFICATION_SEMANTICS_RULE_DOMAIN",
+    "QUALIFICATION_SEMANTICS_RULE_SCHEMA_VERSION",
+    "WINDOW_EVALUATION_DOMAIN",
+    "WINDOW_EVALUATION_SCHEMA_VERSION",
     "LkgEfEligibilityRule",
+    "LkgEpochEvaluation",
+    "LkgQualificationEvaluation",
+    "LkgQualificationEvaluationContract",
+    "LkgQualificationSemanticsRule",
+    "LkgQualificationStatus",
+    "LkgWindowEvaluation",
+    "default_lkg_ef_eligibility_rule",
+    "default_lkg_qualification_semantics_rule",
     "ef_eligibility_rule_payload_document",
     "ef_eligibility_rule_payload_document_digest",
-    "lkg_ef_eligibility_rule_from_payload",
-    "default_lkg_ef_eligibility_rule",
-    "QUALIFICATION_SEMANTICS_RULE_SCHEMA_VERSION",
-    "QUALIFICATION_SEMANTICS_RULE_DOMAIN",
-    "LkgQualificationSemanticsRule",
-    "qualification_semantics_rule_payload_document",
-    "qualification_semantics_rule_payload_document_digest",
-    "lkg_qualification_semantics_rule_from_payload",
-    "default_lkg_qualification_semantics_rule",
-    "WINDOW_EVALUATION_SCHEMA_VERSION",
-    "WINDOW_EVALUATION_DOMAIN",
-    "LkgWindowEvaluation",
-    "window_evaluation_payload_document",
-    "window_evaluation_payload_document_digest",
-    "lkg_window_evaluation_from_payload",
-    "EPOCH_EVALUATION_SCHEMA_VERSION",
-    "EPOCH_EVALUATION_DOMAIN",
-    "LkgEpochEvaluation",
     "epoch_evaluation_payload_document",
     "epoch_evaluation_payload_document_digest",
-    "lkg_epoch_evaluation_from_payload",
-    "QUALIFICATION_EVALUATION_SCHEMA_VERSION",
-    "QUALIFICATION_EVALUATION_DOMAIN",
-    "LkgQualificationEvaluation",
-    "evaluation_payload_document",
-    "evaluation_payload_document_digest",
-    "lkg_qualification_evaluation_from_payload",
-    "evaluate_window",
     "evaluate_epoch",
     "evaluate_run",
+    "evaluate_window",
+    "evaluation_contract_payload_document",
+    "evaluation_contract_payload_document_digest",
+    "evaluation_payload_document",
+    "evaluation_payload_document_digest",
+    "lkg_ef_eligibility_rule_from_payload",
+    "lkg_epoch_evaluation_from_payload",
+    "lkg_qualification_evaluation_contract_from_payload",
+    "lkg_qualification_evaluation_from_payload",
+    "lkg_qualification_semantics_rule_from_payload",
+    "lkg_window_evaluation_from_payload",
+    "qualification_semantics_rule_payload_document",
+    "qualification_semantics_rule_payload_document_digest",
     "validate_rfc3339_utc",
+    "window_evaluation_payload_document",
+    "window_evaluation_payload_document_digest",
 ]
 
 
@@ -247,10 +250,10 @@ def validate_rfc3339_utc(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ContractViolation(f"{field} must be RFC3339 UTC ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ContractViolation(f"{field} must be a valid RFC3339 UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ContractViolation(f"{field} must use UTC")
     return value
 
@@ -2240,7 +2243,7 @@ def evaluate_run(
 
     for ee in epoch_evaluations:
         for code in ee.status_reason_codes:
-            reasons.append(code)
+            reasons.append(code)  # the explicit loop mirrors the production copy semantics  # the explicit loop mirrors production copy semantics  # noqa: PERF402
 
     if run_status is LkgQualificationStatus.INCOMPLETE:
         if any(

@@ -15,7 +15,6 @@ from .canary_lifecycle_audit import CanaryLifecycleAuditRecord, lifecycle_event_
 from .canary_route_authority import RouteAuthoritySnapshot, RouteAuthorityState
 from .canary_route_state import RouteStateBinding, RouteStateRecord
 
-
 __all__ = ["CanaryExpiryReconciler", "ExpiryReconciliation"]
 
 
@@ -87,7 +86,7 @@ class CanaryExpiryReconciler:
 
         try:
             snapshot = self._route_authority.snapshot()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return ExpiryReconciliation(False, "ROUTE_AUTHORITY_UNAVAILABLE", None)
         if (
             not isinstance(snapshot, RouteAuthoritySnapshot)
@@ -97,7 +96,7 @@ class CanaryExpiryReconciler:
             return ExpiryReconciliation(False, "EXPIRY_NOT_OBSERVED", None)
         try:
             prior = self._grant_store.load(grant_id)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return ExpiryReconciliation(False, "GRANT_LEDGER_UNAVAILABLE", None)
         if not isinstance(prior, GrantUseRecord):
             return ExpiryReconciliation(False, "GRANT_RESERVATION_MISSING", None)
@@ -117,7 +116,7 @@ class CanaryExpiryReconciler:
                 reason_code=event_type,
                 changed_at_utc=occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return ExpiryReconciliation(False, "DURABLE_FAILBACK_WRITE_FAILED", None)
 
         record = _audit_record(
@@ -132,7 +131,7 @@ class CanaryExpiryReconciler:
         try:
             if not self._lifecycle_audit_sink.contains(record.event_id):
                 self._lifecycle_audit_sink.append(record)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._terminal_best_effort(
                 grant_id=grant_id,
                 signed_payload_sha256=signed_payload_sha256,
@@ -147,7 +146,7 @@ class CanaryExpiryReconciler:
                 reason_code=event_type,
                 occurred_at_utc=occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return ExpiryReconciliation(False, "GRANT_TERMINAL_WRITE_FAILED", record.event_id)
         if not isinstance(terminal, GrantUseResult) or not terminal.accepted:
             return ExpiryReconciliation(False, "GRANT_TERMINAL_WRITE_FAILED", record.event_id)
@@ -168,7 +167,7 @@ class CanaryExpiryReconciler:
                 reason_code=reason_code,
                 occurred_at_utc=occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
 
 

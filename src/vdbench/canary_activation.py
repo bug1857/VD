@@ -27,10 +27,10 @@ any connection between this offline authority and a serving path.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import re
+from datetime import UTC, datetime
 from typing import Protocol
 
 from .canary_approval import (
@@ -46,11 +46,10 @@ from .canary_route_authority import RouteAuthoritySnapshot
 from .canary_route_state import RouteStateBinding, RouteStateRecord
 from .canary_routing import CanaryRoutePlan
 
-
 __all__ = [
-    "ActiveCanaryContext",
     "ActivationAttempt",
     "ActivationTimestamps",
+    "ActiveCanaryContext",
     "CanaryActivationCoordinator",
 ]
 
@@ -227,7 +226,7 @@ class CanaryActivationCoordinator:
             return _attempt(False, "ACTIVATION_INPUT_INVALID")
         try:
             disabled = self._automatic_action_controller.is_disabled()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _attempt(False, "AUTOMATIC_ACTION_CONTROLLER_UNAVAILABLE")
         if disabled is not False:
             return _attempt(False, "AUTOMATIC_ACTIONS_DISABLED")
@@ -237,7 +236,7 @@ class CanaryActivationCoordinator:
                 trust_store=trust_store,
                 context=approval_context,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _attempt(False, "APPROVAL_VERIFIER_UNAVAILABLE")
         if not isinstance(verification, ApprovalVerificationResult):
             return _attempt(False, "APPROVAL_VERIFIER_INVALID")
@@ -265,7 +264,7 @@ class CanaryActivationCoordinator:
                 signed_payload_sha256=signed_payload_sha256,
                 reserved_at_utc=timestamps.reserved_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _attempt(
                 False,
                 "GRANT_RESERVATION_UNAVAILABLE",
@@ -290,7 +289,7 @@ class CanaryActivationCoordinator:
         )
         try:
             self._lifecycle_audit_sink.append(authorization_event)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._record_terminal_best_effort(
                 grant=verified_grant,
                 signed_payload_sha256=signed_payload_sha256,
@@ -311,7 +310,7 @@ class CanaryActivationCoordinator:
                 plan_sha256=plan.plan_sha256,
                 changed_at_utc=timestamps.marker_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._compensate_to_lkg(
                 binding=binding,
                 clear_reason="ACTIVATION_MARKER_WRITE_FAILED",
@@ -337,7 +336,7 @@ class CanaryActivationCoordinator:
                 activation_marker=marker,
                 expires_at_utc=verified_grant.expires_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._compensate_to_lkg(
                 binding=binding,
                 clear_reason="ACTIVATION_AUTHORITY_REFUSED",
@@ -383,7 +382,7 @@ class CanaryActivationCoordinator:
 
         try:
             self._route_authority.clear(reason_code=clear_reason)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
         try:
             self._route_state_store.clear_to_lkg(
@@ -391,7 +390,7 @@ class CanaryActivationCoordinator:
                 reason_code=clear_reason,
                 changed_at_utc=changed_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
 
     def _record_terminal_best_effort(
@@ -409,7 +408,7 @@ class CanaryActivationCoordinator:
                 reason_code=reason_code,
                 occurred_at_utc=occurred_at_utc,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
             pass
 
 
@@ -444,7 +443,7 @@ def _timestamps_valid(timestamps: object) -> bool:
     ):
         if not _timestamp_valid(value):
             return False
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
         parsed_timestamps.append(parsed)
     return parsed_timestamps == sorted(parsed_timestamps)
 
@@ -453,12 +452,12 @@ def _timestamp_valid(value: object) -> bool:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
     return (
         parsed.tzinfo is not None
-        and parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+        and parsed.utcoffset() == UTC.utcoffset(parsed)
     )
 
 

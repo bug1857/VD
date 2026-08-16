@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.canary_execution_ledger import (
@@ -25,24 +25,23 @@ from vdbench.canary_schedule_evaluation import (
 )
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
-    SCHEDULE_CONTROL_COUNT,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
-from vdbench.config import Metric, RESULT_LIMIT
+from vdbench.config import RESULT_LIMIT, Metric
 
 
 def _sha(text: str) -> str:

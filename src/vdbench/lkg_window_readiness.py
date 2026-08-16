@@ -58,27 +58,26 @@ import hashlib
 import re
 import threading
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
-from typing import Callable, Protocol
+from datetime import UTC, datetime
+from typing import Protocol
 
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation
 
-
 __all__ = [
-    "READINESS_SCHEMA_VERSION",
     "READINESS_DOMAIN",
-    "validate_rfc3339_utc",
-    "parse_rfc3339_utc_instant",
-    "LkgWindowOperationalReadinessProviderError",
+    "READINESS_SCHEMA_VERSION",
+    "FakeLkgWindowOperationalReadinessProvider",
     "LkgWindowOperationalReadinessEvidence",
+    "LkgWindowOperationalReadinessProvider",
+    "LkgWindowOperationalReadinessProviderError",
+    "lkg_window_operational_readiness_evidence_from_payload",
+    "parse_rfc3339_utc_instant",
     "readiness_payload_document",
     "readiness_payload_document_digest",
-    "lkg_window_operational_readiness_evidence_from_payload",
-    "LkgWindowOperationalReadinessProvider",
-    "FakeLkgWindowOperationalReadinessProvider",
+    "validate_rfc3339_utc",
 ]
 
 
@@ -142,10 +141,10 @@ def validate_rfc3339_utc(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ContractViolation(f"{field} must be RFC3339 UTC ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ContractViolation(f"{field} must be a valid RFC3339 UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ContractViolation(f"{field} must use UTC")
     return value
 
@@ -157,7 +156,7 @@ def parse_rfc3339_utc_instant(value: str) -> datetime:
     string comparison, which is unsound across differing fractional-digit
     precision."""
 
-    return datetime.fromisoformat(value[:-1] + "+00:00")
+    return datetime.fromisoformat(value)
 
 
 class LkgWindowOperationalReadinessProviderError(RuntimeError):

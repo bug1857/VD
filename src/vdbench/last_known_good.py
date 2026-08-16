@@ -18,15 +18,15 @@ Failure modes:
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from .config import Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, Metric
 from .policy import (
     ACTUATION_LADDER,
     PreActionSafety,
@@ -73,7 +73,7 @@ def _valid_rfc3339_utc(value: object) -> bool:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         return False
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return False
     return parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0
@@ -91,7 +91,7 @@ def _validate_qualified_result(result: QualificationResult) -> None:
     ):
         raise ValueError("qualified ef must be in the ADR-002 actuation ladder")
     if not isinstance(result.metric, Metric):
-        raise ValueError("qualified metric must be a canonical Metric")
+        raise ValueError("qualified metric must be a canonical Metric")  # domain error type carries the governed reason code  # noqa: TRY004
     if result.threshold_stratum not in THRESHOLD_LABELS:
         raise ValueError("qualified threshold stratum must be canonical")
     if not all(

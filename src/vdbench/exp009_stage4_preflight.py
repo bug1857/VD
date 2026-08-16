@@ -28,17 +28,17 @@ Extension point:
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import tempfile
+from collections import Counter
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
@@ -51,7 +51,6 @@ from .milvus import CollectionIdentity, MilvusHarness
 from .milvus_serving import HostServingPlan, MilvusRangeServingExecutor
 from .runner import load_dataset
 from .shadow_event_types import MonitorStreamKey
-
 
 __all__ = [
     "PreflightCaptureResult",
@@ -341,7 +340,7 @@ def capture_read_only_preflight(
                         reasons.append("PREFLIGHT_IDENTITY_BASELINE_MISMATCH")
                     elif pre != post:
                         reasons.append("PREFLIGHT_IDENTITY_CHANGED")
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         reasons.append("PREFLIGHT_EXECUTION_UNAVAILABLE")
 
     call_counts = facade.call_counts
@@ -415,16 +414,15 @@ def verify_preflight_evidence(
         or not _valid_counts(counts)
     ):
         raise ValueError("PREFLIGHT_EVIDENCE_RESULT_INVALID")
-    if status == "COMPLETE":
-        if (
-            result.get("reason_codes") != []
-            or counts != _SUCCESS_COUNTS
-            or result.get("pre_identity") != result.get("post_identity")
-            or result.get("pre_identity") != _expected_identity_document(target)
-            or not _complete_runtime_document(result.get("readiness"), result.get("slot_safety"))
-            or result.get("no_effect_assertion") != _EFFECT_ASSERTION
-        ):
-            raise ValueError("PREFLIGHT_EVIDENCE_COMPLETE_INVALID")
+    if status == "COMPLETE" and (
+        result.get("reason_codes") != []
+        or counts != _SUCCESS_COUNTS
+        or result.get("pre_identity") != result.get("post_identity")
+        or result.get("pre_identity") != _expected_identity_document(target)
+        or not _complete_runtime_document(result.get("readiness"), result.get("slot_safety"))
+        or result.get("no_effect_assertion") != _EFFECT_ASSERTION
+    ):
+        raise ValueError("PREFLIGHT_EVIDENCE_COMPLETE_INVALID")
     if require_complete and status != "COMPLETE":
         raise ValueError("PREFLIGHT_EVIDENCE_INCOMPLETE")
     return {"status": status, "call_counts": dict(counts), "result_sha256": result["self_sha256"]}
@@ -452,7 +450,7 @@ def _matches_baseline(
             target.baseline.flat_binding.matches(identities[IndexTrack.FLAT])
             and target.baseline.hnsw_binding.matches(identities[IndexTrack.HNSW])
         )
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         return False
 
 
@@ -594,15 +592,15 @@ def _expected_identity_document(target: PreflightEvidenceTarget) -> dict[str, ob
 def _valid_utc(clock: Callable[[], str]) -> str | None:
     try:
         value = clock()
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         return None
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
         return None
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         return None
     return value
 
@@ -635,7 +633,7 @@ def _load_json(path: Path) -> dict[str, object]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("PREFLIGHT_EVIDENCE_JSON_INVALID") from error
     if not isinstance(value, dict):
-        raise ValueError("PREFLIGHT_EVIDENCE_DOCUMENT_INVALID")
+        raise ValueError("PREFLIGHT_EVIDENCE_DOCUMENT_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
     return value
 
 

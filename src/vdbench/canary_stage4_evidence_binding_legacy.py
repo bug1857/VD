@@ -28,9 +28,8 @@ Scope:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
-
 
 __all__ = [
     "LEGACY_STAGE4_EVIDENCE_BINDING_V1_SCHEMA_VERSION",
@@ -111,5 +110,5 @@ def parse_legacy_stage4_evidence_binding_v1(
                 raise ValueError(f"{field} must be an integer")
             continue
         if not isinstance(document[field], str):
-            raise ValueError(f"{field} must be a string")
+            raise ValueError(f"{field} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     return LegacyStage4EvidenceBindingV1(**{field: document[field] for field in _V1_FIELDS})

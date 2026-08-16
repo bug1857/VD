@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 from vdbench.canary_stage4_evidence_binding import (
     STAGE4_EVIDENCE_BINDING_SCHEMA_VERSION,
@@ -11,7 +11,6 @@ from vdbench.canary_stage4_evidence_binding import (
 )
 from vdbench.canary_workload import WorkloadIdentityBinding
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
-
 
 _CANDIDATE_SEARCH_CONFIGURATION = SearchConfiguration(
     metric=Metric.L2,
@@ -190,7 +189,9 @@ class Stage4EvidenceBindingTests(unittest.TestCase):
         # LegacyStage4EvidenceBindingV1 must not be equal to a v2 binding
         # even if its sha256 somehow matched (which is cryptographically infeasible,
         # but type strictness should catch it immediately).
-        from vdbench.canary_stage4_evidence_binding_legacy import LegacyStage4EvidenceBindingV1
+        from vdbench.canary_stage4_evidence_binding_legacy import (
+            LegacyStage4EvidenceBindingV1,
+        )
         legacy_mock = LegacyStage4EvidenceBindingV1(**{
             k: getattr(binding, k) if hasattr(binding, k) else "missing"
             for k in [

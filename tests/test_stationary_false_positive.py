@@ -1,9 +1,9 @@
 import ast
 import importlib.util
 import math
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 
 from vdbench.config import Metric
 

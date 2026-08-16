@@ -8,14 +8,17 @@ R2-C semantic verification produced from an explicit verified ledger export.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Protocol
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol
 
 from .config import SearchConfiguration
-from .response_profile import ResponseProfileIdentity, SUPPORTED_EFS
-from .response_profile_control import ResponseProfileControl, verify_response_profile_control
+from .response_profile import SUPPORTED_EFS, ResponseProfileIdentity
+from .response_profile_control import (
+    ResponseProfileControl,
+    verify_response_profile_control,
+)
 from .response_profile_evidence import ResponseProfileRoleMember
 from .response_profile_lifecycle import LifecycleEventKind, ResponseProfileRunBinding
 from .response_profile_lifecycle_ledger import ResponseProfileLifecycleLedger
@@ -34,19 +37,18 @@ from .response_profile_semantic import (
     verify_response_profile_semantic_bundle,
 )
 
-
 __all__ = [
-    "ResponseProfileProducerError",
+    "ResponseProfileClock",
     "ResponseProfileExecutionQuery",
-    "ResponseProfileSearchResult",
-    "ResponseProfileRuntimeReadiness",
+    "ResponseProfileProducer",
+    "ResponseProfileProducerError",
+    "ResponseProfileProducerResult",
     "ResponseProfileQueryExecutor",
     "ResponseProfileRuntimeProbe",
-    "ResponseProfileClock",
-    "ResponseProfileProducerResult",
-    "build_response_profile_search_result",
+    "ResponseProfileRuntimeReadiness",
+    "ResponseProfileSearchResult",
     "build_response_profile_runtime_readiness",
-    "ResponseProfileProducer",
+    "build_response_profile_search_result",
 ]
 
 
@@ -150,7 +152,7 @@ class _SystemClock:
         nanoseconds = time.time_ns()
         seconds, fraction_ns = divmod(nanoseconds, 1_000_000_000)
         microseconds = fraction_ns // 1_000
-        base = datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        base = datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S")
         return f"{base}.{microseconds:06d}Z"
 
     def monotonic_ns(self) -> int:
@@ -365,7 +367,7 @@ class ResponseProfileProducer:
             try:
                 self._start_fresh_epoch()
                 warmup_calls = len(self._binding.warmup_role_manifest.members) * len(SUPPORTED_EFS)
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 view = self._ledger.current_view()
                 return ResponseProfileProducerResult(
                     False, ("WARMUP_EXECUTION_FAILED",), view.closed_block_count,
@@ -420,7 +422,7 @@ class ResponseProfileProducer:
                 except TimeoutError:
                     outcome = MeasuredResultOutcome.TIMED_OUT
                     failure_code = "SEARCH_TIMED_OUT"
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                     outcome = MeasuredResultOutcome.FAILED
                     failure_code = "SEARCH_FAILED"
                 completed_ns = self._clock.monotonic_ns()

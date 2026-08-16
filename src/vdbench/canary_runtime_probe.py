@@ -27,15 +27,15 @@ Extension point:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import re
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol
 
 from .canary_route_state import RouteStateBinding
 from .canary_runtime_types import Stage4RuntimeReadiness, Stage4SlotSafety
 from .shadow_event_types import MonitorStreamKey
-
 
 __all__ = ["ServingPreflightPort", "Stage4ServingRuntimeProbe"]
 
@@ -145,7 +145,7 @@ class Stage4ServingRuntimeProbe:
     def _inspect(self) -> _Inspection:
         try:
             result = self._serving_preflight.preflight()
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return _unsafe("SERVING_PREFLIGHT_UNAVAILABLE")
         return _normalize_preflight(result)
 
@@ -231,14 +231,14 @@ def _stream_matches_binding(
 def _read_utc(clock: Callable[[], str]) -> str | None:
     try:
         value = clock()
-    except Exception:
+    except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
         return None
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
         return None
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         return None
     return value

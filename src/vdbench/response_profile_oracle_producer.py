@@ -40,10 +40,11 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -66,7 +67,6 @@ from .response_profile_semantic import (
     build_response_profile_oracle_manifest,
     build_response_profile_oracle_record,
 )
-
 
 __all__ = [
     "ORACLE_PRODUCER_SCHEMA_VERSION",

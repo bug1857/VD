@@ -28,21 +28,21 @@ Extension points:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
-from enum import StrEnum
 import json
 import math
 import os
-from pathlib import Path
 import queue
 import re
 import stat
 import tempfile
+import unicodedata
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
-import unicodedata
 
 from .config import Metric
 from .shadow_event_types import (
@@ -52,7 +52,6 @@ from .shadow_event_types import (
     TracePublicationContext,
     TracePublicationReceipt,
 )
-
 
 __all__ = [
     "BackgroundShadowWorker",
@@ -69,8 +68,8 @@ __all__ = [
     "ObservationStatus",
     "RangeQueryRequest",
     "RangeServingExecutor",
-    "RegisteredTraceParameters",
     "ReferenceRangeGateway",
+    "RegisteredTraceParameters",
     "ServedQueryOutcome",
     "ShadowAuditExecutor",
     "StreamWorkerState",
@@ -319,7 +318,7 @@ class ReferenceRangeGateway:
                 served_ef=request.served_ef,
                 served_outcome=served_outcome,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             receipt = ObservationReceipt(
                 ObservationStatus.REJECTED_INVALID,
                 "OBSERVATION_CAPTURE_FAILED",
@@ -327,7 +326,7 @@ class ReferenceRangeGateway:
         else:
             try:
                 receipt = self._recorder.offer(observation)
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
                 receipt = ObservationReceipt(
                     ObservationStatus.REJECTED_INVALID,
                     "RECORDER_FAILED",
@@ -668,7 +667,7 @@ class BackgroundShadowWorker:
     ) -> tuple[object | None, str | None]:
         try:
             trace = self._executor.capture(observations)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None, "EXECUTOR_CAPTURE_FAILED"
         try:
             reason = _validate_trace(
@@ -676,7 +675,7 @@ class BackgroundShadowWorker:
                 observations,
                 registered_trace_parameters=self._registered_trace_parameters,
             )
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             return None, "TRACE_VALIDATION_FAILED"
         return (trace, None) if reason is None else (None, reason)
 
@@ -694,7 +693,7 @@ class BackgroundShadowWorker:
                 captured_at_utc=self._clock(),
             )
             receipt = self._publisher.publish(trace=trace, context=context)
-        except Exception:
+        except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001
             self._set_stream_state(
                 replace(
                     state,
@@ -944,7 +943,7 @@ def _no_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _canonical_nonempty(value: object, *, name: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
+        raise ValueError(f"{name} must be a string")  # domain error type carries the governed reason code  # noqa: TRY004
     normalized = unicodedata.normalize("NFC", value)
     if not normalized:
         raise ValueError(f"{name} must be non-empty")
@@ -953,7 +952,7 @@ def _canonical_nonempty(value: object, *, name: str) -> str:
 
 def _canonical_request_id(value: object) -> int | str:
     if isinstance(value, bool):
-        raise ValueError("request_id must be an integer or non-empty string")
+        raise ValueError("request_id must be an integer or non-empty string")  # domain error type carries the governed reason code  # noqa: TRY004
     if isinstance(value, int):
         return value
     if isinstance(value, str):
@@ -965,7 +964,7 @@ def _parse_rfc3339_utc(value: object) -> datetime:
     if not isinstance(value, str) or _RFC3339_UTC.fullmatch(value) is None:
         raise ValueError("timestamp must be RFC3339 UTC")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("timestamp must be RFC3339 UTC") from exc
     if parsed.utcoffset() != timedelta(0):

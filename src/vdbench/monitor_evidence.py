@@ -9,11 +9,11 @@ accepted.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import hashlib
 import json
 import math
 import re
+from collections.abc import Mapping
 
 from .config import Metric
 from .drift import (
@@ -25,7 +25,6 @@ from .drift import (
     evidence_provenance_valid,
     finalize_window_evidence,
 )
-
 
 SCHEMA_VERSION = "monitor-window-evidence-v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -358,8 +357,8 @@ def decode_persisted_window_evidence(value: object) -> WindowEvidence:
 
 
 __all__ = [
-    "MonitorEvidenceCodecError",
     "SCHEMA_VERSION",
+    "MonitorEvidenceCodecError",
     "decode_persisted_window_evidence",
     "encode_persisted_window_evidence",
 ]

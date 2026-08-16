@@ -22,14 +22,14 @@ import re
 import sqlite3
 import stat
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation
-from .lkg_qualification_evidence import LkgQueryAttempt
-from .lkg_qualification_seal import LkgRunSeal
-from .lkg_qualification_ledger import LkgQualificationLedger, LkgQualificationLedgerError, verify_seal
-from .lkg_phase2_readiness_ledger import Phase2ReadinessLedger, Phase2ReadinessLedgerError
+from .lkg_phase2_readiness_ledger import (
+    Phase2ReadinessLedger,
+    Phase2ReadinessLedgerError,
+)
 from .lkg_phase2_source_binding import (
     SOURCE_BINDING_SCHEMA_VERSION,
     LkgWindowReadinessIngestion,
@@ -37,24 +37,30 @@ from .lkg_phase2_source_binding import (
     phase2_source_binding_from_payload,
     source_binding_payload_document_digest,
 )
-from .lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
-from .search_configuration_digest import search_configuration_sha256
 from .lkg_qualification_evaluation import (
     EVALUATION_CONTRACT_SCHEMA_VERSION,
+    LkgEfEligibilityRule,
     LkgQualificationEvaluation,
+    LkgQualificationEvaluationContract,
+    LkgQualificationSemanticsRule,
     LkgQualificationStatus,
     default_lkg_ef_eligibility_rule,
     default_lkg_qualification_semantics_rule,
+    evaluate_run,
     evaluation_contract_payload_document_digest,
     evaluation_payload_document,
-    evaluate_run,
     lkg_qualification_evaluation_contract_from_payload,
     lkg_qualification_evaluation_from_payload,
-    LkgQualificationEvaluationContract,
-    LkgEfEligibilityRule,
-    LkgQualificationSemanticsRule,
 )
-
+from .lkg_qualification_evidence import LkgQueryAttempt
+from .lkg_qualification_ledger import (
+    LkgQualificationLedger,
+    LkgQualificationLedgerError,
+    verify_seal,
+)
+from .lkg_qualification_seal import LkgRunSeal
+from .lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
+from .search_configuration_digest import search_configuration_sha256
 
 _EVALUATION_SCHEMA_VERSION = 1
 _EXPECTED_SCHEMA_OBJECTS = frozenset(
@@ -298,7 +304,7 @@ class LkgQualificationEvaluationLedger:
             except BaseException:
                 try:
                     self._conn.execute("ROLLBACK;")
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                     pass
                 raise
 
@@ -309,7 +315,7 @@ class LkgQualificationEvaluationLedger:
             if self._conn:
                 try:
                     self._conn.execute("ROLLBACK;")
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                     pass
                 self.close()
             raise LkgQualificationEvaluationError(
@@ -424,14 +430,14 @@ class LkgQualificationEvaluationLedger:
         if self._conn is not None:
             try:
                 self._conn.close()
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                 pass
             self._conn = None
 
-    def __enter__(self) -> LkgQualificationEvaluationLedger:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:  # __exit__ signature matches the codebase-wide context manager  # matches the codebase-wide context-manager signature  # noqa: PYI036
         self.close()
 
     def get_final_evaluation(self) -> LkgQualificationEvaluation | None:
@@ -709,14 +715,14 @@ class LkgQualificationEvaluationLedger:
         if evaluation.status in {
             LkgQualificationStatus.PASSING,
             LkgQualificationStatus.INCOMPLETE,
-        }:
-            if set(current_ingestions) != set(range(_WINDOWS_PER_RUN)) or any(
-                digest is None for digest in evaluation.window_ingestion_digests
-            ):
-                raise LkgQualificationEvaluationError(
-                    "Terminal PASSING/INCOMPLETE replay requires exact 12-slot Phase-2 closure",
-                    code="LKG_QUAL_EVAL_REPLAY_MISMATCH",
-                )
+        } and (
+            set(current_ingestions) != set(range(_WINDOWS_PER_RUN))
+            or any(digest is None for digest in evaluation.window_ingestion_digests)
+        ):
+            raise LkgQualificationEvaluationError(
+                "Terminal PASSING/INCOMPLETE replay requires exact 12-slot Phase-2 closure",
+                code="LKG_QUAL_EVAL_REPLAY_MISMATCH",
+            )
 
         # Canonical SHA-256 proves accidental corruption, not authenticity:
         # a raw-database attacker could rewrite a nested statistic and its
@@ -896,7 +902,7 @@ class LkgQualificationEvaluationLedger:
             # LKG_QUAL_EVAL_FINALIZATION_FAILED.
             try:
                 self._conn.execute("ROLLBACK;")
-            except Exception:
+            except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                 pass
             if isinstance(exc, LkgQualificationEvaluationError):
                 raise

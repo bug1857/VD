@@ -8,12 +8,13 @@ routing active after a failed or completed serial schedule.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
+from tests.test_canary_admission import _phase3_authority
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.canary_activation import (
     ActivationAttempt,
@@ -22,7 +23,6 @@ from vdbench.canary_activation import (
 )
 from vdbench.canary_admission import (
     Stage4AdmissionReceipt,
-    Stage4AdmissionRequest,
     Stage4AdmissionResult,
     Stage4LkgAuthorityPair,
     Stage4RepositoryEvidence,
@@ -37,36 +37,36 @@ from vdbench.canary_execution_ledger import (
     Stage4SlotObservation,
 )
 from vdbench.canary_live_runner import (
-    Stage4LiveRunRequest,
     Stage4LiveRunner,
+    Stage4LiveRunRequest,
     Stage4SlotSafety,
 )
+from vdbench.canary_rollback import RollbackResult, RollbackTrigger
 from vdbench.canary_route_authority import RouteClaim
 from vdbench.canary_route_state import RouteStateBinding
 from vdbench.canary_routing import build_canary_route_plan
 from vdbench.canary_schedule import build_stage4_execution_schedule
-from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_serial_runner import Dataset002ScheduleVectorSource
+from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
 from vdbench.canary_workload import (
     CANDIDATE_SELECTION_SCHEMA_VERSION,
-    CandidateSelectionRecord,
-    EligibleOccurrence,
-    EligibleWorkloadManifest,
     SCHEDULE_ABSOLUTE_P95_LATENCY_MS_CEILING,
-    SCHEDULE_CONTROL_COUNT,
     SCHEDULE_EXECUTION_MODE,
     SCHEDULE_INTERLEAVED_SWEEP_COUNT,
     SCHEDULE_MEDIAN_RELATIVE_CEILING,
+    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_POST_SWEEP_COUNT,
     SCHEDULE_PRE_SWEEP_COUNT,
-    SCHEDULE_P95_RELATIVE_CEILING,
     SCHEDULE_ROUTING_BLOCK_SIZE,
     SCHEDULE_STABILITY_SCHEMA_VERSION,
+    CandidateSelectionRecord,
+    EligibleOccurrence,
+    EligibleWorkloadManifest,
     ScheduleControl,
     ScheduleStabilityContract,
     WorkloadIdentityBinding,
 )
-from vdbench.config import Metric, RESULT_LIMIT
+from vdbench.config import RESULT_LIMIT, Metric
 from vdbench.drift import build_evidence_provenance
 from vdbench.host_observation import ServedQueryOutcome
 from vdbench.lkg_phase3_persistence import LkgPhase3AuthorityReferenceStore
@@ -76,8 +76,6 @@ from vdbench.policy import (
     PolicyMode,
     SafetyGateResult,
 )
-from vdbench.canary_rollback import RollbackResult, RollbackTrigger
-from tests.test_canary_admission import _phase3_authority
 
 
 def _sha(value: str) -> str:
@@ -212,7 +210,7 @@ class _RuntimeProbe:
         if self.slot_calls == self._unsafe_slot_call:
             return Stage4SlotSafety(
                 self._unsafe_identity,
-                False if self._unsafe_identity else True,
+                not self._unsafe_identity,
                 "COLLECTION_IDENTITY_MISMATCH" if self._unsafe_identity else "STACK_HEALTH_UNHEALTHY",
             )
         return Stage4SlotSafety(True, True)
@@ -678,7 +676,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
     def test_first_authority_refresh_failure_prevents_activation_and_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             provider = _FreshAuthorityProvider((self.lkg_pair,), fail_at_call=1)
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, activation, _authority, _runtime, serving, rollback, ledger = self._runner(
                 Path(directory), provider=provider
             )
             result = runner.run()
@@ -695,7 +693,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             provider = _FreshAuthorityProvider(
                 (self.lkg_pair, self.lkg_pair), fail_at_call=2
             )
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, activation, _authority, _runtime, serving, rollback, ledger = self._runner(
                 Path(directory), provider=provider
             )
             result = runner.run()
@@ -711,7 +709,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             provider = _FreshAuthorityProvider((self.lkg_pair, self.other_lkg_pair))
             evaluator = _AdmissionEvaluator()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, _activation, _authority, _runtime, serving, rollback, ledger = self._runner(
                 Path(directory), provider=provider, evaluator=evaluator
             )
             result = runner.run()
@@ -748,7 +746,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                     case_root = root / str(index)
                     case_root.mkdir()
                     evaluator = _AdmissionEvaluator(mutate_second=(field, value))
-                    runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+                    runner, _activation, _authority, _runtime, serving, rollback, ledger = self._runner(
                         case_root, evaluator=evaluator
                     )
                     result = runner.run()
@@ -766,7 +764,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
     def test_noncanonical_admission_receipt_refuses_before_activation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             evaluator = _AdmissionEvaluator(corrupt_first=True)
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, activation, _authority, _runtime, serving, rollback, _ledger = self._runner(
                 Path(directory), evaluator=evaluator
             )
             result = runner.run()
@@ -779,7 +777,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "claim").mkdir()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(root / "claim", wrong_claim=True)
+            runner, _activation, authority, _runtime, serving, rollback, ledger = self._runner(root / "claim", wrong_claim=True)
             result = runner.run()
             self.assertEqual(result.reason_codes, ("ROUTE_CLAIM_REFUSED",))
             self.assertEqual(
@@ -794,7 +792,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             self.assertEqual(len(rollback.calls), 1)
             self.assertEqual(ledger.progress().status, Stage4LedgerStatus.FAILED)
             (root / "serving").mkdir()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(root / "serving", serving_failure_at_call=1)
+            runner, _activation, authority, _runtime, serving, rollback, ledger = self._runner(root / "serving", serving_failure_at_call=1)
             result = runner.run()
             self.assertEqual(result.reason_codes, ("MILVUS_SEARCH_FAILED",))
             self.assertEqual(len(serving.calls), 1)
@@ -806,13 +804,13 @@ class CanaryLiveRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "clock").mkdir()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(root / "clock", clock=_Clock(fail_at_call=1))
+            runner, _activation, _authority, _runtime, serving, rollback, _ledger = self._runner(root / "clock", clock=_Clock(fail_at_call=1))
             result = runner.run()
             self.assertIn("CLOCK", result.reason_codes[0])
             self.assertEqual(len(serving.calls), 0)
             self.assertEqual(len(rollback.calls), 1)
             (root / "binding").mkdir()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, _activation, _authority, _runtime, serving, rollback, _ledger = self._runner(
                 root / "binding", activation_mismatch=True
             )
             result = runner.run()
@@ -849,7 +847,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 with self.subTest(name=name):
                     case_root = root / name
                     case_root.mkdir()
-                    runner, activation, authority, runtime, serving, rollback, ledger = self._runner(case_root, **options)
+                    runner, _activation, _authority, _runtime, serving, rollback, ledger = self._runner(case_root, **options)
                     result = runner.run()
                     self.assertEqual(result.reason_codes, (expected_reason,))
                     self.assertEqual(len(serving.calls), expected_serving_calls)
@@ -867,7 +865,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 run_id="exp009-live-runner-test",
                 schedule=self.schedule,
             )
-            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(root, ledger=ledger)
+            runner, _activation, _authority, _runtime, serving, rollback, actual_ledger = self._runner(root, ledger=ledger)
             result = runner.run()
             self.assertEqual(result.reason_codes, ("LEDGER_UNAVAILABLE",))
             self.assertEqual(len(serving.calls), 1)
@@ -885,7 +883,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 run_id="exp009-live-runner-test",
                 schedule=self.schedule,
             )
-            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+            runner, _activation, _authority, _runtime, serving, rollback, actual_ledger = self._runner(
                 root, ledger=ledger
             )
             result = runner.run()
@@ -897,7 +895,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
             invalid_rollback = _InvalidRollback()
             post_root = root / "post"
             post_root.mkdir()
-            runner, activation, authority, runtime, serving, rollback, ledger = self._runner(
+            runner, _activation, _authority, _runtime, serving, rollback, ledger = self._runner(
                 post_root,
                 preflight_complete=(True, False),
                 rollback_port=invalid_rollback,
@@ -944,7 +942,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 started_record_sha256=start.start_sha256,
             )
             assert completed.accepted
-            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(root, ledger=ledger)
+            runner, activation, _authority, _runtime, serving, rollback, actual_ledger = self._runner(root, ledger=ledger)
             result = runner.run()
             self.assertEqual(result.reason_codes, ("LEDGER_NOT_FRESH",))
             self.assertEqual(len(activation.calls), 0)
@@ -1029,7 +1027,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 run_id="exp009-live-runner-test",
                 schedule=self.schedule,
             )
-            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+            runner, _activation, _authority, _runtime, serving, rollback, _actual_ledger = self._runner(
                 root, ledger=ledger
             )
             result = runner.run()
@@ -1059,7 +1057,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                 schedule=self.schedule,
             )
             self.assertEqual(fresh_ledger.progress().status, Stage4LedgerStatus.AMBIGUOUS)
-            runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+            runner, activation, authority, _runtime, serving, rollback, actual_ledger = self._runner(
                 root, ledger=fresh_ledger
             )
             result = runner.run()
@@ -1087,7 +1085,7 @@ class CanaryLiveRunnerTests(unittest.TestCase):
                         run_id="exp009-live-runner-test",
                         schedule=self.schedule,
                     )
-                    runner, activation, authority, runtime, serving, rollback, actual_ledger = self._runner(
+                    runner, _activation, _authority, _runtime, serving, _rollback, _actual_ledger = self._runner(
                         root, ledger=attempt_ledger
                     )
                     result = runner.run()

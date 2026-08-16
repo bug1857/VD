@@ -26,20 +26,19 @@ Extension points:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from enum import StrEnum
 import hashlib
 import json
-from numbers import Integral
 import re
 import struct
 import unicodedata
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from numbers import Integral
 
 import numpy as np
 
 from .config import Metric
-
 
 PERMUTATION_COUNT = 9_999
 PERMUTATION_DENOMINATOR = 10_000
@@ -160,7 +159,7 @@ class EvidenceProvenance:
 
 def _provenance_identifier(value: object, *, field: str) -> CanonicalValue:
     if isinstance(value, bool):
-        raise ValueError(f"{field} cannot be Boolean")
+        raise ValueError(f"{field} cannot be Boolean")  # domain error type carries the governed reason code  # noqa: TRY004
     if isinstance(value, Integral):
         return int(value)
     if isinstance(value, str) and value:
@@ -438,7 +437,7 @@ _EXPECTED_COUNTS = {
 
 def _canonical_field_bytes(value: CanonicalValue) -> bytes:
     if isinstance(value, bool):
-        raise ValueError("booleans are not canonical integer fields")
+        raise ValueError("booleans are not canonical integer fields")  # domain error type carries the governed reason code  # noqa: TRY004
     if isinstance(value, Integral):
         text = str(int(value))
     elif isinstance(value, str):
@@ -547,7 +546,7 @@ def deterministic_permutation_p_value(
 
 def _query_id_schema(value: CanonicalValue) -> str:
     if isinstance(value, bool):
-        raise ValueError("boolean query IDs are invalid")
+        raise ValueError("boolean query IDs are invalid")  # domain error type carries the governed reason code  # noqa: TRY004
     if isinstance(value, Integral):
         return "integer"
     if isinstance(value, str):
@@ -1303,23 +1302,23 @@ def evaluate_drift_decision(
 
 __all__ = [
     "AUDIT_QUERY_COUNT",
+    "FAMILY_WISE_ALPHA",
+    "PERMUTATION_BATCH_SIZE",
+    "PERMUTATION_COUNT",
     "AuditSelection",
-    "EvidenceProvenance",
     "DetectorState",
     "DriftClassification",
     "DriftDecision",
-    "FAMILY_WISE_ALPHA",
+    "EvidenceProvenance",
     "MMDResult",
-    "PERMUTATION_BATCH_SIZE",
-    "PERMUTATION_COUNT",
     "PermutationEvidence",
     "RecallAuditSample",
     "SeedMaterial",
     "Signal",
     "SignalEvidence",
     "WindowEvidence",
-    "canonical_serialize_tuple",
     "build_evidence_provenance",
+    "canonical_serialize_tuple",
     "derive_permutation_seed",
     "deterministic_permutation_p_value",
     "evaluate_drift_decision",

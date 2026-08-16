@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -30,7 +30,11 @@ from vdbench.canary_workload import (
 )
 from vdbench.config import EXP001_DATASET_SPEC, ContractViolation, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
 
 
 class _FixedCSPRNG:

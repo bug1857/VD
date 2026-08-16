@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
@@ -14,7 +14,6 @@ from vdbench.search_configuration_digest import (
     search_configuration_from_document,
     search_configuration_sha256,
 )
-
 
 _BASE = SearchConfiguration(
     metric=Metric.L2,
@@ -163,15 +162,19 @@ class SearchConfigurationDigestTests(unittest.TestCase):
 
     def test_invalid_nan_and_infinities_still_rejected(self) -> None:
         for bad in (float("nan"), float("inf"), float("-inf")):
-            with self.subTest(radius=bad):
-                with self.assertRaises(ContractViolation):
-                    search_configuration_sha256(replace(_COSINE_BASE, radius=bad))
+            with (
+                self.subTest(radius=bad),
+                self.assertRaises(ContractViolation),
+            ):
+                search_configuration_sha256(replace(_COSINE_BASE, radius=bad))
 
     def test_inappropriate_bool_radius_is_rejected(self) -> None:
         for bad in (True, False):
-            with self.subTest(radius=bad):
-                with self.assertRaises(ContractViolation):
-                    replace(_COSINE_BASE, radius=bad).validate()
+            with (
+                self.subTest(radius=bad),
+                self.assertRaises(ContractViolation),
+            ):
+                replace(_COSINE_BASE, radius=bad).validate()
 
     def test_non_numeric_radius_is_rejected(self) -> None:
         cfg = replace(_COSINE_BASE, radius="0.2")

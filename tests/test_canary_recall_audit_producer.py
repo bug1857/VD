@@ -18,15 +18,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vdbench.canary_recall_audit_evaluation import EvaluationStatus, evaluate_recall_audit_evidence
-from vdbench.canary_recall_audit_ledger import CanaryRecallAuditLedger, RecallAuditObservation
+from vdbench.canary_recall_audit_evaluation import (
+    EvaluationStatus,
+    evaluate_recall_audit_evidence,
+)
+from vdbench.canary_recall_audit_ledger import (
+    CanaryRecallAuditLedger,
+)
 from vdbench.canary_recall_audit_producer import (
     FakeDeterministicRecallAuditClient,
     RecallAuditClientOutcome,
     Stage4RecallAuditProducer,
 )
 from vdbench.canary_stage4_evidence_binding import Stage4EvidenceBinding
-from vdbench.canary_statistics import EXP009_RECALL_AUDIT_COUNT, EXP009_ROUTING_POPULATION_COUNT
+from vdbench.canary_statistics import (
+    EXP009_RECALL_AUDIT_COUNT,
+    EXP009_ROUTING_POPULATION_COUNT,
+)
 from vdbench.canary_workload import WorkloadIdentityBinding
 from vdbench.config import IndexTrack, Metric, SearchConfiguration
 from vdbench.dataset002 import DATASET002_SCHEMA_VERSION
@@ -64,24 +72,24 @@ def _oracle_map(*, per_query_count: int = 3) -> dict[int, tuple[int, ...]]:
 
 
 def _build_binding(**overrides: object) -> Stage4EvidenceBinding:
-    fields: dict[str, object] = dict(
-        run_id="fake-producer-run",
-        source_revision="0" * 40,
-        metric=_SEARCH_CONFIGURATION.metric,
-        threshold_stratum=_SEARCH_CONFIGURATION.threshold_label,
-        current_ef=400,
-        candidate_ef=_SEARCH_CONFIGURATION.ef,
-        last_known_good_ef=400,
-        candidate_search_configuration=_SEARCH_CONFIGURATION,
-        identity=_IDENTITY,
-        dataset002_manifest_sha256=_sha("dataset002"),
-        frozen_recall_audit_ids_sha256=_sha(",".join(str(i) for i in sorted(_FROZEN_IDS))),
-        eligible_workload_sha256=_sha("eligible-workload"),
-        candidate_selection_sha256=_sha("candidate-selection"),
-        execution_schedule_sha256=_sha("execution-schedule"),
-        recall_evidence_schema_version="recall-audit-hoeffding-1200-v1",
-        latency_evidence_schema_version="exp009-stage4-execution-schedule-v1",
-    )
+    fields: dict[str, object] = {
+        "run_id": "fake-producer-run",
+        "source_revision": "0" * 40,
+        "metric": _SEARCH_CONFIGURATION.metric,
+        "threshold_stratum": _SEARCH_CONFIGURATION.threshold_label,
+        "current_ef": 400,
+        "candidate_ef": _SEARCH_CONFIGURATION.ef,
+        "last_known_good_ef": 400,
+        "candidate_search_configuration": _SEARCH_CONFIGURATION,
+        "identity": _IDENTITY,
+        "dataset002_manifest_sha256": _sha("dataset002"),
+        "frozen_recall_audit_ids_sha256": _sha(",".join(str(i) for i in sorted(_FROZEN_IDS))),
+        "eligible_workload_sha256": _sha("eligible-workload"),
+        "candidate_selection_sha256": _sha("candidate-selection"),
+        "execution_schedule_sha256": _sha("execution-schedule"),
+        "recall_evidence_schema_version": "recall-audit-hoeffding-1200-v1",
+        "latency_evidence_schema_version": "exp009-stage4-execution-schedule-v1",
+    }
     fields.update(overrides)
     return Stage4EvidenceBinding(**fields)
 
@@ -482,7 +490,7 @@ class Stage4RecallAuditProducerRunTests(unittest.TestCase):
         ledger = self._ledger()
         client = FakeDeterministicRecallAuditClient(self.oracle_map)
         producer = self._producer(client=client, ledger=ledger)
-        first_id = sorted(_FROZEN_IDS)[0]
+        first_id = min(_FROZEN_IDS)
 
         self.assertIsNone(producer._process_one(first_id))
         self.assertIsNone(producer._process_one(first_id))
@@ -491,7 +499,7 @@ class Stage4RecallAuditProducerRunTests(unittest.TestCase):
 
     def test_reprocessing_an_already_present_query_with_conflicting_content_is_refused(self) -> None:
         ledger = self._ledger()
-        first_id = sorted(_FROZEN_IDS)[0]
+        first_id = min(_FROZEN_IDS)
         client_a = FakeDeterministicRecallAuditClient(self.oracle_map)
         client_b = FakeDeterministicRecallAuditClient(self.oracle_map, max_candidates_per_query=1)
         producer_a = self._producer(client=client_a, ledger=ledger)

@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 
 from vdbench.artifacts import sha256_file, write_dataset_artifacts
-from vdbench.canary_query_source import CanaryQuerySourceError, Dataset002CanaryQuerySource
+from vdbench.canary_query_source import (
+    CanaryQuerySourceError,
+    Dataset002CanaryQuerySource,
+)
 from vdbench.canary_workload import (
     WorkloadIdentityBinding,
     build_eligible_workload_manifest,
 )
 from vdbench.config import EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
 
 
 class Dataset002CanaryQuerySourceTests(unittest.TestCase):

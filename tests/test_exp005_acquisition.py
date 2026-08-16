@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from vdbench.actuation import ShadowActuationContext, ShadowResult
 from vdbench.config import IndexTrack, Metric
@@ -249,30 +249,34 @@ class Exp005AcquisitionTests(unittest.TestCase):
     def test_duplicate_or_non_200_query_ids_fail_before_any_shadow_call(self) -> None:
         baseline = self._baseline()
         adapter = _CaptureAdapter(baseline)
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(Exp005AcquisitionError, "QUERY_IDS"):
-                capture_stationary_replay(
-                    adapter=adapter,
-                    baseline=baseline,
-                    measured_query_ids=tuple(range(199)) + (198,),
-                    output_dir=Path(temporary) / "capture",
-                    capture_id="capture-001",
-                )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(Exp005AcquisitionError, "QUERY_IDS"),
+        ):
+            capture_stationary_replay(
+                adapter=adapter,
+                baseline=baseline,
+                measured_query_ids=tuple(range(199)) + (198,),
+                output_dir=Path(temporary) / "capture",
+                capture_id="capture-001",
+            )
         self.assertEqual(adapter.calls, [])
 
     def test_failed_shadow_stops_before_later_trace_or_actuation(self) -> None:
         baseline = self._baseline()
         adapter = _CaptureAdapter(baseline)
         adapter.fail_on_call = 1
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(Exp005AcquisitionError, "SHADOW_RESULT_FAILED"):
-                capture_stationary_replay(
-                    adapter=adapter,
-                    baseline=baseline,
-                    measured_query_ids=tuple(range(200)),
-                    output_dir=Path(temporary) / "capture",
-                    capture_id="capture-001",
-                )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            self.assertRaisesRegex(Exp005AcquisitionError, "SHADOW_RESULT_FAILED"),
+        ):
+            capture_stationary_replay(
+                adapter=adapter,
+                baseline=baseline,
+                measured_query_ids=tuple(range(200)),
+                output_dir=Path(temporary) / "capture",
+                capture_id="capture-001",
+            )
         self.assertEqual(len(adapter.calls), 1)
         self.assertEqual(adapter.forbidden_calls, [])
 

@@ -37,6 +37,7 @@ Scope:
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -45,9 +46,10 @@ from enum import StrEnum
 from .artifacts import canonical_json_bytes
 from .canary_recall_audit_ledger import RecallAuditObservation
 from .canary_stage4_evidence_binding import Stage4EvidenceBinding
-from .canary_statistics import EXP009_RECALL_AUDIT_COUNT, one_sided_hoeffding_recall_lower_bound
-import hashlib
-
+from .canary_statistics import (
+    EXP009_RECALL_AUDIT_COUNT,
+    one_sided_hoeffding_recall_lower_bound,
+)
 
 __all__ = [
     "RECALL_AUDIT_EVALUATOR_VERSION",

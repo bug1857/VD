@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
 import os
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
+import vdbench.response_profile_monitor_store as monitor_store_module
 from tests.test_response_profile_detector_head import _provenance
 from tests.test_workload_monitor import (
     DETECTOR_SEED,
@@ -18,15 +19,18 @@ from tests.test_workload_monitor import (
     _persist_events,
     _stream_key,
 )
-from vdbench.response_profile_detector_head import build_response_profile_detector_head
 from vdbench.drift import DetectorState, DriftClassification
+from vdbench.response_profile_detector_head import build_response_profile_detector_head
 from vdbench.response_profile_monitor_store import (
     ResponseProfileMonitorStateStore,
     ResponseProfileMonitorStoreError,
     VerifiedLatestResponseProfileDetectorHead,
 )
-import vdbench.response_profile_monitor_store as monitor_store_module
-from vdbench.workload_monitor import FileMonitorStateStore, MonitorStreamState, WorkloadMonitor
+from vdbench.workload_monitor import (
+    FileMonitorStateStore,
+    MonitorStreamState,
+    WorkloadMonitor,
+)
 
 
 class ResponseProfileMonitorStateStoreTests(unittest.TestCase):

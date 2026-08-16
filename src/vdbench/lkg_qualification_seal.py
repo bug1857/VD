@@ -47,27 +47,26 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from .artifacts import canonical_json_bytes
 from .config import ContractViolation
 from .lkg_run_binding import lkg_ordered_query_ids_sha256
 
-
 __all__ = [
-    "LkgSealCompletionState",
-    "LkgPositionStatus",
-    "LkgSealWorkloadIdentity",
-    "LkgPositionClassification",
-    "LkgRunSeal",
-    "SEAL_SCHEMA_VERSION",
     "SEAL_DOMAIN",
+    "SEAL_SCHEMA_VERSION",
+    "LkgPositionClassification",
+    "LkgPositionStatus",
+    "LkgRunSeal",
+    "LkgSealCompletionState",
+    "LkgSealWorkloadIdentity",
     "derive_completion_state",
-    "validate_seal_reason",
+    "lkg_run_seal_from_payload",
     "seal_payload_document",
     "seal_payload_document_digest",
-    "lkg_run_seal_from_payload",
+    "validate_seal_reason",
 ]
 
 
@@ -117,10 +116,10 @@ def _rfc3339_utc(value: object, *, field: str) -> str:
     if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ContractViolation(f"{field} must be RFC3339 UTC ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ContractViolation(f"{field} must be a valid RFC3339 UTC timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ContractViolation(f"{field} must use UTC")
     return value
 

@@ -15,19 +15,17 @@ Failure modes:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import fcntl
 import json
 import os
-from pathlib import Path
 import stat
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .config import Metric
 from .shadow_event_types import MonitorStreamKey
 from .workload_monitor import MonitorAuditRecord, MonitorAuditSink, MonitorRecordStatus
-
 
 __all__ = [
     "DuplicateMonitorAuditRecordError",

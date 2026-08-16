@@ -1,8 +1,8 @@
 import unittest
 
 from vdbench.config import (
-    HNSW_EF_SWEEP,
     EXP001_DATASET_SPEC,
+    HNSW_EF_SWEEP,
     ContractViolation,
     IndexTrack,
     Metric,

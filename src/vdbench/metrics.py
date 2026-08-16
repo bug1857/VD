@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 import math
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from statistics import mean, median, stdev
-from typing import Mapping, Sequence
 
 import numpy as np
 

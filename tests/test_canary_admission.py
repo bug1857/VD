@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, replace
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import fields, replace
+from pathlib import Path
 from unittest import mock
 
 from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
@@ -32,10 +32,17 @@ from vdbench.canary_workload import (
 )
 from vdbench.config import EXP001_DATASET_SPEC, IndexTrack, Metric, SearchConfiguration
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
 from vdbench.drift import build_evidence_provenance
 from vdbench.lkg_phase2_readiness_ledger import Phase2ReadinessLedger
-from vdbench.lkg_phase3_authority import LkgPhase3Authority, resolve_lkg_phase3_authority
+from vdbench.lkg_phase3_authority import (
+    LkgPhase3Authority,
+    resolve_lkg_phase3_authority,
+)
 from vdbench.lkg_phase3_persistence import (
     LkgPhase3AuthorityReferenceStore,
     PersistedLkgPhase3AuthorityReference,

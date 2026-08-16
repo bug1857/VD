@@ -52,16 +52,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .actuation import QueryId
-from .config import ContractViolation, Metric, THRESHOLD_LABELS
+from .config import THRESHOLD_LABELS, ContractViolation, Metric
 from .policy import ACTUATION_LADDER
-
 
 __all__ = [
     "LkgAttemptStatus",
-    "LkgQueryObservation",
     "LkgQueryAttempt",
-    "build_lkg_query_observation",
+    "LkgQueryObservation",
     "build_lkg_query_attempt",
+    "build_lkg_query_observation",
 ]
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")

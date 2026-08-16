@@ -9,15 +9,16 @@ from an explicit `serve(...)` call, which is the genuine-workload boundary.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-from vdbench.config import Metric
+from tests.test_shadow_extraction import _identity, _query
+from vdbench.config import IndexTrack, Metric
 from vdbench.drift import DetectorState
 from vdbench.exp010_live_runner import (
     Exp010LiveRunner,
@@ -27,16 +28,13 @@ from vdbench.exp010_live_runner import (
 )
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
 from vdbench.host_window_detector_v2 import HostWindowV2Status
-from vdbench.shadow_window import TRACE_QUERY_COUNT, WINDOW_QUERY_COUNT
+from vdbench.milvus_actuation import ShadowAuditTrace
+from vdbench.shadow_window import WINDOW_QUERY_COUNT
 from vdbench.v2_shadow_worker import V2ShadowWorkerError
 from vdbench.window_finalization import (
     WindowFinalizationPhase,
     restore_prepared_evaluation,
 )
-
-from vdbench.config import IndexTrack
-from vdbench.milvus_actuation import ShadowAuditTrace
-from tests.test_shadow_extraction import _identity, _query
 
 
 def _trace_for(sources, *, metric: Metric = Metric.L2) -> ShadowAuditTrace:
@@ -306,7 +304,7 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     consumer_id="probe", limit=WINDOW_QUERY_COUNT * 2
                 )
                 self.assertEqual(len(committed), WINDOW_QUERY_COUNT)
-                detector_event_count = harness.runner.composition.detector_store._db.execute(  # noqa: SLF001 - integration assertion
+                detector_event_count = harness.runner.composition.detector_store._db.execute(
                     "SELECT COUNT(*) FROM detector_events"
                 ).fetchone()[0]
                 self.assertEqual(detector_event_count, 0)
@@ -323,9 +321,8 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     harness.runner.composition.detector_store,
                     "process_window",
                     side_effect=RuntimeError("crash-before-detector"),
-                ):
-                    with self.assertRaises(RuntimeError):
-                        harness.runner.process_ready_windows()
+                ), self.assertRaises(RuntimeError):
+                    harness.runner.process_ready_windows()
                 self.assertEqual(
                     harness.runner.composition.finalization_store.pending().phase,
                     WindowFinalizationPhase.PREPARED,
@@ -355,9 +352,8 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     harness.runner.composition.finalization_store,
                     "prepare",
                     side_effect=RuntimeError("crash-before-prepared"),
-                ):
-                    with self.assertRaises(RuntimeError):
-                        harness.runner.process_ready_windows()
+                ), self.assertRaises(RuntimeError):
+                    harness.runner.process_ready_windows()
                 self.assertEqual(harness.shadow.calls, 4)
                 self.assertIsNone(
                     harness.runner.composition.finalization_store.pending()
@@ -397,9 +393,8 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     }[owner]
                     with patch.object(
                         target, method, side_effect=RuntimeError(label)
-                    ):
-                        with self.assertRaises(RuntimeError):
-                            harness.runner.process_ready_windows()
+                    ), self.assertRaises(RuntimeError):
+                        harness.runner.process_ready_windows()
                     self.assertEqual(harness.shadow.calls, 8)
                 finally:
                     harness.close()
@@ -412,10 +407,10 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                         recovered[0].status, HostWindowV2Status.EVALUATED
                     )
                     self.assertEqual(reopened.shadow.calls, 0)
-                    detector_count = reopened.runner.composition.detector_store._db.execute(  # noqa: SLF001
+                    detector_count = reopened.runner.composition.detector_store._db.execute(
                         "SELECT COUNT(*) FROM detector_events"
                     ).fetchone()[0]
-                    attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                    attestation_count = reopened.runner.composition.attestation_store._connection.execute(
                         "SELECT COUNT(*) FROM attestation_records"
                     ).fetchone()[0]
                     acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(
@@ -440,9 +435,8 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     harness.runner.composition.finalization_store,
                     "record_detector",
                     side_effect=RuntimeError("after-detector-before-coordinator"),
-                ):
-                    with self.assertRaises(RuntimeError):
-                        harness.runner.process_ready_windows()
+                ), self.assertRaises(RuntimeError):
+                    harness.runner.process_ready_windows()
                 harness.runner.composition.finalization_store.record_detector(
                     detector_event_sha256="f" * 64,
                     detector_head_sha256=None,
@@ -474,9 +468,8 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     harness.runner.composition.finalization_store,
                     "record_detector",
                     side_effect=RuntimeError("after-detector-before-journal"),
-                ):
-                    with self.assertRaises(RuntimeError):
-                        harness.runner.process_ready_windows()
+                ), self.assertRaises(RuntimeError):
+                    harness.runner.process_ready_windows()
                 persisted = harness.runner.composition.detector_store.load_persisted_window(1)
                 self.assertIsNotNone(persisted)
                 self.assertIsNotNone(persisted.result.detector_head)
@@ -506,7 +499,7 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     reopened.runner.composition.finalization_store.pending().phase,
                     WindowFinalizationPhase.DETECTOR_COMMITTED,
                 )
-                attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                attestation_count = reopened.runner.composition.attestation_store._connection.execute(
                     "SELECT COUNT(*) FROM attestation_records"
                 ).fetchone()[0]
                 acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(
@@ -527,7 +520,7 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                 harness.serve_many(WINDOW_QUERY_COUNT)
                 sources = harness.runner.composition.response_store.load_window(1)
                 self.assertIsNotNone(sources)
-                harness.runner._prepare_window(tuple(sources))  # noqa: SLF001
+                harness.runner._prepare_window(tuple(sources))
                 state = harness.runner.composition.finalization_store.pending()
                 self.assertEqual(state.phase, WindowFinalizationPhase.PREPARED)
                 restored = restore_prepared_evaluation(state.prepared)
@@ -540,7 +533,7 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                         "INJECTED_REASON_MISMATCH",
                     ),
                 )
-                bundle = harness.runner._load_bound_bundle(state.prepared)  # noqa: SLF001
+                bundle = harness.runner._load_bound_bundle(state.prepared)
                 harness.runner.composition.detector_store.process_window(
                     window=bundle.shadow_window,
                     evaluator=lambda _reference, _current: conflicting_decision,
@@ -575,7 +568,7 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                     reopened.runner.composition.finalization_store.pending().phase,
                     WindowFinalizationPhase.DETECTOR_COMMITTED,
                 )
-                attestation_count = reopened.runner.composition.attestation_store._connection.execute(  # noqa: SLF001
+                attestation_count = reopened.runner.composition.attestation_store._connection.execute(
                     "SELECT COUNT(*) FROM attestation_records"
                 ).fetchone()[0]
                 acknowledgement = reopened.runner.composition.response_store.consumer_acknowledgement_state(

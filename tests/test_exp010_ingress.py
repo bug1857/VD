@@ -10,10 +10,11 @@ external payload.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
+from tests.test_exp010_live_runner import DATA_IDENTITY, _ShadowCapture
 from vdbench.config import Metric
 from vdbench.exp010_ingress import (
     PAYLOAD_FIELDS,
@@ -39,8 +40,6 @@ from vdbench.host_window_lineage import (
     SQLiteHostResponseCommitStore,
 )
 from vdbench.shadow_event_types import MonitorStreamKey
-
-from tests.test_exp010_live_runner import _ShadowCapture, DATA_IDENTITY
 
 INGRESS_MODULE = Path(__file__).parents[1] / "src" / "vdbench" / "exp010_ingress.py"
 CONFIG_MODULE = (
@@ -476,7 +475,7 @@ class Exp010IngressTests(unittest.TestCase):
             finally:
                 try:
                     h.close()
-                except Exception:
+                except Exception:  # injected/external boundary is deliberately fail-closed  # noqa: BLE001,S110
                     pass
 
     def test_ingress_refuses_a_stream_whose_configuration_identity_differs(self) -> None:
@@ -544,6 +543,7 @@ class DurableUniquenessStoreTests(unittest.TestCase):
         """
 
         import sqlite3
+
         from vdbench.host_observation import CompletedRangeQueryObservation
         from vdbench.host_window_lineage import _SCHEMA_SQL
 
@@ -635,6 +635,7 @@ class DurableUniquenessStoreTests(unittest.TestCase):
         """An existing v1 database must fail closed, never be rewritten."""
 
         import sqlite3
+
         from vdbench.host_window_lineage import _DB_VERSION
 
         self.assertEqual(_DB_VERSION, 2)

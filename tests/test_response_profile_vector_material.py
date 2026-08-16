@@ -12,9 +12,10 @@ from __future__ import annotations
 import ast
 import base64
 import copy
-from pathlib import Path
 import unittest
+from pathlib import Path
 
+from tests.test_exp011_live_acquisition import _digest, _Fixture, _member
 from vdbench.config import Metric
 from vdbench.response_profile_evidence import (
     CALIBRATION_QUERY_COUNT,
@@ -46,8 +47,6 @@ from vdbench.response_profile_vector_material import (
     response_profile_run_binding_from_document,
     response_profile_vector_material_document,
 )
-
-from tests.test_exp011_live_acquisition import _Fixture, _digest, _member
 
 MODULE_PATH = (
     Path(__file__).parents[1] / "src" / "vdbench" / "response_profile_vector_material.py"

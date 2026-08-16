@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
-from typing import Any
 import unicodedata
-
+from dataclasses import asdict, dataclass, fields
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 __all__ = [
     "CanaryLifecycleAuditRecord", "JsonlCanaryLifecycleAuditSink",
@@ -57,7 +56,7 @@ _RECORD_FIELDS = frozenset(field.name for field in fields(CanaryLifecycleAuditRe
 
 def _text(value: object, field: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{field} is invalid")
+        raise ValueError(f"{field} is invalid")  # domain error type carries the governed reason code  # noqa: TRY004
     if not value or value != value.strip() or value != unicodedata.normalize("NFC", value):
         raise ValueError(f"{field} is invalid")
     if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
@@ -81,10 +80,10 @@ def _utc(value: object) -> str:
     if not isinstance(value, str) or _UTC.fullmatch(value) is None:
         raise ValueError("recorded_at_utc is invalid")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("recorded_at_utc is invalid") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise ValueError("recorded_at_utc is invalid")
     return value
 
@@ -98,7 +97,7 @@ def lifecycle_event_id(*, grant_id: str, signed_payload_sha256: str, plan_sha256
 
 def _validated(record: object) -> CanaryLifecycleAuditRecord:
     if not isinstance(record, CanaryLifecycleAuditRecord):
-        raise ValueError("record is invalid")
+        raise ValueError("record is invalid")  # domain error type carries the governed reason code  # noqa: TRY004
     event_type = _code(record.event_type, "event_type")
     grant_id = _text(record.grant_id, "grant_id")
     payload = _sha(record.signed_payload_sha256, "signed_payload_sha256")

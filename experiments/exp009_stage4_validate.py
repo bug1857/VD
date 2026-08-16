@@ -7,27 +7,26 @@ approval/grant, activation, or route-authority runtime and issues no query.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from vdbench.artifacts import git_state, sha256_file
-
 
 __all__ = [
     "LIVE_ROOT_VALIDATION_SPEC",
     "RUNTIME_PROBE_VALIDATION_SPEC",
     "STAGE4_SUITE_FILENAMES",
-    "Stage4ValidationSpec",
     "Exp009Stage4ValidationError",
+    "Stage4ValidationSpec",
     "run_validation",
     "verify_validation_bundle",
 ]
@@ -465,7 +464,7 @@ def run_validation(
     manifest: dict[str, object] = {
         "schema_version": spec.manifest_schema_version, "experiment_id": "EXP-009", "stage": 4,
         "validation_status": status, "execution_mode": spec.execution_mode,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "git": {"commit": commit, "dirty": False}, "python": sys.version,
         "platform": platform.platform(), "architecture": platform.machine(),
         "input_sha256": {"requirements.lock": sha256_file(lock), **source_hashes},

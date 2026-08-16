@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields
 import hashlib
-from pathlib import Path
 import unittest
+from dataclasses import fields
+from pathlib import Path
 
 import numpy as np
 
@@ -34,7 +34,6 @@ from vdbench.response_profile_lifecycle import (
     RUN_BINDING_HASH_DOMAIN,
     RUN_BINDING_SCHEMA_VERSION,
     LifecycleEventKind,
-    OpaqueEvidenceBlob,
     OpaqueEvidenceRole,
     ResponseProfileLifecycleContractError,
     ResponseProfileLifecycleEvent,
@@ -52,7 +51,6 @@ from vdbench.response_profile_lifecycle import (
     verify_response_profile_lifecycle_event,
     verify_response_profile_run_binding,
 )
-
 
 GOLDEN_RUN_BINDING_SHA256 = "a2909714634e909ab41560ca7b7c1fa5ccbdc8b9265488d4e63fb37bb79c1f85"
 GOLDEN_WARMUP_BLOB_SHA256 = "e7e612d169f7553ac29c1f9c32803f501a392c93b5ff3f3f019b07ab84732cc5"
@@ -1056,13 +1054,13 @@ class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
         spurious = chain.blob(OpaqueEvidenceRole.WARMUP_EXECUTION, b"spurious")
 
         state = initial_lifecycle_reducer_state(self.binding)
-        before = dict(
-            event_count=state.event_count,
-            last_event_sha256=state.last_event_sha256,
-            current_epoch_index=state.current_epoch_index,
-            seen_epoch_indexes=frozenset(state.seen_epoch_indexes),
-            referenced_blob_digests=frozenset(state.referenced_blob_digests),
-        )
+        before = {
+            "event_count": state.event_count,
+            "last_event_sha256": state.last_event_sha256,
+            "current_epoch_index": state.current_epoch_index,
+            "seen_epoch_indexes": frozenset(state.seen_epoch_indexes),
+            "referenced_blob_digests": frozenset(state.referenced_blob_digests),
+        }
 
         rejected = apply_next_lifecycle_event(
             run_binding=self.binding,
@@ -1104,11 +1102,11 @@ class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
         # other transition rule -- exactly what this test targets.
         chain = self._ready_chain_for_incremental()
         state, _ = self._replay_incrementally(chain)
-        before = dict(
-            event_count=state.event_count,
-            last_event_sha256=state.last_event_sha256,
-            run_sealed_event_count=state.run_sealed_event_count,
-        )
+        before = {
+            "event_count": state.event_count,
+            "last_event_sha256": state.last_event_sha256,
+            "run_sealed_event_count": state.run_sealed_event_count,
+        }
 
         wrong_seq_chain = _Chain(self.binding)
         wrong_seq_chain.events.extend(chain.events)
@@ -1190,7 +1188,7 @@ class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
             with self.subTest(foreign=type(foreign)):
                 _assert_contract_error(
                     self,
-                    lambda: apply_next_lifecycle_event(
+                    lambda foreign=foreign: apply_next_lifecycle_event(
                         run_binding=self.binding,
                         reducer_state=foreign,
                         event=event,
@@ -1206,8 +1204,8 @@ class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
         orphan_chain = self._ready_chain_for_incremental()
         orphan_chain.block_start(0, 0)
         orphan_chain.measurement_start(0, 0, 0)
-        state, last = self._replay_incrementally(orphan_chain)
-        recovery_snapshot = apply_next_lifecycle_event(
+        state, _last = self._replay_incrementally(orphan_chain)
+        apply_next_lifecycle_event(
             run_binding=self.binding,
             reducer_state=state,
             event=orphan_chain.events[-1],
@@ -1225,7 +1223,7 @@ class IncrementalWriterEquivalenceTests(ResponseProfileLifecycleFixture):
         partial_chain.block_start(0, 0)
         started = partial_chain.measurement_start(0, 0, 0)
         partial_chain.measurement_complete(started)
-        partial_state, _ = self._replay_incrementally(partial_chain)
+        _partial_state, _ = self._replay_incrementally(partial_chain)
         full_partial_recovery = partial_chain.reduce(recovery=True)
         self.assertTrue(full_partial_recovery.mechanically_invalid)
         self.assertIn("PARTIAL_MEASURED_BLOCK", full_partial_recovery.reason_codes)

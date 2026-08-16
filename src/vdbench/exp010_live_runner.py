@@ -28,19 +28,19 @@ Authority:
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import hashlib
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Self
 
 from .artifacts import canonical_json_bytes
 from .config import Metric
 from .drift import DetectorState
-from .exp010_v2_host import Exp010V2HostComposition, SHADOW_CONSUMER_ID
+from .exp010_v2_host import SHADOW_CONSUMER_ID, Exp010V2HostComposition
 from .host_observation import RangeQueryRequest
 from .host_window_detector_v2 import HostWindowV2Status
-from .host_window_lineage import V2GenuineWorkloadObservationSource, V2VisibleResponse
+from .host_window_lineage import V2VisibleResponse
 from .monitor_evidence import encode_persisted_window_evidence
 from .real_detector_attestation_store import VerifiedRealDetectorHead
 from .response_profile_v2_capture import capture_real_v2_post_trigger_population
@@ -52,14 +52,13 @@ from .window_finalization import (
     restore_prepared_evaluation,
 )
 
-
 __all__ = [
     "ENVIRONMENT_IDENTITY_SCHEMA_VERSION",
+    "Exp010LiveRunner",
     "Exp010LiveRunnerError",
     "Exp010OperatorConfiguration",
-    "Exp010WindowResult",
     "Exp010TriggerState",
-    "Exp010LiveRunner",
+    "Exp010WindowResult",
     "build_environment_manifest_sha256",
 ]
 
@@ -695,7 +694,7 @@ class Exp010LiveRunner:
         self._closed = True
         self.composition.close()
 
-    def __enter__(self) -> "Exp010LiveRunner":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

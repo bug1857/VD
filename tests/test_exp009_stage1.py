@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from vdbench.artifacts import canonical_json_bytes, sha256_file, write_dataset_artifacts
-from vdbench.config import EXP001_DATASET_SPEC, IndexTrack, Metric
+from vdbench.config import EXP001_DATASET_SPEC, Metric
 from vdbench.dataset import boundary_fixtures, calibrate_thresholds, generate_dataset
-from vdbench.dataset002 import Dataset002Spec, generate_dataset002, write_dataset002_artifacts
-from vdbench.exp005_acquisition import capture_identity_baseline, persist_identity_baseline
+from vdbench.dataset002 import (
+    Dataset002Spec,
+    generate_dataset002,
+    write_dataset002_artifacts,
+)
+from vdbench.exp005_acquisition import (
+    capture_identity_baseline,
+    persist_identity_baseline,
+)
 from vdbench.exp009_stage1 import (
     Exp009Stage1Error,
     _load_canonical_json,
@@ -22,7 +29,6 @@ from vdbench.exp009_stage1 import (
     run_stage1,
     verify_stage1_bundle,
 )
-from vdbench.milvus import CollectionIdentity
 
 
 class _BaselineClient:
@@ -200,16 +206,15 @@ class Exp009Stage1Tests(unittest.TestCase):
             with patch(
                 "vdbench.exp009_stage1.assert_clean_committed_source",
                 return_value="a" * 40,
-            ):
-                with self.assertRaisesRegex(Exp009Stage1Error, "TRANSITION"):
-                    run_stage1(
-                        repository=Path.cwd(),
-                        dataset001_dir=self.dataset001,
-                        dataset002_dir=self.dataset002,
-                        baseline_path=baseline_path,
-                        output_dir=root / "stage1",
-                        clock=lambda: "2026-08-04T12:00:00Z",
-                    )
+            ), self.assertRaisesRegex(Exp009Stage1Error, "TRANSITION"):
+                run_stage1(
+                    repository=Path.cwd(),
+                    dataset001_dir=self.dataset001,
+                    dataset002_dir=self.dataset002,
+                    baseline_path=baseline_path,
+                    output_dir=root / "stage1",
+                    clock=lambda: "2026-08-04T12:00:00Z",
+                )
 
     def test_runner_refuses_to_overwrite_an_existing_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -218,16 +223,15 @@ class Exp009Stage1Tests(unittest.TestCase):
             with patch(
                 "vdbench.exp009_stage1.assert_clean_committed_source",
                 return_value="a" * 40,
-            ):
-                with self.assertRaises(FileExistsError):
-                    run_stage1(
-                        repository=Path.cwd(),
-                        dataset001_dir=self.dataset001,
-                        dataset002_dir=self.dataset002,
-                        baseline_path=self.baseline_path,
-                        output_dir=target,
-                        clock=lambda: "2026-08-04T12:00:00Z",
-                    )
+            ), self.assertRaises(FileExistsError):
+                run_stage1(
+                    repository=Path.cwd(),
+                    dataset001_dir=self.dataset001,
+                    dataset002_dir=self.dataset002,
+                    baseline_path=self.baseline_path,
+                    output_dir=target,
+                    clock=lambda: "2026-08-04T12:00:00Z",
+                )
 
     def test_clean_source_guard_rejects_modified_or_untracked_relevant_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

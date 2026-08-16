@@ -22,11 +22,11 @@ Failure modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 import hashlib
 import math
 import re
+from dataclasses import dataclass
+from enum import StrEnum
 
 from .artifacts import canonical_json_bytes
 from .canary_routing import CanaryRouteKind, CanaryRoutePlan, RouteOccurrence
@@ -40,8 +40,13 @@ from .canary_workload import (
     EligibleWorkloadManifest,
     ScheduleControl,
 )
-from .config import ContractViolation, HNSW_EF_SWEEP, Metric, RESULT_LIMIT, THRESHOLD_LABELS
-
+from .config import (
+    HNSW_EF_SWEEP,
+    RESULT_LIMIT,
+    THRESHOLD_LABELS,
+    ContractViolation,
+    Metric,
+)
 
 __all__ = [
     "CanaryRouteKind",
@@ -252,7 +257,7 @@ def _validate_manifest_and_plan(
     plan: object,
 ) -> None:
     if not isinstance(manifest, EligibleWorkloadManifest) or not isinstance(plan, CanaryRoutePlan):
-        raise ValueError("SCHEDULE_INPUT_INVALID")
+        raise ValueError("SCHEDULE_INPUT_INVALID")  # domain error type carries the governed reason code  # noqa: TRY004
     try:
         manifest.validate()
     except (ContractViolation, TypeError, ValueError) as exc:
