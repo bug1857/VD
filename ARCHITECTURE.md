@@ -4959,6 +4959,188 @@ runtime semantics.
 
 ---
 
+### ADR-018: Committed Gate-B live ingress operator, V5 retirement, and the end of operator-side hosting glue
+
+#### Status
+
+Accepted.
+
+#### Context
+
+ADR-016 established that Gate B's genuine ingress is
+`exp010_ingress.Exp010RequestIngress.admit` onto `Exp010LiveRunner.serve`, and
+ADR-017 committed the Gate-A operator. Both gates then had a committed operator
+entrypoint with a `main()`. **Gate B did not.**
+
+The committed repository supplied only the ingress *boundary* — the
+`Exp010RequestIngress` class and the optional `Exp010StdlibSearchHandler`
+adapter. Nothing committed ever *hosted* that boundary: constructing
+`Exp010LiveRunner` with a real serving executor, opening the durable stores at
+the campaign root, pinning the governed identities, and binding an HTTP port.
+Every historical Gate-B campaign (V1–V4) was therefore driven by ad-hoc,
+unpersisted operator-side glue, exactly the reproducibility gap ADR-016 closed
+for Gate C. The V4 run receipt records only its symptom: an endpoint on
+`127.0.0.1:59051` belonging to no committed module.
+
+This was discovered when V5 reached Gate B. V5's Gate A completed and verified,
+but there was no canonical path to ingest its 600 genuine source records, and
+two operands the runner requires — `detector_seed`, plus the store and output
+locations — had no committed derivation for a Gate-B host.
+
+#### Decision
+
+**1. `vdbench.exp010_gate_b_operator` is the canonical Gate-B operator.** It is
+the committed, reproducible host for genuine external ingress. Like the Gate-C
+operator it is deliberately the *smallest* auditable one: it invents no runner,
+no ingress, no sequencing protocol, and no serving path, composing only
+`Exp010LiveRunner`, `Exp010RequestIngress`, `Exp010StdlibSearchHandler`,
+`MilvusRangeServingExecutor`, `DockerSocketHealthProbe`, the existing durable
+stores, and a stdlib `HTTPServer`.
+
+**2. Authority is inherited from Gate A, never typed.** The operator requires a
+campaign root whose Gate-A evidence passes `load_verified_gate_a_evidence`, and
+takes every governed identity from `derive_downstream_authority`: stream id,
+metric, stratum, radius, range filter, limit, served ef, dimensions,
+consistency level, configuration identity, both binding ids, source revision,
+environment digest, Milvus URI, both collection names, and the dataset
+directory. Deployment identity and data identity come from the verified evidence
+document. The serving identity is re-derived and must equal what Gate A bound.
+**No governed identity appears in the operand file at all**, so an operator
+cannot host a campaign under an identity no Gate A attested — a stronger
+position than Gate C's cross-check, which still accepts them as operands.
+
+**3. The operand set is closed and deliberately tiny — seven keys.**
+`campaign_root`, `detector_seed`, `host_address`, `host_port`,
+`target_source_records`, `etcd_container`, `minio_container`. A missing or
+unexpected key is refused, never defaulted.
+
+**4. `detector_seed` remains a mandatory explicit operator decision.** It is
+governed by the detector-contract domain, is deliberately excluded from
+`configuration_identity` (ADR item: serving semantics only), and is frozen per
+campaign. Gate A does not attest it and is not asked to. There is no default and
+no inference, exactly as in the Gate-C operand contract. A new campaign requires
+a new explicit operator decision; nothing here claims V1–V5 bound a future
+campaign's value.
+
+**5. `store_root` and `exp010_output_dir` are derived, not operands.** They are
+`<campaign_root>/stores` and `<campaign_root>/output`, the layout every
+historical campaign already used and the exact inverse of Gate C's
+`store_root.parent` derivation. Exposing them as free-form input would add
+operator degrees of freedom with no safe use.
+
+**6. Gate separation is structural, not documentary.** `process_ready_windows`
+is never called or imported, so Gate C/D progression is unreachable from this
+entrypoint. Additionally the composition is built with a **refusing**
+shadow-capture executor, so a Gate-C physical shadow search is impossible here
+even under a future defect: the executor raises. This mirrors Gate C, which
+injects a refusing *serving* executor for the same reason.
+
+**7. The operator generates nothing.** No vector sampler, no random source, no
+dataset or historical replay, no benchmark generator. It never constructs a
+`query_vector`. Tests assert this over the module AST rather than its text, so a
+generator cannot be added without failing the suite. The external application
+remains the sole origin of genuine requests.
+
+**8. Preflight is side-effect free with respect to Gate-B campaign state.** It
+verifies authority, campaign state, the store set, the endpoint's bindability,
+and the resolved plan, then prints it with a `plan_sha256`. It creates no store,
+binds no listening server, and issues zero searches and zero `serve()` calls.
+Because Gate B is the *first* writer, absent stores are the correct fresh state;
+the composition is opened only when the stores already exist, so inspecting a
+campaign cannot bring one into being.
+
+**9. Execute requires a second explicit operator action.** `--mode execute
+--confirm-gate-b-ingress`. Execute re-runs the entire preflight first, binds
+**loopback only**, and serves genuine external requests through the committed
+ingress until the governed target is durable.
+
+**10. Sequencing is the store's, not the host's.** `source_sequence` is
+allocated by `commit_response` as the durable membership length, so the host
+never invents a sequencing protocol and a duplicate request id is refused by the
+store (`HOST_SOURCE_QUERY_ID_DUPLICATE`). The governed target is 600 records —
+three complete 200-source windows — and a target that is not a whole multiple of
+`WINDOW_QUERY_COUNT` is refused.
+
+**11. Restart is reopen, never repair.** An existing complete store set is
+reopened and its durable bindings verified against inherited authority. A
+*partially* present store set is ambiguous and is refused
+(`GATE_B_STORE_SET_INCOMPLETE`) rather than repaired; nothing is deleted or
+reset to recover from uncertainty, no replay path exists, and durable counts
+above the governed target fail closed. STARTED/ambiguous semantics elsewhere are
+untouched, and no physical exactly-once claim is made or implied.
+
+**12. V5 is retired, truthfully.** V5's authoritative historical state is:
+**Gate A COMPLETE** (evidence `bbf0c69a…bee40`, environment manifest
+`e12f46dd…84b`), **Gate B NEVER STARTED**, **Gate C NEVER STARTED**, **zero
+searches**, zero source records, zero attempts, zero acknowledgements, zero
+detector events, zero attestations, zero finalization events. It is retired **not**
+because anything failed or drifted, but because no committed canonical Gate-B
+live host existed to ingest its sources. V5 evidence is not modified to encode
+this decision; this ADR records it. There is no V5 Gate B, no V5 Gate C, and no
+repair or reuse of the V5 root.
+
+**13. This operator governs nothing retroactively.** It did not exist during
+V1–V5 and makes no claim about how those campaigns were hosted beyond the fact
+recorded here: V1–V4 Gate-B hosting relied on uncommitted operator-side glue,
+and V5 never reached Gate B at all. Historical evidence is unchanged.
+
+#### Command contract
+
+Preflight — creates no store, accepts no request, issues zero searches:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_b_operator \
+--operands /path/to/gate_b_operands.json \
+--mode preflight
+```
+
+Execute — hosts genuine external ingress until the governed target is durable:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python -m vdbench.exp010_gate_b_operator \
+--operands /path/to/gate_b_operands.json \
+--mode execute \
+--confirm-gate-b-ingress
+```
+
+The operand file's exact closed key set is `exp010_gate_b_operator.
+OPERAND_FIELDS`.
+
+#### Consequences
+
+Gate B becomes provable from the repository rather than reconstructed from a
+session, closing the last gate that depended on unpersisted glue. All three
+live gates — A, B, C — now have committed operators with preflight/execute
+separation and explicit confirmation flags. The ingress boundary, the runner,
+the source-event schema, the window semantics, the detector contract, and every
+storage schema are unchanged; this ADR is additive. No scientific or statistical
+contract is affected, because Gate B ingests genuine requests and measures
+nothing.
+
+A future campaign needs a fresh Gate A, a new explicit `detector_seed`, and this
+operator for Gate B.
+
+#### Verification requirements
+
+Offline tests must prove: Gate-A evidence is required, and malformed,
+substituted, and non-COMPLETE evidence each fail closed; no governed identity is
+accepted as an operand; the operand set is closed and `detector_seed` is
+mandatory and type-checked; store and output paths are derived; a non-loopback
+address and a non-whole-window target are refused; preflight creates no store,
+writes nothing, accepts no request, and never reaches the hosting seam; execute
+requires the confirmation flag; the plan digest is load-bearing; the
+shadow-capture and preflight-serving executors refuse; and the module's AST
+contains no call to `process_ready_windows`, `trigger_state`, or
+`capture_exp010_population` and no import of a random source or sampler.
+
+Focused verification plus one full-suite run is sufficient: this change is
+additive and alters no shared runtime semantics, but it defines the next live
+source freeze.
+
+---
+
 ## BACKEND COMPATIBILITY MATRIX
 
 | Backend | Index types | Distance metrics | Filter support | Update/delete | Persistence | GPU | Limitations | Implementation status | Benchmark status |
