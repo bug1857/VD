@@ -18,16 +18,28 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vdbench.canonical_serialization import (
+    strict_canonical_digest,
+    strict_canonical_json_bytes,
+)
 from vdbench.config import INDEX_NAME, Metric
 from vdbench.exp010_gate_a_operator import (
+    CAMPAIGN_ABSENT,
+    CAMPAIGN_COMPLETE,
+    CAMPAIGN_FOREIGN,
+    CAMPAIGN_INCOMPLETE,
     GATE_A_EVIDENCE_FILENAME,
     GATE_A_EVIDENCE_SUBDIRECTORY,
+    GATE_A_INCOMPLETE_MARKER,
     OPERAND_FIELDS,
     Exp010GateAOperatorError,
     build_gate_a_evidence,
     build_gate_a_plan,
+    derive_downstream_authority,
     initialize_v5_campaign,
+    inspect_campaign_state,
     load_operands,
+    load_verified_gate_a_evidence,
     main,
     observe_environment,
 )
@@ -537,19 +549,20 @@ class GateAInitializationTests(unittest.TestCase):
             raised.exception.code, "GATE_A_CAMPAIGN_ALREADY_INITIALIZED"
         )
 
-    def test_a_partial_campaign_never_masquerades_as_a_pass(self) -> None:
+    def test_a_bare_root_never_masquerades_as_a_pass(self) -> None:
         """An existing root without complete evidence is an error, never PASS."""
 
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             operands, observation = self._prepare(root)
             operands.campaign_root.mkdir()  # a bare, evidence-less root
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_FOREIGN
+            )
             with self.assertRaises(Exp010GateAOperatorError) as raised:
                 initialize_v5_campaign(operands, observation)
             self.assertFalse(operands.evidence_path.exists())
-        self.assertEqual(
-            raised.exception.code, "GATE_A_CAMPAIGN_ALREADY_INITIALIZED"
-        )
+        self.assertEqual(raised.exception.code, "GATE_A_CAMPAIGN_PATH_OCCUPIED")
 
     def test_atomic_publish_failure_leaves_no_campaign_root(self) -> None:
         def failing_publish(source: Path, target: Path) -> None:
@@ -583,9 +596,7 @@ class GateAInitializationTests(unittest.TestCase):
             self.assertEqual(
                 sorted(entry.name for entry in decoy.iterdir()), []
             )
-        self.assertEqual(
-            raised.exception.code, "GATE_A_CAMPAIGN_ALREADY_INITIALIZED"
-        )
+        self.assertEqual(raised.exception.code, "GATE_A_CAMPAIGN_PATH_OCCUPIED")
 
     def test_no_historical_campaign_path_can_be_targeted(self) -> None:
         """V1-V4 roots already exist, so every one of them is refused."""
@@ -601,7 +612,7 @@ class GateAInitializationTests(unittest.TestCase):
                 with self.assertRaises(Exp010GateAOperatorError) as raised:
                     initialize_v5_campaign(operands, observation)
                 self.assertEqual(
-                    raised.exception.code, "GATE_A_CAMPAIGN_ALREADY_INITIALIZED"
+                    raised.exception.code, "GATE_A_CAMPAIGN_PATH_OCCUPIED"
                 )
                 self.assertEqual(marker.read_bytes(), b"historical")
 
@@ -742,6 +753,697 @@ class GateBGateCCompatibilityTests(unittest.TestCase):
             with self.assertRaises(Exp010GateCOperatorError) as raised:
                 _require_initialized_stores(operands.campaign_root / "stores")
         self.assertEqual(raised.exception.code, "GATE_C_STORE_ROOT_MISSING")
+
+
+class GateATocTouTests(unittest.TestCase):
+    """Adversarial cover for the reservation window.
+
+    `_race_hook` fires after the advisory pre-check and before the exclusive
+    `os.mkdir`, so each test creates the hostile target inside exactly the
+    window a check-then-rename design would have lost.
+    """
+
+    def _prepare(self, root: Path):
+        operands = load_operands(
+            _write_operands(root, _operand_values(root / "v5"))
+        )
+        return operands, _observe(operands)
+
+    def _expect_refusal(self, root: Path, plant, expected: str):
+        operands, observation = self._prepare(root)
+        with self.assertRaises(Exp010GateAOperatorError) as raised:
+            initialize_v5_campaign(
+                operands,
+                observation,
+                _race_hook=lambda: plant(operands.campaign_root),
+            )
+        self.assertEqual(raised.exception.code, expected)
+        return operands
+
+    def test_empty_target_appearing_in_the_window_is_not_replaced(self) -> None:
+        """The exact case a bare rename would have silently destroyed.
+
+        Also proves the window was genuinely open: the state observed at the
+        moment the hook fires is ABSENT, so the pre-check had already passed and
+        the refusal can only have come from the exclusive `mkdir`.
+        """
+
+        seen: list[str] = []
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+
+            def plant() -> None:
+                seen.append(inspect_campaign_state(operands.campaign_root))
+                operands.campaign_root.mkdir()
+
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                initialize_v5_campaign(operands, observation, _race_hook=plant)
+
+            self.assertEqual(seen, [CAMPAIGN_ABSENT])  # pre-check had passed
+            self.assertEqual(
+                raised.exception.code, "GATE_A_CAMPAIGN_PATH_OCCUPIED"
+            )
+            # The foreign directory survives, unmodified and still empty.
+            self.assertTrue(operands.campaign_root.is_dir())
+            self.assertEqual(list(operands.campaign_root.iterdir()), [])
+            self.assertFalse(operands.evidence_path.exists())
+
+    def test_nonempty_target_appearing_in_the_window_is_untouched(self) -> None:
+        def plant(target: Path) -> None:
+            target.mkdir()
+            (target / "foreign.txt").write_text("do not destroy", encoding="utf-8")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands = self._expect_refusal(
+                root, plant, "GATE_A_CAMPAIGN_PATH_OCCUPIED"
+            )
+            self.assertEqual(
+                (operands.campaign_root / "foreign.txt").read_text(encoding="utf-8"),
+                "do not destroy",
+            )
+
+    def test_symlink_target_appearing_in_the_window_is_not_followed(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            decoy = root / "decoy"
+            decoy.mkdir()
+            operands = self._expect_refusal(
+                root,
+                lambda target: target.symlink_to(decoy, target_is_directory=True),
+                "GATE_A_CAMPAIGN_PATH_OCCUPIED",
+            )
+            self.assertTrue(operands.campaign_root.is_symlink())
+            self.assertEqual(list(decoy.iterdir()), [])
+
+    def test_dangling_symlink_in_the_window_is_refused(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._expect_refusal(
+                root,
+                lambda target: target.symlink_to(root / "nowhere"),
+                "GATE_A_CAMPAIGN_PATH_OCCUPIED",
+            )
+
+    def test_regular_file_in_the_window_is_refused(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands = self._expect_refusal(
+                root,
+                lambda target: target.write_text("occupied", encoding="utf-8"),
+                "GATE_A_CAMPAIGN_PATH_OCCUPIED",
+            )
+            self.assertEqual(
+                operands.campaign_root.read_text(encoding="utf-8"), "occupied"
+            )
+
+    def test_concurrent_initializers_produce_exactly_one_winner(self) -> None:
+        """Genuinely threaded, not simulated: only one mkdir can succeed."""
+
+        import threading
+
+        workers = 8
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            barrier = threading.Barrier(workers)
+            outcomes: list[object] = []
+            lock = threading.Lock()
+
+            def attempt() -> None:
+                barrier.wait()
+                try:
+                    initialize_v5_campaign(operands, observation)
+                    result: object = "WON"
+                except Exp010GateAOperatorError as exc:
+                    result = exc.code
+                with lock:
+                    outcomes.append(result)
+
+            threads = [threading.Thread(target=attempt) for _ in range(workers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(outcomes.count("WON"), 1, outcomes)
+            self.assertEqual(len(outcomes), workers)
+            # Every loser refused; none silently succeeded or corrupted state.
+            for outcome in outcomes:
+                self.assertIn(
+                    outcome,
+                    {
+                        "WON",
+                        "GATE_A_CAMPAIGN_ALREADY_INITIALIZED",
+                        "GATE_A_CAMPAIGN_INCOMPLETE",
+                        "GATE_A_CAMPAIGN_PATH_OCCUPIED",
+                    },
+                )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_COMPLETE
+            )
+            stored = json.loads(operands.evidence_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                stored["environment_manifest_sha256"],
+                observation.environment_manifest_sha256,
+            )
+            self.assertFalse(
+                (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).exists()
+            )
+
+    def test_failure_after_reservation_releases_the_reservation(self) -> None:
+        """A clean failure returns the path to ABSENT, not INCOMPLETE."""
+
+        def failing_publish(source: Path, target: Path) -> None:
+            raise OSError("simulated publish failure")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                initialize_v5_campaign(
+                    operands, observation, _publish=failing_publish
+                )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_ABSENT
+            )
+            self.assertFalse(operands.campaign_root.exists())
+            self.assertEqual(
+                sorted(entry.name for entry in root.iterdir()),
+                ["gate_a_operands.json"],
+            )
+        self.assertEqual(raised.exception.code, "GATE_A_CAMPAIGN_WRITE_FAILED")
+
+    def test_a_crash_left_reservation_is_incomplete_and_never_a_pass(self) -> None:
+        """The durable state a real crash between reserve and commit leaves."""
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            # Reconstruct the on-disk crash state directly.
+            operands.campaign_root.mkdir(mode=0o700)
+            (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).write_text(
+                "{}", encoding="utf-8"
+            )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_INCOMPLETE
+            )
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                initialize_v5_campaign(operands, observation)
+            # Refused, and never repaired, reused, or removed by the operator.
+            self.assertTrue(
+                (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).exists()
+            )
+            self.assertFalse(operands.evidence_path.exists())
+        self.assertEqual(raised.exception.code, "GATE_A_CAMPAIGN_INCOMPLETE")
+
+    def test_evidence_present_but_uncommitted_is_still_incomplete(self) -> None:
+        """Conservative direction: the marker outranks present evidence."""
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            initialize_v5_campaign(operands, observation)
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_COMPLETE
+            )
+            # Re-introduce the marker: a crash between publish and commit.
+            (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).write_text(
+                "{}", encoding="utf-8"
+            )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_INCOMPLETE
+            )
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                initialize_v5_campaign(operands, observation)
+        self.assertEqual(raised.exception.code, "GATE_A_CAMPAIGN_INCOMPLETE")
+
+    def test_a_completed_root_can_never_be_overwritten_or_rebound(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            initialize_v5_campaign(operands, observation)
+            original = operands.evidence_path.read_bytes()
+
+            # A later run, even one racing into the window, changes nothing.
+            for hook in (None, lambda: None):
+                with self.assertRaises(Exp010GateAOperatorError) as raised:
+                    initialize_v5_campaign(
+                        operands, observation, _race_hook=hook
+                    )
+                self.assertEqual(
+                    raised.exception.code, "GATE_A_CAMPAIGN_ALREADY_INITIALIZED"
+                )
+            self.assertEqual(operands.evidence_path.read_bytes(), original)
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_COMPLETE
+            )
+
+    def test_preflight_reports_the_campaign_state_without_touching_it(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            plan = build_gate_a_plan(operands, observation)
+            self.assertEqual(plan["campaign_state"], CAMPAIGN_ABSENT)
+            self.assertFalse(operands.campaign_root.exists())
+
+
+class GateANestedRaceTests(unittest.TestCase):
+    """Same-UID adversary inside the reserved root.
+
+    `mode=0o700` excludes other users but grants everything to any process
+    sharing this UID, so the evidence directory and the manifest must be created
+    with primitives that refuse to replace. `_nested_race_hook` fires inside the
+    reservation, after the root is ours and before each nested name is created.
+    """
+
+    def _prepare(self, root: Path):
+        operands = load_operands(
+            _write_operands(root, _operand_values(root / "v5"))
+        )
+        return operands, _observe(operands)
+
+    def _race(self, root: Path, stage: str, plant):
+        operands, observation = self._prepare(root)
+
+        def hook(current: str) -> None:
+            if current == stage:
+                plant(operands)
+
+        with self.assertRaises(Exp010GateAOperatorError) as raised:
+            initialize_v5_campaign(
+                operands, observation, _nested_race_hook=hook
+            )
+        return operands, raised.exception
+
+    def test_empty_gate_a_appearing_after_reservation_is_not_replaced(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, error = self._race(
+                root,
+                "before_evidence_directory",
+                lambda op: op.evidence_directory.mkdir(),
+            )
+            self.assertEqual(error.code, "GATE_A_EVIDENCE_PATH_OCCUPIED")
+            # The planted directory is neither adopted nor destroyed. Because
+            # foreign content remains, the marker is kept and the root stays
+            # INCOMPLETE for governed recovery rather than being cleared.
+            self.assertTrue(operands.evidence_directory.is_dir())
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_INCOMPLETE
+            )
+            self.assertFalse(operands.evidence_path.exists())
+
+    def test_nonempty_gate_a_appearing_after_reservation_is_untouched(self) -> None:
+        def plant(op) -> None:
+            op.evidence_directory.mkdir()
+            (op.evidence_directory / "foreign.txt").write_text(
+                "do not destroy", encoding="utf-8"
+            )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, error = self._race(root, "before_evidence_directory", plant)
+            self.assertEqual(error.code, "GATE_A_EVIDENCE_PATH_OCCUPIED")
+            self.assertFalse(operands.evidence_path.exists())
+
+    def test_symlinked_gate_a_appearing_after_reservation_is_not_followed(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            decoy = root / "decoy"
+            decoy.mkdir()
+            _, error = self._race(
+                root,
+                "before_evidence_directory",
+                lambda op: op.evidence_directory.symlink_to(
+                    decoy, target_is_directory=True
+                ),
+            )
+            self.assertEqual(error.code, "GATE_A_EVIDENCE_PATH_OCCUPIED")
+            # Nothing was written through the symlink into the decoy.
+            self.assertEqual(list(decoy.iterdir()), [])
+
+    def test_manifest_path_already_existing_is_never_overwritten(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, error = self._race(
+                root,
+                "before_manifest_link",
+                lambda op: op.evidence_path.write_text(
+                    "pre-existing", encoding="utf-8"
+                ),
+            )
+            self.assertEqual(error.code, "GATE_A_EVIDENCE_PATH_OCCUPIED")
+            # The pre-existing manifest survives byte-identical, so the root
+            # keeps its marker and stays INCOMPLETE.
+            self.assertEqual(
+                operands.evidence_path.read_text(encoding="utf-8"), "pre-existing"
+            )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_INCOMPLETE
+            )
+
+    def test_symlinked_manifest_path_is_never_written_through(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            decoy = root / "decoy.json"
+            decoy.write_text("original", encoding="utf-8")
+            _, error = self._race(
+                root,
+                "before_manifest_link",
+                lambda op: op.evidence_path.symlink_to(decoy),
+            )
+            self.assertEqual(error.code, "GATE_A_EVIDENCE_PATH_OCCUPIED")
+            self.assertEqual(decoy.read_text(encoding="utf-8"), "original")
+
+    def test_state_is_never_complete_until_the_marker_is_removed(self) -> None:
+        """INCOMPLETE throughout: the marker is the sole transition to COMPLETE."""
+
+        observed: list[tuple[str, str]] = []
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+
+            def hook(stage: str) -> None:
+                observed.append(
+                    (stage, inspect_campaign_state(operands.campaign_root))
+                )
+
+            initialize_v5_campaign(
+                operands, observation, _nested_race_hook=hook
+            )
+
+            # At both nested points the root was reserved but never COMPLETE,
+            # including after gate_a/ became visible.
+            self.assertEqual(
+                observed,
+                [
+                    ("before_evidence_directory", CAMPAIGN_INCOMPLETE),
+                    ("before_manifest_link", CAMPAIGN_INCOMPLETE),
+                ],
+            )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_COMPLETE
+            )
+            self.assertFalse(
+                (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).exists()
+            )
+
+    def test_cleanup_never_deletes_foreign_content(self) -> None:
+        """Regression: the release path must not be a recursive delete.
+
+        Between the reservation and a failure, a same-UID process can add
+        anything under the campaign root. None of it is the operator's to
+        destroy, so the release removes only what this invocation created.
+        """
+
+        outside_holder: list[Path] = []
+
+        def plant(op) -> None:
+            campaign = op.campaign_root
+            (campaign / "foreign_file.txt").write_text(
+                "FOREIGN DATA", encoding="utf-8"
+            )
+            (campaign / "foreign_dir").mkdir()
+            (campaign / "foreign_dir" / "deep.txt").write_text(
+                "DEEP FOREIGN", encoding="utf-8"
+            )
+            outside = campaign.parent / "outside_target.txt"
+            outside.write_text("OUTSIDE ORIGINAL", encoding="utf-8")
+            outside_holder.append(outside)
+            (campaign / "foreign_symlink").symlink_to(outside)
+            os.link(outside, campaign / "foreign_hardlink")
+            raise RuntimeError("clean failure after foreign content appeared")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+
+            def hook(stage: str) -> None:
+                if stage == "before_evidence_directory":
+                    plant(operands)
+
+            with self.assertRaises(RuntimeError):
+                initialize_v5_campaign(
+                    operands, observation, _nested_race_hook=hook
+                )
+
+            campaign = operands.campaign_root
+            # Every foreign object survives, contents intact.
+            self.assertEqual(
+                (campaign / "foreign_file.txt").read_text(encoding="utf-8"),
+                "FOREIGN DATA",
+            )
+            self.assertEqual(
+                (campaign / "foreign_dir" / "deep.txt").read_text(encoding="utf-8"),
+                "DEEP FOREIGN",
+            )
+            self.assertTrue((campaign / "foreign_symlink").is_symlink())
+            self.assertTrue((campaign / "foreign_hardlink").is_file())
+            self.assertEqual(
+                outside_holder[0].read_text(encoding="utf-8"), "OUTSIDE ORIGINAL"
+            )
+            # Only this invocation's own artifacts were withdrawn...
+            self.assertFalse(operands.evidence_directory.exists())
+            self.assertFalse(operands.evidence_path.exists())
+            self.assertEqual(
+                len(list(operands.evidence_directory.parent.glob(".*tmp"))), 0
+            )
+            # ...and the marker is deliberately retained, so the root reports
+            # INCOMPLETE and enters governed recovery instead of being cleared.
+            self.assertTrue((campaign / GATE_A_INCOMPLETE_MARKER).is_file())
+            self.assertEqual(
+                inspect_campaign_state(campaign), CAMPAIGN_INCOMPLETE
+            )
+
+    def test_clean_failure_with_no_foreign_content_still_returns_absent(self) -> None:
+        """Ownership-respecting release must not regress the ordinary path."""
+
+        def failing_publish(source: Path, target: Path) -> None:
+            raise OSError("simulated publish failure")
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            with self.assertRaises(Exp010GateAOperatorError):
+                initialize_v5_campaign(
+                    operands, observation, _publish=failing_publish
+                )
+            self.assertEqual(
+                inspect_campaign_state(operands.campaign_root), CAMPAIGN_ABSENT
+            )
+            self.assertFalse(operands.campaign_root.exists())
+
+    def test_no_temporary_residue_remains_after_success(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._prepare(root)
+            initialize_v5_campaign(operands, observation)
+            self.assertEqual(
+                sorted(entry.name for entry in operands.evidence_directory.iterdir()),
+                [GATE_A_EVIDENCE_FILENAME],
+            )
+            self.assertEqual(
+                sorted(entry.name for entry in operands.campaign_root.iterdir()),
+                [GATE_A_EVIDENCE_SUBDIRECTORY],
+            )
+
+
+class GateAEvidenceVerificationTests(unittest.TestCase):
+    """`inspect_campaign_state` is structural; this is the authority path."""
+
+    def _campaign(self, root: Path):
+        operands = load_operands(
+            _write_operands(root, _operand_values(root / "v5"))
+        )
+        observation = _observe(operands)
+        initialize_v5_campaign(operands, observation)
+        return operands, observation
+
+    def _rewrite(self, operands, mutate) -> None:
+        """Rewrite the immutable manifest, canonically, with one mutation."""
+
+        path = operands.evidence_path
+        path.chmod(0o600)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        mutate(document)
+        path.write_bytes(strict_canonical_json_bytes(document))
+        path.chmod(0o400)
+
+    def test_valid_evidence_verifies_and_yields_bound_authority(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._campaign(root)
+            evidence = load_verified_gate_a_evidence(operands.campaign_root)
+            authority = derive_downstream_authority(operands.campaign_root)
+        self.assertEqual(
+            evidence["environment_manifest_sha256"],
+            observation.environment_manifest_sha256,
+        )
+        self.assertEqual(
+            authority["environment_manifest_sha256"],
+            observation.environment_manifest_sha256,
+        )
+        self.assertEqual(
+            authority["configuration_identity"], operands.configuration_identity
+        )
+        self.assertEqual(authority["source_revision"], _REVISION)
+
+    def test_absent_and_incomplete_campaigns_are_refused(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands = load_operands(
+                _write_operands(root, _operand_values(root / "v5"))
+            )
+            with self.assertRaises(Exp010GateAOperatorError) as absent:
+                load_verified_gate_a_evidence(operands.campaign_root)
+            self.assertEqual(absent.exception.code, "GATE_A_EVIDENCE_NOT_COMPLETE")
+
+            initialize_v5_campaign(operands, _observe(operands))
+            # Re-introduce the marker: uncommitted evidence is not authority.
+            (operands.campaign_root / GATE_A_INCOMPLETE_MARKER).write_text(
+                "{}", encoding="utf-8"
+            )
+            with self.assertRaises(Exp010GateAOperatorError) as incomplete:
+                load_verified_gate_a_evidence(operands.campaign_root)
+        self.assertEqual(incomplete.exception.code, "GATE_A_EVIDENCE_NOT_COMPLETE")
+
+    def test_truncated_evidence_is_refused(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, _ = self._campaign(root)
+            path = operands.evidence_path
+            path.chmod(0o600)
+            path.write_bytes(path.read_bytes()[:120])
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                load_verified_gate_a_evidence(operands.campaign_root)
+        self.assertEqual(raised.exception.code, "GATE_A_EVIDENCE_NOT_CANONICAL")
+
+    def test_non_canonical_but_parseable_evidence_is_refused(self) -> None:
+        """Round-trip equality: re-encoding must reproduce the exact bytes."""
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, _ = self._campaign(root)
+            path = operands.evidence_path
+            path.chmod(0o600)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            # Valid JSON, same content, non-canonical spacing.
+            path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                load_verified_gate_a_evidence(operands.campaign_root)
+        self.assertEqual(raised.exception.code, "GATE_A_EVIDENCE_NOT_CANONICAL")
+
+    def test_substituted_fields_are_each_refused(self) -> None:
+        cases = (
+            (
+                "environment digest",
+                lambda d: d.__setitem__("environment_manifest_sha256", "0" * 64),
+                "GATE_A_EVIDENCE_DIGEST_MISMATCH",
+            ),
+            (
+                "source revision",
+                lambda d: d.__setitem__("source_revision", "1" * 40),
+                "GATE_A_EVIDENCE_DIGEST_MISMATCH",
+            ),
+            (
+                "schema version",
+                lambda d: d.__setitem__("schema_version", "exp010-gate-a-evidence-v99"),
+                "GATE_A_EVIDENCE_SCHEMA_UNKNOWN",
+            ),
+            (
+                "campaign root",
+                lambda d: d["campaign"].__setitem__("campaign_root", "/elsewhere/v5"),
+                "GATE_A_EVIDENCE_DIGEST_MISMATCH",
+            ),
+        )
+        for label, mutate, expected in cases:
+            with self.subTest(label=label), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                operands, _ = self._campaign(root)
+                self._rewrite(operands, mutate)
+                with self.assertRaises(Exp010GateAOperatorError) as raised:
+                    load_verified_gate_a_evidence(operands.campaign_root)
+                self.assertEqual(raised.exception.code, expected)
+
+    def test_internally_inconsistent_evidence_is_refused(self) -> None:
+        """A forger who repairs the digest still cannot make it self-consistent."""
+
+        def forge(document: dict) -> None:
+            # Change served_ef everywhere the digest covers, then re-stamp the
+            # evidence digest so only cross-section consistency can catch it.
+            document["serving"]["served_ef"] = 800
+            body = {k: v for k, v in document.items() if k != "evidence_sha256"}
+            document["evidence_sha256"] = strict_canonical_digest(
+                b"VD::EXP010_GATE_A_EVIDENCE::V1\x00", body
+            )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, _ = self._campaign(root)
+            self._rewrite(operands, forge)
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                load_verified_gate_a_evidence(operands.campaign_root)
+        # The re-derived serving identity no longer matches the stored one.
+        self.assertEqual(
+            raised.exception.code, "GATE_A_EVIDENCE_CONFIGURATION_MISMATCH"
+        )
+
+    def test_observation_tampering_is_caught_by_the_environment_digest(self) -> None:
+        def forge(document: dict) -> None:
+            document["environment_observation"]["deployment_identity"] = "forged"
+            body = {k: v for k, v in document.items() if k != "evidence_sha256"}
+            document["evidence_sha256"] = strict_canonical_digest(
+                b"VD::EXP010_GATE_A_EVIDENCE::V1\x00", body
+            )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, _ = self._campaign(root)
+            self._rewrite(operands, forge)
+            with self.assertRaises(Exp010GateAOperatorError) as raised:
+                load_verified_gate_a_evidence(operands.campaign_root)
+        self.assertEqual(
+            raised.exception.code, "GATE_A_EVIDENCE_ENVIRONMENT_MISMATCH"
+        )
+
+    def test_gate_c_operands_built_from_verified_authority_load(self) -> None:
+        """The intended one-way path: operands derived, not typed."""
+
+        from vdbench.exp010_gate_c_operator import (
+            OPERAND_FIELDS as GATE_C_FIELDS,
+        )
+        from vdbench.exp010_gate_c_operator import (
+            load_operands as load_gate_c_operands,
+        )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands, observation = self._campaign(root)
+            authority = derive_downstream_authority(operands.campaign_root)
+
+            gate_c_values = dict(authority)
+            gate_c_values.update(
+                {
+                    "detector_seed": 20260816,
+                    "store_root": str(operands.campaign_root / "stores"),
+                    "exp010_output_dir": str(operands.campaign_root / "output"),
+                    "etcd_container": operands.etcd_container,
+                    "minio_container": operands.minio_container,
+                }
+            )
+            self.assertEqual(sorted(gate_c_values), sorted(GATE_C_FIELDS))
+            path = root / "gate_c_operands.json"
+            path.write_text(json.dumps(gate_c_values), encoding="utf-8")
+            gate_c = load_gate_c_operands(path)
+
+        self.assertEqual(
+            gate_c.environment_manifest_sha256,
+            observation.environment_manifest_sha256,
+        )
 
 
 class GateAGuardTests(unittest.TestCase):

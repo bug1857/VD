@@ -24,6 +24,13 @@ import numpy as np
 import vdbench.exp010_gate_c_operator as gate_c_operator
 from tests.test_exp010_live_runner import DATASET001, _trace_for
 from vdbench.config import Metric
+from vdbench.exp010_gate_a_operator import (
+    GATE_A_EVIDENCE_FILENAME,
+    GATE_A_EVIDENCE_SUBDIRECTORY,
+    Exp010GateAObservation,
+    Exp010GateAOperands,
+    build_gate_a_evidence,
+)
 from vdbench.exp010_gate_c_operator import (
     GATE_C_PLAN_SCHEMA_VERSION,
     OPERAND_FIELDS,
@@ -33,7 +40,11 @@ from vdbench.exp010_gate_c_operator import (
     load_operands,
     main,
 )
-from vdbench.exp010_live_runner import Exp010LiveRunner, Exp010OperatorConfiguration
+from vdbench.exp010_live_runner import (
+    Exp010LiveRunner,
+    Exp010OperatorConfiguration,
+    build_environment_manifest_sha256,
+)
 from vdbench.exp010_serving_configuration import (
     Exp010ServingConfiguration,
     derive_serving_configuration_identity,
@@ -41,8 +52,29 @@ from vdbench.exp010_serving_configuration import (
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
 from vdbench.shadow_window import WINDOW_QUERY_COUNT
 
-_ENVIRONMENT = "e" * 64
 _REVISION = "revision/exp010-gate-c"
+
+#: Gate C now inherits its environment authority from a persisted Gate-A
+#: artifact instead of trusting a typed digest, so these tests can no longer use
+#: a placeholder: the digest must be the one that a real Gate-A observation
+#: actually produces. It does not depend on the campaign root, so it is derived
+#: once here and the evidence document itself is rebuilt per temporary root.
+_GATE_A_OBSERVATION: dict[str, object] = {
+    "milvus_uri": "http://milvus.invalid:19530",
+    "deployment_identity": "ENV-001-gate-c-test",
+    "flat_collection_name": "vd_test_l2_flat",
+    "hnsw_collection_name": "vd_test_l2_hnsw",
+    "metric": "L2",
+    "threshold_stratum": "target-075",
+    "dimensions": 128,
+    "flat_index_identity": "flat-index-v1",
+    "hnsw_index_identity": "hnsw-index-v1",
+    "data_identity": "DATASET-001-v1:sha256:" + "d" * 64,
+    "source_revision": _REVISION,
+    "served_ef": 400,
+    "observed_at_utc": "2026-08-16T12:30:00Z",
+}
+_ENVIRONMENT = build_environment_manifest_sha256(_GATE_A_OBSERVATION)
 _SERVING = Exp010ServingConfiguration(
     metric=Metric.L2,
     threshold_stratum="target-075",
@@ -110,12 +142,102 @@ class _ShadowCapture:
         return _trace_for(sources)
 
 
+def _gate_a_evidence_document(root: Path, **overrides: object) -> dict[str, object]:
+    """Build a genuine, verifiable Gate-A evidence document for this root."""
+
+    operands = Exp010GateAOperands(
+        deployment_identity=str(_GATE_A_OBSERVATION["deployment_identity"]),
+        stream_id="exp010-gate-c-test",
+        campaign_root=root,
+        milvus_uri=str(_GATE_A_OBSERVATION["milvus_uri"]),
+        flat_collection_name="vd_test_l2_flat",
+        hnsw_collection_name="vd_test_l2_hnsw",
+        metric=Metric.L2,
+        threshold_stratum="target-075",
+        threshold_radius=2.0,
+        range_filter=0.0,
+        limit=100,
+        served_ef=400,
+        dimensions=128,
+        consistency_level="Strong",
+        configuration_identity=_CONFIGURATION_IDENTITY,
+        flat_binding_id="flat-index-v1",
+        hnsw_binding_id="hnsw-index-v1",
+        source_revision=_REVISION,
+        expected_row_count=10000,
+        hnsw_m=16,
+        hnsw_ef_construction=200,
+        dataset001_dir=DATASET001,
+        etcd_container="milvus-etcd",
+        minio_container="milvus-minio",
+        milvus_container="milvus-standalone",
+    )
+    live = {
+        "collection_name": "vd_test_l2_flat",
+        "index_name": "vector_index",
+        "index_type": "FLAT",
+        "metric_type": "L2",
+        "row_count": 10000,
+        "dimensions": 128,
+        "indexed_rows": 10000,
+        "pending_index_rows": 0,
+        "index_state": "Finished",
+        "load_state": "Loaded",
+    }
+    container = {
+        "container_name": "milvus-etcd",
+        "container_id": "sha256:test",
+        "status": "running",
+        "health": "healthy",
+        "started_at": "2026-08-16T12:04:09.262267046Z",
+        "restart_count": 0,
+        "oom_killed": False,
+    }
+    observation = Exp010GateAObservation(
+        observed_at_utc=str(_GATE_A_OBSERVATION["observed_at_utc"]),
+        data_identity=str(_GATE_A_OBSERVATION["data_identity"]),
+        generation_manifest_sha256="a" * 64,
+        base_vectors_sha256="b" * 64,
+        dataset_version="DATASET-001-v1",
+        flat=dict(live),
+        hnsw={**live, "collection_name": "vd_test_l2_hnsw", "index_type": "HNSW",
+              "M": 16, "efConstruction": 200},
+        containers={"etcd": dict(container)},
+        environment_manifest_sha256=_ENVIRONMENT,
+        environment_observation=dict(_GATE_A_OBSERVATION),
+    )
+    document = build_gate_a_evidence(operands, observation)
+    if overrides:
+        document.update(overrides)
+        body = {k: v for k, v in document.items() if k != "evidence_sha256"}
+        document["evidence_sha256"] = gate_c_operator.strict_canonical_digest(
+            b"VD::EXP010_GATE_A_EVIDENCE::V1\x00", body
+        )
+    return document
+
+
+def _seed_gate_a_evidence(root: Path, **overrides: object) -> dict[str, object]:
+    """Persist Gate-A evidence exactly where Gate C will look for it."""
+
+    document = _gate_a_evidence_document(root, **overrides)
+    directory = root / GATE_A_EVIDENCE_SUBDIRECTORY
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / GATE_A_EVIDENCE_FILENAME).write_bytes(
+        gate_c_operator.strict_canonical_json_bytes(document)
+    )
+    return document
+
+
 def _seed_campaign(root: Path, *, sources: int) -> None:
     """Create a real initialized campaign the operator can preflight against.
 
     Sources exist only because `serve()` was called, exactly as Gate B
     requires; the operator entrypoint under test never does this itself.
     """
+
+    # Gate C now requires verified Gate-A authority for the campaign, so a
+    # seeded campaign must carry the artifact a real Gate A would have left.
+    _seed_gate_a_evidence(root)
 
     tick = 0
 
@@ -353,7 +475,12 @@ class PreflightTests(unittest.TestCase):
                 side_effect=AssertionError("must not reach physical execution"),
             ), self.assertRaises(Exception) as caught:
                 build_gate_c_plan(operands)
-            self.assertIn("BINDING_MISMATCH", getattr(caught.exception, "code", ""))
+            # Refused earlier than the durable store binding would have: the
+            # Gate-A artifact attests a different revision.
+            self.assertEqual(
+                getattr(caught.exception, "code", ""),
+                "GATE_C_SOURCE_REVISION_AUTHORITY_MISMATCH",
+            )
 
     def test_environment_manifest_mismatch_fails_before_any_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -364,7 +491,105 @@ class PreflightTests(unittest.TestCase):
             )
             with self.assertRaises(Exception) as caught:
                 build_gate_c_plan(operands)
-            self.assertIn("BINDING_MISMATCH", getattr(caught.exception, "code", ""))
+            self.assertEqual(
+                getattr(caught.exception, "code", ""),
+                "GATE_C_ENVIRONMENT_AUTHORITY_MISMATCH",
+            )
+
+    def test_missing_gate_a_evidence_fails_closed(self) -> None:
+        """Absence is never a licence to skip verification."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            evidence = (
+                root / GATE_A_EVIDENCE_SUBDIRECTORY / GATE_A_EVIDENCE_FILENAME
+            )
+            evidence.unlink()
+            operands = load_operands(_write_operands(root))
+            with self.assertRaises(Exp010GateCOperatorError) as caught:
+                build_gate_c_plan(operands)
+        self.assertEqual(
+            caught.exception.code, "GATE_C_GATE_A_AUTHORITY_UNVERIFIED"
+        )
+
+    def test_incomplete_gate_a_campaign_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            (root / ".gate_a_incomplete").write_text("{}", encoding="utf-8")
+            operands = load_operands(_write_operands(root))
+            with self.assertRaises(Exp010GateCOperatorError) as caught:
+                build_gate_c_plan(operands)
+        self.assertEqual(
+            caught.exception.code, "GATE_C_GATE_A_AUTHORITY_UNVERIFIED"
+        )
+
+    def test_substituted_gate_a_evidence_fails_closed(self) -> None:
+        """A tampered artifact cannot launder an operand digest."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            path = root / GATE_A_EVIDENCE_SUBDIRECTORY / GATE_A_EVIDENCE_FILENAME
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["environment_manifest_sha256"] = "c" * 64
+            path.write_bytes(
+                gate_c_operator.strict_canonical_json_bytes(document)
+            )
+            operands = load_operands(_write_operands(root))
+            with self.assertRaises(Exp010GateCOperatorError) as caught:
+                build_gate_c_plan(operands)
+        self.assertEqual(
+            caught.exception.code, "GATE_C_GATE_A_AUTHORITY_UNVERIFIED"
+        )
+
+    def test_malformed_gate_a_evidence_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            path = root / GATE_A_EVIDENCE_SUBDIRECTORY / GATE_A_EVIDENCE_FILENAME
+            path.write_bytes(path.read_bytes()[:100])
+            operands = load_operands(_write_operands(root))
+            with self.assertRaises(Exp010GateCOperatorError) as caught:
+                build_gate_c_plan(operands)
+        self.assertEqual(
+            caught.exception.code, "GATE_C_GATE_A_AUTHORITY_UNVERIFIED"
+        )
+
+    def test_configuration_identity_authority_mismatch_fails_closed(self) -> None:
+        """Gate A attests one serving identity; operands may not claim another."""
+
+        other = derive_serving_configuration_identity(
+            Exp010ServingConfiguration(
+                metric=Metric.L2, threshold_stratum="target-075",
+                threshold_radius=2.0, range_filter=0.0, limit=100,
+                served_ef=800, dimensions=128, consistency_level="Strong",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            operands = load_operands(
+                _write_operands(root, served_ef=800, configuration_identity=other)
+            )
+            with self.assertRaises(Exp010GateCOperatorError) as caught:
+                build_gate_c_plan(operands)
+        self.assertEqual(
+            caught.exception.code, "GATE_C_CONFIGURATION_AUTHORITY_MISMATCH"
+        )
+
+    def test_verified_authority_is_recorded_in_the_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            operands = load_operands(_write_operands(root))
+            plan = build_gate_c_plan(operands)
+        self.assertEqual(plan["gate_a_authority"]["campaign_root"], str(root))
+        self.assertEqual(len(plan["gate_a_authority"]["evidence_sha256"]), 64)
+        self.assertEqual(
+            plan["environment_manifest_sha256"], _ENVIRONMENT
+        )
 
     def test_stream_id_mismatch_fails_before_any_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

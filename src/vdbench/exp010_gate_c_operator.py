@@ -369,6 +369,63 @@ def _require_initialized_stores(store_root: Path) -> tuple[str, ...]:
     return _REQUIRED_STORES
 
 
+def _require_verified_gate_a_authority(
+    operands: Exp010GateCOperands,
+) -> dict[str, Any]:
+    """Bind this run to the Gate-A artifact rather than to a typed digest.
+
+    ADR-017 item 9 makes authority flow one way, but until this check existed an
+    operator could type any syntactically valid `environment_manifest_sha256`
+    into the operand file and build a downstream chain that no Gate A had ever
+    attested. The digest is now inherited, not asserted: the campaign root is
+    derived from the existing `store_root` -- no operand is added, and the
+    closed 23-key contract is unchanged -- and the persisted Gate-A evidence is
+    canonically decoded and fully re-verified before its digest is compared.
+
+    Verification is mandatory and is never skipped because evidence is absent:
+    missing, malformed, incomplete, substituted, or mismatched Gate-A evidence
+    all fail closed. Any future legacy allowance must be an explicit, versioned
+    decision, never inferred from a missing file.
+    """
+
+    from .exp010_gate_a_operator import (
+        Exp010GateAOperatorError,
+        load_verified_gate_a_evidence,
+    )
+
+    campaign_root = operands.store_root.parent
+    try:
+        evidence = load_verified_gate_a_evidence(campaign_root)
+    except Exp010GateAOperatorError as exc:
+        raise _error(
+            "GATE_C_GATE_A_AUTHORITY_UNVERIFIED", f"{campaign_root}: {exc.code}"
+        ) from exc
+
+    for label, code, attested, claimed in (
+        (
+            "environment_manifest_sha256",
+            "GATE_C_ENVIRONMENT_AUTHORITY_MISMATCH",
+            evidence["environment_manifest_sha256"],
+            operands.environment_manifest_sha256,
+        ),
+        (
+            "source_revision",
+            "GATE_C_SOURCE_REVISION_AUTHORITY_MISMATCH",
+            evidence["source_revision"],
+            operands.source_revision,
+        ),
+        (
+            "configuration_identity",
+            "GATE_C_CONFIGURATION_AUTHORITY_MISMATCH",
+            evidence["serving"]["configuration_identity"],
+            operands.configuration_identity,
+        ),
+    ):
+        if attested != claimed:
+            raise _error(code, f"{label}: Gate A attests {attested}, operands claim {claimed}")
+    return evidence
+
+
 def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
     """Open the real stores read-only-ish and resolve the canonical plan.
 
@@ -380,6 +437,9 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
     """
 
     _require_initialized_stores(operands.store_root)
+    # Authority before work: the environment digest this run binds must be the
+    # one a Gate A actually observed and persisted, not a typed string.
+    gate_a_evidence = _require_verified_gate_a_authority(operands)
     clock = MonotonicUtcClock()
     runner = Exp010LiveRunner(
         configuration=operands.runner_configuration(),
@@ -424,6 +484,11 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
             },
             "source_revision": operands.source_revision,
             "environment_manifest_sha256": operands.environment_manifest_sha256,
+            "gate_a_authority": {
+                "campaign_root": str(operands.store_root.parent),
+                "evidence_sha256": gate_a_evidence["evidence_sha256"],
+                "observed_at_utc": gate_a_evidence["observed_at_utc"],
+            },
             "detector_seed": operands.detector_seed,
             "serving": {
                 "threshold_radius": operands.threshold_radius,

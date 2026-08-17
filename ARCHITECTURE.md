@@ -4736,24 +4736,144 @@ digest or serialization implementation is introduced: the environment digest is
 `build_environment_manifest_sha256` unchanged, and the evidence digest is
 `strict_canonical_digest` under a new domain constant.
 
-**7. Atomicity: the campaign root appears whole or not at all.** Evidence is
-written into a staging directory outside the campaign root, fsynced, and the
-staging directory is then `os.rename`d into place. A crash at any point leaves
-either no campaign root or a complete one. **A partially created V5 campaign can
-therefore never exist, and is never accepted as a successful Gate A.** A
-campaign root that exists but lacks complete, digest-verifiable Gate-A evidence
-is an error state, never a PASS.
+**7. Exclusivity is decided by the creating syscall, not by an earlier check.**
+`os.rename` has *replace* semantics: renaming onto an existing non-empty
+directory fails with `ENOTEMPTY`, but renaming onto an existing **empty** one
+silently removes and replaces it. Any publication design whose exclusivity rests
+on a prior `exists()` check therefore carries a real TOCTOU window — a directory
+appearing between the check and the rename would be destroyed. That is a genuine
+integrity defect, not a documentation nuance.
 
-**8. Re-execution never rebinds.** If the campaign root already exists, execute
-refuses with `GATE_A_CAMPAIGN_ALREADY_INITIALIZED` and writes nothing. Gate A is
-not idempotent-by-overwrite: it is create-once. Preflight remains freely
-repeatable because it creates nothing.
+Gate A closes the window with `os.mkdir`, which is unconditionally exclusive: it
+fails with `EEXIST` against an empty directory, a non-empty directory, a regular
+file, a symlink, and a dangling symlink alike. No platform-specific no-replace
+rename (`renameat2` / `renamex_np`) and no `ctypes` binding is required, so the
+guarantee costs no portability. The protocol is:
 
-**9. Direction of authority is one-way.** Gate A produces
+1. verify the parent is a safe, owned, non-world-writable directory;
+2. `os.mkdir(root, 0o700)` — **exclusive reservation of the campaign root**;
+3. write the incompleteness marker inside the reserved root, fsync;
+4. `os.mkdir(root/gate_a, 0o700)` — **exclusive creation of the evidence
+   directory**;
+5. write the manifest to a temporary name inside `gate_a/`, fsync, then
+   `os.link` it onto the canonical name and unlink the temporary;
+6. unlink the marker, fsync root — **the commit point**.
+
+Every step that creates a name uses a primitive that refuses to replace an
+existing one, so nothing already present is destroyed anywhere in the tree.
+
+**Same-UID threat model — mode bits are not a boundary.** `0o700` on the
+reserved root excludes other *users*, but grants full rights to any process
+sharing this UID. Directory permissions therefore provide no protection against
+a hostile or buggy same-UID process, and this protocol does not rely on them.
+Steps 2, 4, and 5 use `os.mkdir` and `os.link`, both unconditionally exclusive —
+`EEXIST` against an empty directory, a non-empty directory, a regular file, a
+symlink, and a dangling symlink alike, and `os.link` never writes through a
+symlink. A same-UID process planting any of those at `root`, `root/gate_a`, or
+the manifest path inside the window is refused with
+`GATE_A_EVIDENCE_PATH_OCCUPIED` rather than silently replaced.
+
+**The limit of that claim, stated so it is not over-read.** What Gate A
+guarantees is that *its own implementation* and *ordinary competing
+initializers* can never silently replace or rebind a path, and that it never
+destroys content it did not create. It does **not** claim protection against a
+malicious or arbitrary same-UID process that intentionally mutates evidence
+after it has been created — such a process can delete the manifest, or remove
+the incompleteness marker to make an interrupted campaign read as `COMPLETE`.
+No userspace protocol can prevent that, because same-UID write access is total;
+defending against it requires OS-level immutability or a separate privilege
+domain, both outside this ADR's scope.
+
+`gate_a/` consequently becomes visible while the campaign is still marked
+INCOMPLETE. That is deliberate and safe: the marker is the sole transition to
+COMPLETE, so a visible-but-uncommitted evidence directory is never a Gate-A
+PASS. `os.link` additionally makes the manifest appear at its canonical name
+exactly once and only fully written, so a torn manifest is never observable
+there.
+
+**8. Four campaign states, one initializable.** `inspect_campaign_state` is the
+single authority on what a root is:
+
+| state | meaning | initialize | Gate-A PASS |
+|---|---|---|---|
+| `ABSENT` | nothing at the path | yes | — |
+| `INCOMPLETE` | reserved, marker present | refused (`GATE_A_CAMPAIGN_INCOMPLETE`) | **never** |
+| `COMPLETE` | marker gone, evidence present | refused (`GATE_A_CAMPAIGN_ALREADY_INITIALIZED`) | yes |
+| `FOREIGN` | anything else at the path | refused (`GATE_A_CAMPAIGN_PATH_OCCUPIED`) | **never** |
+
+The classification is conservative: anything not positively recognized as
+`COMPLETE` is not a PASS. Re-execution is therefore create-once and never
+rebinds; preflight stays freely repeatable because it creates nothing.
+
+**8a. Crash semantics.** A crash before step 2 leaves nothing (`ABSENT`). A
+crash in the narrow interval after step 2 but before the marker is durable
+leaves a bare reserved directory, which classifies `FOREIGN`. From the moment
+the marker is durable until step 6 completes, a crash leaves `INCOMPLETE` —
+including the conservative case where the manifest is in fact fully present but
+step 6 did not run. After step 6, `COMPLETE`. Every pre-commit state is refused
+and none is a PASS; the classification differs only in which reason code the
+operator reports.
+
+**Durability ordering.** The marker unlink of step 6 is issued only after the
+manifest's *data* has been fsynced (step 5, before the link) and after both
+`gate_a/` and the campaign root have been fsynced, which persists the canonical
+manifest's directory entry and `gate_a/`'s entry respectively. The unlink's own
+durability then requires the subsequent root fsync. **`COMPLETE` therefore
+cannot become durable unless the canonical manifest is already durable.**
+
+**8b. Cleanup removes only what the invocation created.** The release path is
+never a recursive delete. Between the reservation and a failure, a same-UID
+process can add files, directories, symlinks, or hard links under the campaign
+root, and none of it is the operator's to destroy. Release therefore unlinks
+only the specific paths this invocation created and removes directories with
+`os.rmdir`, which refuses a non-empty directory rather than descending. If
+anything foreign is present the marker is deliberately retained, so the root
+stays `INCOMPLETE` and enters governed recovery instead of being silently
+cleared. Once the campaign is committed, nothing is ever withdrawn.
+
+**8c. Recovery is governed, manual, and deliberately not implemented.** An
+`INCOMPLETE` root is **never** repaired, reused, overwritten, or removed by this
+operator. Recovery is an explicit operator action — quarantine the root and
+re-run Gate A — and **no tooling exists for it**; this ADR does not create any.
+A partially created V5 can therefore persist on disk after a crash, but it is
+positively identifiable and can never be interpreted as a successful Gate A.
+
+**8d. What COMPLETE does and does not assert.** `COMPLETE` is a *structural*
+classification: the marker is absent and a regular non-symlink file exists at
+the canonical manifest path. It does not decode the manifest, validate it
+against the strict canonical contract, or recompute either digest. That is sound
+only because nothing currently consumes this evidence as authority — Gate C
+takes `environment_manifest_sha256` from its own operand file. Any future
+consumer treating the manifest as authority **must re-verify it itself**; a
+`COMPLETE` classification is not evidence of validity.
+
+**9. Direction of authority is one-way, and now enforced.** Gate A produces
 `environment_manifest_sha256`; Gate B ingests genuine sources into the campaign
-Gate A created; Gate C consumes both. Gate C is not modified by this ADR and
-continues to refuse uninitialized campaigns. A Gate-A artifact that Gate C
-cannot consume is a Gate-A defect, never a reason to relax Gate C.
+Gate A created; Gate C consumes both. A Gate-A artifact that Gate C cannot
+consume is a Gate-A defect, never a reason to relax Gate C.
+
+Persisting the artifact is not sufficient on its own: until it is *verified* by
+a consumer, an operator can type any syntactically valid 64-hex digest into a
+Gate-C operand file and build a downstream chain no Gate A ever attested.
+`load_verified_gate_a_evidence` is therefore the mandatory authority path — it
+requires `COMPLETE`, decodes under the strict canonical contract, recomputes
+both `evidence_sha256` and `environment_manifest_sha256`, re-derives the serving
+identity instead of trusting it, and cross-checks the digested observation
+against every other section. `derive_downstream_authority` exposes the fields a
+downstream operand set must inherit, so operands are built from evidence rather
+than typed.
+
+`build_gate_c_plan` calls that verifier on every run, before any Milvus client
+can exist. The campaign root is derived from the existing `store_root`, so **no
+operand is added and Gate C's closed 23-key contract is unchanged**, and the
+operand `environment_manifest_sha256`, `source_revision`, and
+`configuration_identity` must each equal what the artifact attests. Verification
+is **mandatory and never skipped because evidence is absent**: missing,
+malformed, incomplete, substituted, or mismatched Gate-A evidence all fail
+closed with a distinct reason code. Any future legacy allowance must be an
+explicit, versioned decision — never inferred from a missing file. This is the
+one intentional change to Gate-C behavior in this ADR; its operand contract,
+window semantics, detector contract, and scientific contracts are untouched.
 
 **10. Zero searches, structurally.** Preflight and execute both reach Milvus
 only through a metadata reader exposing exactly `describe_collection`,
@@ -4811,6 +4931,29 @@ campaign root. The manifest digest must be deterministic for an identical
 observation and must change with `observed_at_utc`. The source revision must be
 bound into the evidence. No V1–V4 path may be targetable, and the produced
 authority shape must be consumable by the existing Gate-C operand contract.
+
+The reservation protocol of item 7 additionally requires adversarial tests that
+open the window deliberately — planting a hostile target *after* the advisory
+pre-check and *before* the reservation — for an empty directory, a non-empty
+directory, a symlink, a dangling symlink, and a regular file, each proving the
+planted target survives unmodified and is never followed or replaced. A genuinely
+threaded test must show exactly one winner among concurrent initializers. The
+`INCOMPLETE` state must be shown unreachable as a PASS, non-repairable, and
+non-removable by the operator, including the conservative case where evidence is
+present but uncommitted; and a `COMPLETE` root must be shown byte-identical after
+a refused re-run.
+
+The nested boundary needs the same treatment one level down: with the root
+already reserved, planting an empty `gate_a/`, a non-empty `gate_a/`, a
+symlinked `gate_a/`, a pre-existing manifest file, and a symlinked manifest path
+must each be refused with nothing overwritten and nothing written through a
+symlink, and the state must be observably INCOMPLETE at every nested step until
+the marker is removed.
+
+Because a test suite can pass vacuously here, the exclusivity tests must be
+shown to fail when each exclusive create is weakened — the root reservation, the
+evidence-directory creation, and the manifest publication alike.
+
 Focused verification is sufficient: this change is additive and alters no shared
 runtime semantics.
 
