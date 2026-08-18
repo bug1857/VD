@@ -733,11 +733,16 @@ def run_gate_b_host_from_cli(operands: Exp010GateBOperands) -> dict[str, Any]:
         plans={stream_key: plan},
         stack_health_probe=stack_health_probe,
     )
+    # `ServingPreflightResult` exposes `complete`, `checked_stream_count` and
+    # `reason_codes`. Read those fields directly: a defensive `getattr` with a
+    # default silently turns a field-name mismatch into an unconditional
+    # refusal instead of an error, which is exactly how the original defect
+    # here refused a healthy stack.
     admission = serving_executor.preflight()
-    if not getattr(admission, "admitted", False):
+    if not admission.complete:
         raise _error(
             "GATE_B_SERVING_PREFLIGHT_REFUSED",
-            ",".join(getattr(admission, "reason_codes", ()) or ("UNKNOWN",)),
+            ",".join(admission.reason_codes) or "NO_REASON_REPORTED",
         )
 
     clock = MonotonicUtcClock()

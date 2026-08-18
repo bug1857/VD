@@ -675,3 +675,167 @@ class GateBIsolationTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class GateBServingPreflightSeamTests(unittest.TestCase):
+    """Regression cover for the real `ServingPreflightResult` contract.
+
+    The original defect read `getattr(admission, "admitted", False)`. That
+    attribute does not exist on `ServingPreflightResult`, so a perfectly
+    healthy stack was refused unconditionally and the empty `reason_codes`
+    surfaced as "UNKNOWN". Tests using fakes could not catch it, because a fake
+    is free to invent whichever attribute the code happens to read.
+
+    These tests therefore drive `run_gate_b_host_from_cli` with the REAL
+    frozen dataclass. Only true external boundaries are stubbed (Milvus client,
+    Docker probe, harness, dataset pin, plan/binding construction); the
+    admission decision itself stays real. If the operator ever again reads a
+    field the contract does not define, `complete=True` would stop proceeding
+    and these tests fail.
+    """
+
+    def _patched_seam(self, result, runner_sentinel):
+        """Patch only external boundaries, leaving the decision under test."""
+
+        import vdbench.docker_health as docker_health
+        import vdbench.exp010_v2_host as v2_host
+        import vdbench.milvus_actuation as milvus_actuation
+        import vdbench.milvus_serving as milvus_serving
+        import vdbench.v2_milvus_shadow_capture as shadow_capture
+
+        class _Executor:
+            def __init__(self, **_: object) -> None:
+                pass
+
+            def preflight(self):
+                return result  # the REAL ServingPreflightResult
+
+        class _Harness:
+            def __init__(self, *_: object, **__: object) -> None:
+                pass
+
+            def index_identity(self, *_: object, **__: object) -> object:
+                return object()
+
+        class _Binding:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        class _Plan:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        class _Dataset:
+            data_identity = "DATASET-001-v1:sha256:" + "a" * 64
+
+        def _boom(*_: object, **__: object):
+            raise runner_sentinel
+
+        return contextlib.ExitStack(), [
+            mock.patch.object(shadow_capture, "build_readonly_milvus_client",
+                              lambda *_a, **_k: object()),
+            mock.patch.object(docker_health, "DockerSocketHealthProbe",
+                              lambda **_k: object()),
+            mock.patch.object(milvus_actuation, "MilvusHarness", _Harness),
+            mock.patch.object(milvus_actuation, "CollectionIdentityBinding", _Binding),
+            mock.patch.object(v2_host, "pin_dataset001_identity",
+                              lambda *_a, **_k: _Dataset()),
+            mock.patch.object(milvus_serving, "HostServingPlan", _Plan),
+            mock.patch.object(milvus_serving, "MilvusRangeServingExecutor", _Executor),
+            mock.patch.object(gate_b_operator, "Exp010LiveRunner", _boom),
+        ]
+
+    def _run_seam(self, result):
+        from vdbench.exp010_gate_b_operator import run_gate_b_host_from_cli
+
+        class _PastPreflight(Exception):
+            """Raised by the patched runner: proves the gate was passed."""
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "campaign"
+            _seed_gate_a_evidence(root)
+            operands = load_operands(
+                _write_operands(root, Path(raw) / "operands.json")
+            )
+            stack, patches = self._patched_seam(result, _PastPreflight())
+            with stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                try:
+                    run_gate_b_host_from_cli(operands)
+                except _PastPreflight:
+                    return "PASSED_PREFLIGHT"
+                except Exp010GateBOperatorError as exc:
+                    return exc
+        return "NO_OUTCOME"
+
+    def test_uses_the_real_result_type(self) -> None:
+        """Guard the contract itself, so a rename is loud rather than silent."""
+
+        from vdbench.milvus_serving import ServingPreflightResult
+
+        result = ServingPreflightResult(
+            complete=True, checked_stream_count=1, reason_codes=()
+        )
+        self.assertTrue(hasattr(result, "complete"))
+        self.assertTrue(hasattr(result, "reason_codes"))
+        self.assertTrue(hasattr(result, "checked_stream_count"))
+        # The exact field the original defect invented must not exist.
+        self.assertFalse(hasattr(result, "admitted"))
+
+    def test_complete_true_proceeds_past_serving_preflight(self) -> None:
+        from vdbench.milvus_serving import ServingPreflightResult
+
+        outcome = self._run_seam(
+            ServingPreflightResult(
+                complete=True, checked_stream_count=1, reason_codes=()
+            )
+        )
+        self.assertEqual(
+            outcome,
+            "PASSED_PREFLIGHT",
+            "a complete admission must not be refused "
+            f"(got {outcome!r}) — this is the original defect",
+        )
+
+    def test_complete_false_fails_closed(self) -> None:
+        from vdbench.milvus_serving import ServingPreflightResult
+
+        outcome = self._run_seam(
+            ServingPreflightResult(
+                complete=False,
+                checked_stream_count=1,
+                reason_codes=("STACK_HEALTH_UNHEALTHY",),
+            )
+        )
+        self.assertIsInstance(outcome, Exp010GateBOperatorError)
+        self.assertEqual(outcome.code, "GATE_B_SERVING_PREFLIGHT_REFUSED")
+
+    def test_reason_codes_are_propagated_verbatim(self) -> None:
+        from vdbench.milvus_serving import ServingPreflightResult
+
+        outcome = self._run_seam(
+            ServingPreflightResult(
+                complete=False,
+                checked_stream_count=1,
+                reason_codes=("COLLECTION_LOAD_STATE_UNAVAILABLE:FLAT", "X_Y"),
+            )
+        )
+        self.assertIsInstance(outcome, Exp010GateBOperatorError)
+        message = str(outcome)
+        self.assertIn("COLLECTION_LOAD_STATE_UNAVAILABLE:FLAT", message)
+        self.assertIn("X_Y", message)
+        self.assertNotIn("UNKNOWN", message)
+
+    def test_empty_reason_codes_are_reported_honestly(self) -> None:
+        """A refusal with no codes must not be labelled with an invented one."""
+
+        from vdbench.milvus_serving import ServingPreflightResult
+
+        outcome = self._run_seam(
+            ServingPreflightResult(
+                complete=False, checked_stream_count=0, reason_codes=()
+            )
+        )
+        self.assertIsInstance(outcome, Exp010GateBOperatorError)
+        self.assertIn("NO_REASON_REPORTED", str(outcome))

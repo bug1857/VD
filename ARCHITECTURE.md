@@ -5139,6 +5139,52 @@ Focused verification plus one full-suite run is sufficient: this change is
 additive and alters no shared runtime semantics, but it defines the next live
 source freeze.
 
+#### Amendment (ADR-018a): V6 retirement and the Gate-B real-seam contract defect
+
+The operator committed above carried one real defect, found on its first live
+use and recorded here rather than quietly fixed.
+
+**The defect.** `run_gate_b_host_from_cli` decided serving admission with
+`getattr(admission, "admitted", False)`. The committed contract is
+`ServingPreflightResult(complete, checked_stream_count, reason_codes)` — there
+is no `admitted` field, so the `getattr` default made the check evaluate
+`False` unconditionally and the Gate-B host could never start. The empty
+`reason_codes` then surfaced as the invented string `UNKNOWN`. A read-only
+reproduction of the exact construction returned
+`ServingPreflightResult(complete=True, checked_stream_count=1, reason_codes=())`:
+serving admission had in fact **succeeded**, and the operator refused a healthy
+stack.
+
+**Why the tests missed it.** Every Gate-B test stubbed this seam, and a stub is
+free to expose whichever attribute the code happens to read. The regression
+cover added with the fix therefore drives `run_gate_b_host_from_cli` with the
+**real** frozen `ServingPreflightResult`, stubbing only true external
+boundaries, and asserts that `complete=True` proceeds, `complete=False` fails
+closed, and `reason_codes` propagate verbatim. Reintroducing the original
+expression makes those tests fail. The lesson generalises: a defensive
+`getattr(..., default)` across a committed contract boundary converts a
+field-name mismatch into silent wrong behaviour instead of a loud error, and is
+not used at this seam.
+
+**V6 is retired, truthfully.** V6's authoritative historical state is: **Gate A
+COMPLETE** (evidence `d0a688c3…e304c`, environment manifest `1a2d05bc…ae98`,
+source revision `0464f290…`), **Gate B NEVER STARTED**, **Gate C NEVER
+STARTED**, **0 source records**, **0 searches**, 0 attempts, 0 acknowledgements,
+0 detector events, 0 attestations, 0 finalization events.
+
+It is retired because the Gate-B operator contained this real-seam contract
+defect. Critically, the defect **fired fail-closed before any effect**: the
+refusal preceded runner construction, so no store directory, no store, no HTTP
+listener and no client request ever existed. The external workload client was
+never started and remains unmodified. Nothing about V6 was mutated, deleted or
+rewritten, and V6 evidence is not modified to encode this decision; this
+amendment records it.
+
+Commit `0464f290…` is **not** amended or rewritten: it is published, and V6
+evidence durably binds it. The fix is a separate commit and therefore a new
+source revision, which is why V6 — whose Gate A attests the previous revision —
+cannot proceed to Gate B and a fresh Gate A is required instead.
+
 ---
 
 ## BACKEND COMPATIBILITY MATRIX
