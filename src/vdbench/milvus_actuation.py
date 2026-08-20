@@ -66,6 +66,22 @@ CANARY_BATCH_SIZE = 500
 ClockNs: TypeAlias = Callable[[], int]
 
 
+class SearchTelemetrySinkLike(Protocol):
+    """Optional post-search durability port used by EXP-012-SCALE only."""
+
+    def record_search(
+        self,
+        *,
+        query_id: QueryId,
+        stage: str,
+        configuration: SearchConfiguration,
+        started_monotonic_ns: int,
+        completed_monotonic_ns: int,
+        result_count: int | None,
+        error_classification: str | None,
+    ) -> None: ...
+
+
 class _FrozenDict(dict[object, object]):
     """JSON-serializable dictionary that rejects all mutation."""
 
@@ -481,6 +497,7 @@ class MilvusActuationClient:
         initial_ef: int,
         clock_ns: ClockNs = perf_counter_ns,
         shadow_trace_sink: ShadowAuditTraceSinkLike | None = None,
+        search_telemetry_sink: SearchTelemetrySinkLike | None = None,
     ) -> None:
         _validate_actuation_ef(initial_ef, name="initial_ef")
         _validate_routing_seed(routing_seed)
@@ -493,6 +510,11 @@ class MilvusActuationClient:
         self.stack_health_probe = stack_health_probe
         self.clock_ns = clock_ns
         self.shadow_trace_sink = shadow_trace_sink
+        if search_telemetry_sink is not None and not callable(
+            getattr(search_telemetry_sink, "record_search", None)
+        ):
+            raise TypeError("search_telemetry_sink must provide record_search")
+        self.search_telemetry_sink = search_telemetry_sink
         self.harness = MilvusHarness(
             client,
             dimensions=int(workload.base_vectors.shape[1]),
@@ -577,6 +599,8 @@ class MilvusActuationClient:
         name: str,
         query: npt.NDArray[np.float32],
         configuration: SearchConfiguration,
+        query_id: QueryId | None = None,
+        stage: str = "UNSPECIFIED",
     ) -> _SearchOutcome:
         start = self.clock_ns()
         try:
@@ -587,19 +611,80 @@ class MilvusActuationClient:
             )
         except Exception as exc:  # injected client boundary  # noqa: BLE001
             end = self.clock_ns()
-            return _SearchOutcome(
+            # Preserve the accepted legacy audit behavior (a failed search
+            # reports a non-negative latency even if an injected clock moves
+            # backwards). EXP-012 telemetry is stricter because it persists
+            # the raw interval and therefore refuses a non-monotonic value.
+            if self.search_telemetry_sink is not None:
+                self._validate_search_interval(start, end)
+            outcome = _SearchOutcome(
                 hits=None,
                 latency_ms=max(0.0, float(end - start) / 1_000_000.0),
                 exception=exc,
             )
+            self._emit_search_telemetry(
+                query_id=query_id,
+                stage=stage,
+                configuration=configuration,
+                start=start,
+                end=end,
+                outcome=outcome,
+            )
+            return outcome
         end = self.clock_ns()
-        if isinstance(start, bool) or isinstance(end, bool) or end < start:
+        self._validate_search_interval(start, end)
+        outcome = _SearchOutcome(
+            hits=hits,
+            latency_ms=float(end - start) / 1_000_000.0,
+        )
+        self._emit_search_telemetry(
+            query_id=query_id,
+            stage=stage,
+            configuration=configuration,
+            start=start,
+            end=end,
+            outcome=outcome,
+        )
+        return outcome
+
+    @staticmethod
+    def _validate_search_interval(start: object, end: object) -> None:
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or start < 0
+            or end < start
+        ):
             raise ContractViolation(
                 "clock_ns must return monotonic integer nanoseconds"
             )
-        return _SearchOutcome(
-            hits=hits,
-            latency_ms=float(end - start) / 1_000_000.0,
+
+    def _emit_search_telemetry(
+        self,
+        *,
+        query_id: QueryId,
+        stage: str,
+        configuration: SearchConfiguration,
+        start: int,
+        end: int,
+        outcome: _SearchOutcome,
+    ) -> None:
+        if self.search_telemetry_sink is None:
+            return
+        if query_id is None:
+            raise ContractViolation(
+                "query_id is required when search telemetry is enabled"
+            )
+        self.search_telemetry_sink.record_search(
+            query_id=query_id,
+            stage=stage,
+            configuration=configuration,
+            started_monotonic_ns=start,
+            completed_monotonic_ns=end,
+            result_count=None if outcome.hits is None else len(outcome.hits),
+            error_classification=(
+                None if outcome.exception is None else type(outcome.exception).__name__
+            ),
         )
 
     @staticmethod
@@ -718,6 +803,8 @@ class MilvusActuationClient:
                 continue
             flat = self._timed_search(
                 name=flat_name,
+                query_id=query_id,
+                stage="FLAT",
                 query=query,
                 configuration=flat_configuration,
             )
@@ -758,6 +845,12 @@ class MilvusActuationClient:
             ):
                 result = self._timed_search(
                     name=hnsw_name,
+                    query_id=query_id,
+                    stage=(
+                        "CANDIDATE_HNSW"
+                        if configuration_index == 0
+                        else "LAST_KNOWN_GOOD_HNSW"
+                    ),
                     query=query,
                     configuration=configuration,
                 )
@@ -799,6 +892,8 @@ class MilvusActuationClient:
                 assert sentinel_configuration is not None
                 sentinel = self._timed_search(
                     name=hnsw_name,
+                    query_id=query_id,
+                    stage="SENTINEL_HNSW",
                     query=query,
                     configuration=sentinel_configuration,
                 )

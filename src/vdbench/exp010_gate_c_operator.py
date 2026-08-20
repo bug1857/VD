@@ -371,6 +371,8 @@ def _require_initialized_stores(store_root: Path) -> tuple[str, ...]:
 
 def _require_verified_gate_a_authority(
     operands: Exp010GateCOperands,
+    *,
+    authority_campaign_root: Path | None = None,
 ) -> dict[str, Any]:
     """Bind this run to the Gate-A artifact rather than to a typed digest.
 
@@ -393,7 +395,11 @@ def _require_verified_gate_a_authority(
         load_verified_gate_a_evidence,
     )
 
-    campaign_root = operands.store_root.parent
+    campaign_root = (
+        operands.store_root.parent
+        if authority_campaign_root is None
+        else Path(authority_campaign_root)
+    )
     try:
         evidence = load_verified_gate_a_evidence(campaign_root)
     except Exp010GateAOperatorError as exc:
@@ -426,7 +432,36 @@ def _require_verified_gate_a_authority(
     return evidence
 
 
-def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
+def _require_campaign_namespace(
+    operands: Exp010GateCOperands,
+    *,
+    accepted_scale_contract_sha256: str | None,
+) -> None:
+    from .exp012_scale_campaign import (
+        Exp012ScaleCampaignError,
+        load_scale_campaign_marker,
+        marker_path,
+    )
+
+    campaign_root = operands.store_root.parent
+    if not marker_path(campaign_root).exists():
+        if accepted_scale_contract_sha256 is not None:
+            raise _error("GATE_C_EXP012_CAMPAIGN_MARKER_MISSING")
+        return
+    try:
+        binding = load_scale_campaign_marker(campaign_root)
+    except Exp012ScaleCampaignError as exc:
+        raise _error("GATE_C_CAMPAIGN_NAMESPACE_INVALID", exc.code) from exc
+    if accepted_scale_contract_sha256 != binding.contract.contract_sha256:
+        raise _error("GATE_C_EXP012_REQUIRES_SCALE_OPERATOR")
+
+
+def build_gate_c_plan(
+    operands: Exp010GateCOperands,
+    *,
+    accepted_scale_contract_sha256: str | None = None,
+    authority_campaign_root: Path | None = None,
+) -> dict[str, object]:
     """Open the real stores read-only-ish and resolve the canonical plan.
 
     Contacts no service. The composition is built with executors that refuse
@@ -436,10 +471,16 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
     happens before any Milvus client can exist.
     """
 
+    _require_campaign_namespace(
+        operands,
+        accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+    )
     _require_initialized_stores(operands.store_root)
     # Authority before work: the environment digest this run binds must be the
     # one a Gate A actually observed and persisted, not a typed string.
-    gate_a_evidence = _require_verified_gate_a_authority(operands)
+    gate_a_evidence = _require_verified_gate_a_authority(
+        operands, authority_campaign_root=authority_campaign_root
+    )
     clock = MonotonicUtcClock()
     runner = Exp010LiveRunner(
         configuration=operands.runner_configuration(),
@@ -456,11 +497,11 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
                 consumer_id=SHADOW_CONSUMER_ID
             ).event_ids
         )
-        # Count complete windows without loading every source: `load_window`
-        # returns None for the first window that is short or absent.
-        complete_windows = 0
-        while composition.response_store.load_window(complete_windows) is not None:
-            complete_windows += 1
+        # Reopen already replayed and verified the full contiguous source
+        # chain.  Bind the count to that verified source/outbox head instead of
+        # replaying the entire chain once per window during planning.
+        source_head = composition.response_store.verified_source_head()
+        complete_windows = source_head.source_count // WINDOW_QUERY_COUNT
         plan: dict[str, object] = {
             "schema_version": GATE_C_PLAN_SCHEMA_VERSION,
             "canonical_entrypoint": (
@@ -485,7 +526,11 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
             "source_revision": operands.source_revision,
             "environment_manifest_sha256": operands.environment_manifest_sha256,
             "gate_a_authority": {
-                "campaign_root": str(operands.store_root.parent),
+                "campaign_root": str(
+                    operands.store_root.parent
+                    if authority_campaign_root is None
+                    else Path(authority_campaign_root)
+                ),
                 "evidence_sha256": gate_a_evidence["evidence_sha256"],
                 "observed_at_utc": gate_a_evidence["observed_at_utc"],
             },
@@ -535,6 +580,9 @@ def build_gate_c_plan(operands: Exp010GateCOperands) -> dict[str, object]:
 
 def run_gate_c_execute_from_cli(
     operands: Exp010GateCOperands,
+    *,
+    search_telemetry_store: Any | None = None,
+    accepted_scale_contract_sha256: str | None = None,
 ) -> tuple[Exp010WindowResult, ...]:
     """The single real physical-execution seam.
 
@@ -544,6 +592,11 @@ def run_gate_c_execute_from_cli(
     repository never invokes it for real; tests patch this symbol to prove that
     preflight never reaches it and that a mismatched operand set never does.
     """
+
+    _require_campaign_namespace(
+        operands,
+        accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+    )
 
     from .config import IndexTrack
     from .docker_health import DockerSocketHealthProbe
@@ -590,6 +643,7 @@ def run_gate_c_execute_from_cli(
         environment_manifest_sha256=operands.environment_manifest_sha256,
         stack_health_probe=stack_health_probe,
         occurred_at_clock=clock,
+        search_telemetry_store=search_telemetry_store,
     )
     runner = Exp010LiveRunner(
         configuration=configuration,

@@ -5325,3 +5325,91 @@ Rollback behavior: Restore the last-known-good explicit `ef` in the next request
 Research reference: ADR-001; EXP-001 Index tracks; [Milvus HNSW](https://milvus.io/docs/hnsw.md).
 
 EXP-001 controls that are experiment metadata rather than database tunables remain governed by `EXPERIMENT_LOG.md`: DATASET-001, seed `20260801`, 50 calibration queries, 200 measured queries, five repetitions, deterministic ordering, one synchronous client, concurrency 1, warm-up protocol, timing boundaries, metrics, artifact paths, and failure checks.
+
+### ADR-019: Separate EXP-012-SCALE from the frozen EXP-010 campaign
+
+Status: Accepted — offline foundation implemented and focused verification passed; no live scale run authorized
+
+Date: 2026-08-20
+
+Risk level: CRITICAL
+
+#### Decision
+
+EXP-010 and its V8 evidence remain immutable. Scale validation uses the distinct
+experiment identity `EXP-012-SCALE`, distinct canonical schemas, and distinct
+digest domains. The only supported v1 profiles are:
+
+- `scale-2400`: exactly 2,400 durable sources, twelve exact 200-source windows,
+  and 4,800 physical Gate-C searches;
+- `scale-10000`: exactly 10,000 durable sources, fifty exact 200-source windows,
+  and 20,000 physical Gate-C searches.
+
+`WINDOW_QUERY_COUNT` remains exactly 200. Each source still receives exactly
+one FLAT reference search and one HNSW sentinel search at `ef=100`. The existing
+source membership, trace-attempt STARTED/terminal lifecycle, acknowledgement,
+detector reference/current progression, real-detector attestation, and window
+finalization semantics are reused without reinterpretation. Scale operators
+consume a separately verified Gate-A authority root as a read-only upstream
+input; the EXP-012 campaign root is distinct and contains no EXP-010
+plan/evidence document. Scale operators emit only EXP-012 plan/result
+documents. EXP-010 remains loopback-only; ENV-002 is a later decision.
+
+Every EXP-012 campaign is mechanically marked by one immutable
+`exp012-scale-campaign-v1` document under
+`VD::EXP012_SCALE_CAMPAIGN::V1\0`, containing the exact scale contract, its
+digest, and the externally verified Gate-A evidence digest. Scale Gate B
+creates or exactly re-verifies that marker before hosting;
+scale Gate C requires it. The legacy EXP-010 Gate-B/Gate-C operator entrypoints
+refuse a marked campaign, preventing an EXP-012 store from emitting EXP-010
+plan/result schemas. Unmarked EXP-010/V8 behavior is unchanged.
+
+The scale contract schema is `exp012-scale-contract-v1`, detached under
+`VD::EXP012_SCALE_CONTRACT::V1\0`. Gate-B plans and results use
+`exp012-scale-gate-b-plan-v1` / `exp012-scale-gate-b-result-v1` under
+`VD::EXP012_SCALE_GATE_B_PLAN::V1\0` /
+`VD::EXP012_SCALE_GATE_B_RESULT::V1\0`. Gate-C plans and results use
+`exp012-scale-gate-c-plan-v1` / `exp012-scale-gate-c-result-v1` under
+`VD::EXP012_SCALE_GATE_C_PLAN::V1\0` /
+`VD::EXP012_SCALE_GATE_C_RESULT::V1\0`.
+
+#### Verified source-head/count rule
+
+The host source store performs complete canonical source, outbox,
+acknowledgement, binding, and schema verification at create/reopen and retains
+the reconstructed immutable source prefix in memory. A normal append or target
+check obtains a store-issued snapshot binding the derived count and maximum
+sequence to the cached source head, cached outbox head, and exact store-binding
+digest under `VD::HOST_RESPONSE_VERIFIED_HEAD::V1\0`. The caller supplies none
+of those values. The durable source/outbox heads and SQLite data-version must
+still match that verified state. Counter/head substitution fails closed.
+Explicit audit/reopen continues to replay every canonical row; no mutable
+counter table becomes authority. Therefore normal append/target checks are
+independent of history length while restart verification remains O(N).
+
+#### Additive per-search telemetry
+
+Scale Gate C adds one separate append-only SQLite ledger. Its binding schema is
+`exp012-shadow-search-telemetry-binding-v1`, under
+`VD::EXP012_SHADOW_TELEMETRY_BINDING::V1\0`; records use
+`exp012-shadow-search-telemetry-v1`, under
+`VD::EXP012_SHADOW_TELEMETRY_RECORD::V1\0`. The binding fixes campaign, exact
+scale-contract digest, stream/configuration/data/FLAT/HNSW identities, source
+revision, and environment-manifest digest.
+
+Each immutable record binds record sequence/hash-chain predecessor, window,
+trace-attempt digest, source sequence, source digest, query-id digest, exact
+role (`FLAT_REFERENCE` or `HNSW_SENTINEL`), monotonic start/end nanoseconds,
+derived latency in nanoseconds and milliseconds, outcome, result count, and
+error classification. `(source_sequence, role)` is unique. Exact successful
+completion requires both roles for every governed source and exactly
+4,800/20,000 records for the selected profile. The ledger is additive: existing
+shadow trace, detector, attestation, and finalization schemas do not change.
+A committed trace STARTED event precedes every physical trace. A crash or
+telemetry failure after a search therefore leaves terminal/non-retriable trace
+evidence; missing telemetry can never be treated as a complete scale run.
+
+This telemetry is measurement evidence only. It creates no qualification,
+policy, admission, grant, routing, activation, actuation, or production
+authority. ADR-019 authorizes offline implementation and focused verification,
+not a live 2,400/10,000 run and not ENV-002.

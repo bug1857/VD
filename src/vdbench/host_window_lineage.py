@@ -55,6 +55,7 @@ __all__ = [
     "InjectedReadOnlyCaptureMetadataProvider",
     "ReferenceV2Host",
     "SQLiteHostResponseCommitStore",
+    "VerifiedHostSourceHead",
     "V2GenuineWorkloadObservationSource",
     "V2VisibleResponse",
     "verify_committed_host_observation",
@@ -67,6 +68,7 @@ _OUTBOX_DOMAIN = b"VD::HOST_RESPONSE_SOURCE_OUTBOX::V2\x00"
 _ACK_DOMAIN = b"VD::HOST_RESPONSE_SOURCE_ACK::V2\x00"
 _WINDOW_DOMAIN = b"VD::HOST_RESPONSE_WINDOW::V2\x00"
 _BINDING_DOMAIN = b"VD::HOST_RESPONSE_STORE_BINDING::V2\x00"
+_HEAD_DOMAIN = b"VD::HOST_RESPONSE_VERIFIED_HEAD::V1\x00"
 _RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _OWNERSHIP_LOCK = threading.Lock()
@@ -108,6 +110,24 @@ def _timestamp(value: object, *, code: str) -> str:
 
 def _digest(domain: bytes, payload: Mapping[str, object]) -> str:
     return hashlib.sha256(domain + canonical_json_bytes(dict(payload))).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedHostSourceHead:
+    """Store-issued snapshot binding the durable count to both chain heads.
+
+    This value is an integrity snapshot, not source evidence and not candidate
+    authority.  A reopen or explicit audit still replays every canonical row.
+    Normal append/target checks compare the SQLite heads with the heads cached
+    by that replay, making the check independent of history length.
+    """
+
+    source_count: int
+    maximum_source_sequence: int | None
+    source_head_sha256: str | None
+    outbox_head_sha256: str | None
+    store_binding_sha256: str
+    head_snapshot_sha256: str
 
 
 def _stream_document(value: MonitorStreamKey) -> dict[str, object]:
@@ -664,7 +684,9 @@ class SQLiteHostResponseCommitStore:
             _timestamp(row[4], code="HOST_SOURCE_ACK_INVALID")
             heads[consumer] = (expected_ack + 1, expected_source + 1, row[6])
 
-    def _verify_outbox(self, sources: tuple[CommittedHostObservation, ...]) -> None:
+    def _verify_outbox(
+        self, sources: tuple[CommittedHostObservation, ...]
+    ) -> str | None:
         rows = self._connection.execute(
             "SELECT source_sequence,event_id,source_sha256,previous_outbox_sha256,outbox_sha256 FROM source_outbox ORDER BY source_sequence"
         ).fetchall()
@@ -687,14 +709,18 @@ class SQLiteHostResponseCommitStore:
             ):
                 raise _error("HOST_SOURCE_OUTBOX_INVALID")
             previous = digest
+        return previous
 
     def _verify_all(self) -> tuple[CommittedHostObservation, ...]:
         self._require_live()
         self._verify_schema()
         self._verify_binding()
         sources = self._load_sources()
-        self._verify_outbox(sources)
+        self._outbox_head_sha256 = self._verify_outbox(sources)
         self._verify_acknowledgements(sources)
+        self._data_version = self._connection.execute(
+            "PRAGMA data_version"
+        ).fetchone()[0]
         return sources
 
     def _verify_cached_source_head(self) -> None:
@@ -703,30 +729,82 @@ class SQLiteHostResponseCommitStore:
         self._require_live()
         self._verify_schema()
         self._verify_binding()
-        count, maximum = self._connection.execute(
-            "SELECT COUNT(*),MAX(source_sequence) FROM source_records"
-        ).fetchone()
-        expected = len(self._sources)
-        if count != expected or maximum != (expected - 1 if expected else None):
+        if self._connection.execute("PRAGMA data_version").fetchone()[0] != self._data_version:
             raise _error("HOST_SOURCE_HEAD_DRIFT")
+        expected = len(self._sources)
+        maximum = expected - 1 if expected else None
         if expected:
             row = self._connection.execute(
-                "SELECT source_sha256 FROM source_records WHERE source_sequence=?",
-                (expected - 1,),
+                "SELECT source_sequence,source_sha256 FROM source_records "
+                "ORDER BY source_sequence DESC LIMIT 1",
             ).fetchone()
-            if row is None or row[0] != self._sources[-1].source_sha256:
+            if (
+                row is None
+                or row[0] != maximum
+                or row[1] != self._sources[-1].source_sha256
+            ):
                 raise _error("HOST_SOURCE_HEAD_DRIFT")
             outbox = self._connection.execute(
-                "SELECT source_sha256 FROM source_outbox WHERE source_sequence=?",
-                (expected - 1,),
+                "SELECT source_sequence,source_sha256,outbox_sha256 FROM source_outbox "
+                "ORDER BY source_sequence DESC LIMIT 1",
             ).fetchone()
-            if outbox is None or outbox[0] != self._sources[-1].source_sha256:
+            if (
+                outbox is None
+                or outbox[0] != maximum
+                or outbox[1] != self._sources[-1].source_sha256
+                or outbox[2] != self._outbox_head_sha256
+            ):
                 raise _error("HOST_SOURCE_HEAD_DRIFT")
-        outbox_count = self._connection.execute(
-            "SELECT COUNT(*) FROM source_outbox"
-        ).fetchone()[0]
-        if outbox_count != expected:
-            raise _error("HOST_SOURCE_HEAD_DRIFT")
+        else:
+            source_head = self._connection.execute(
+                "SELECT source_sequence FROM source_records ORDER BY source_sequence DESC LIMIT 1"
+            ).fetchone()
+            outbox_head = self._connection.execute(
+                "SELECT source_sequence FROM source_outbox ORDER BY source_sequence DESC LIMIT 1"
+            ).fetchone()
+            if source_head is not None or outbox_head is not None:
+                raise _error("HOST_SOURCE_HEAD_DRIFT")
+
+    def verified_source_head(self) -> VerifiedHostSourceHead:
+        """Return one O(1) store-issued count/head integrity snapshot.
+
+        The source count is derived from the already fully verified contiguous
+        chain cached at create/reopen and is re-bound to the current durable
+        source and outbox heads on every call.  Callers cannot supply a count or
+        head.  Explicit audit paths continue to use ``_verify_all``.
+        """
+
+        with self._mutex:
+            self._verify_cached_source_head()
+            source_count = len(self._sources)
+            source_head = (
+                None if not self._sources else self._sources[-1].source_sha256
+            )
+            payload: dict[str, object] = {
+                "schema_version": "response-profile-host-verified-head-v1",
+                "source_count": source_count,
+                "maximum_source_sequence": (
+                    None if source_count == 0 else source_count - 1
+                ),
+                "source_head_sha256": source_head,
+                "outbox_head_sha256": self._outbox_head_sha256,
+                "store_binding_sha256": _digest(_BINDING_DOMAIN, self._binding),
+            }
+            return VerifiedHostSourceHead(
+                source_count=source_count,
+                maximum_source_sequence=payload["maximum_source_sequence"],
+                source_head_sha256=source_head,
+                outbox_head_sha256=self._outbox_head_sha256,
+                store_binding_sha256=str(payload["store_binding_sha256"]),
+                head_snapshot_sha256=_digest(_HEAD_DOMAIN, payload),
+            )
+
+    def verify_full_history(self) -> VerifiedHostSourceHead:
+        """Replay every canonical row, then issue a verified head snapshot."""
+
+        with self._mutex:
+            self._sources = self._verify_all()
+            return self.verified_source_head()
 
     def commit_response(
         self,
@@ -826,6 +904,7 @@ class SQLiteHostResponseCommitStore:
                     pass
                 raise _error("HOST_RESPONSE_DURABILITY_FAILED") from exc
             self._sources = (*sources, record)
+            self._outbox_head_sha256 = outbox_digest
             return record
 
     def poll(

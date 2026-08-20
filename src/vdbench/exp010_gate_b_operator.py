@@ -428,30 +428,28 @@ def _inherit_gate_a_authority(
 
 
 def census_committed_source_count(composition: Any, *, ceiling: int) -> int:
-    """Count durable source members using only the read-only committed API.
+    """Read the store-issued count bound to its verified durable chain heads.
 
-    `poll` reads; only `acknowledge` writes. The census consumer id is never
-    acknowledged with, so its cursor stays at sequence 0 and the count is the
-    true durable prefix no matter what a real consumer has acknowledged.
+    The store performs one full canonical replay at create/reopen.  This hot
+    target check then verifies the current source/outbox heads against that
+    replay-derived state in constant time; it never trusts a caller-supplied or
+    independently mutable counter.  Explicit audit/read APIs retain full
+    replay semantics.
     """
 
     if type(ceiling) is not int or ceiling <= 0:
         raise _error("GATE_B_CENSUS_CEILING_INVALID")
-    records = composition.response_store.poll(
-        consumer_id=GATE_B_CENSUS_CONSUMER_ID,
-        limit=ceiling + 1,
-        start_source_sequence=0,
-    )
-    return len(records)
+    head = composition.response_store.verified_source_head()
+    if head.source_count > ceiling:
+        raise _error("GATE_B_SOURCE_TARGET_EXCEEDED")
+    return head.source_count
 
 
 def _complete_window_count(composition: Any, *, ceiling: int) -> int:
-    windows = 0
-    while windows * WINDOW_QUERY_COUNT < ceiling:
-        if composition.response_store.load_window(windows) is None:
-            break
-        windows += 1
-    return windows
+    head = composition.response_store.verified_source_head()
+    if head.source_count > ceiling:
+        raise _error("GATE_B_SOURCE_TARGET_EXCEEDED")
+    return head.source_count // WINDOW_QUERY_COUNT
 
 
 def _gate_c_state(composition: Any) -> dict[str, Any]:
@@ -500,7 +498,33 @@ def _existing_stores(store_root: Path) -> tuple[str, ...]:
     )
 
 
-def build_gate_b_plan(operands: Exp010GateBOperands) -> dict[str, Any]:
+def _require_campaign_namespace(
+    campaign_root: Path, *, accepted_scale_contract_sha256: str | None
+) -> None:
+    """Refuse marked EXP-012 campaigns from the legacy operator by default."""
+
+    from .exp012_scale_campaign import (
+        Exp012ScaleCampaignError,
+        load_scale_campaign_marker,
+        marker_path,
+    )
+
+    if not marker_path(campaign_root).exists():
+        return
+    try:
+        binding = load_scale_campaign_marker(campaign_root)
+    except Exp012ScaleCampaignError as exc:
+        raise _error("GATE_B_CAMPAIGN_NAMESPACE_INVALID", exc.code) from exc
+    if accepted_scale_contract_sha256 != binding.contract.contract_sha256:
+        raise _error("GATE_B_EXP012_REQUIRES_SCALE_OPERATOR")
+
+
+def build_gate_b_plan(
+    operands: Exp010GateBOperands,
+    *,
+    accepted_scale_contract_sha256: str | None = None,
+    authority_campaign_root: Path | None = None,
+) -> dict[str, Any]:
     """Validate everything and return the resolved plan. Creates nothing.
 
     Preflight is side-effect free with respect to Gate-B campaign state: it
@@ -513,7 +537,17 @@ def build_gate_b_plan(operands: Exp010GateBOperands) -> dict[str, Any]:
 
     from .exp010_gate_a_operator import inspect_campaign_state
 
-    campaign_state = str(inspect_campaign_state(operands.campaign_root))
+    _require_campaign_namespace(
+        operands.campaign_root,
+        accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+    )
+
+    authority_root = (
+        operands.campaign_root
+        if authority_campaign_root is None
+        else Path(authority_campaign_root)
+    )
+    campaign_state = str(inspect_campaign_state(authority_root))
     if campaign_state != "COMPLETE":
         raise _error("GATE_B_CAMPAIGN_NOT_COMPLETE", campaign_state)
 
@@ -662,7 +696,11 @@ def build_gate_b_plan(operands: Exp010GateBOperands) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-def run_gate_b_host_from_cli(operands: Exp010GateBOperands) -> dict[str, Any]:
+def run_gate_b_host_from_cli(
+    operands: Exp010GateBOperands,
+    *,
+    accepted_scale_contract_sha256: str | None = None,
+) -> dict[str, Any]:
     """The single real hosting seam.
 
     Reached only after `build_gate_b_plan` has validated everything, and only
@@ -677,6 +715,11 @@ def run_gate_b_host_from_cli(operands: Exp010GateBOperands) -> dict[str, Any]:
     """
 
     from http.server import HTTPServer
+
+    _require_campaign_namespace(
+        operands.campaign_root,
+        accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+    )
 
     from .config import IndexTrack
     from .docker_health import DockerSocketHealthProbe

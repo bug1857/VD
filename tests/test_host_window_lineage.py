@@ -17,6 +17,7 @@ from vdbench.host_window_lineage import (
     InjectedReadOnlyCaptureMetadataProvider,
     ReferenceV2Host,
     SQLiteHostResponseCommitStore,
+    VerifiedHostSourceHead,
     V2GenuineWorkloadObservationSource,
 )
 from vdbench.shadow_event_types import MonitorStreamKey
@@ -113,6 +114,79 @@ class HostWindowLineageTests(unittest.TestCase):
                     reopened.poll(consumer_id="shadow", limit=1)[0].source_sequence,
                     0,
                 )
+
+    def test_verified_head_binds_count_to_source_and_outbox_heads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.sqlite3"
+            with self._store(path) as store:
+                empty = store.verified_source_head()
+                self.assertIs(type(empty), VerifiedHostSourceHead)
+                self.assertEqual(empty.source_count, 0)
+                self.assertIsNone(empty.source_head_sha256)
+                for index in range(3):
+                    latest = store.commit_response(
+                        _observation(index), committed_at_utc="2026-08-12T00:00:00Z"
+                    )
+                head = store.verified_source_head()
+                self.assertEqual((head.source_count, head.maximum_source_sequence), (3, 2))
+                self.assertEqual(head.source_head_sha256, latest.source_sha256)
+                self.assertIsNotNone(head.outbox_head_sha256)
+            with self._store(path) as reopened:
+                self.assertEqual(reopened.verified_source_head(), head)
+
+    def test_hot_head_check_never_replays_full_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.sqlite3"
+            with self._store(path) as store:
+                for index in range(8):
+                    store.commit_response(
+                        _observation(index), committed_at_utc="2026-08-12T00:00:00Z"
+                    )
+                original = store._verify_all
+                store._verify_all = lambda: (_ for _ in ()).throw(
+                    AssertionError("hot head check replayed the full chain")
+                )
+                try:
+                    self.assertEqual(store.verified_source_head().source_count, 8)
+                finally:
+                    store._verify_all = original
+
+    def test_outbox_head_substitution_refused_by_hot_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.sqlite3"
+            with self._store(path) as store:
+                store.commit_response(
+                    _observation(0), committed_at_utc="2026-08-12T00:00:00Z"
+                )
+                trigger = store._connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE name='source_outbox_no_update'"
+                ).fetchone()[0]
+                store._connection.execute("DROP TRIGGER source_outbox_no_update")
+                store._connection.execute(
+                    "UPDATE source_outbox SET outbox_sha256=? WHERE source_sequence=0",
+                    ("0" * 64,),
+                )
+                store._connection.execute(trigger)
+                with self.assertRaises(HostResponseCommitError) as raised:
+                    store.verified_source_head()
+                self.assertEqual(raised.exception.code, "HOST_SOURCE_HEAD_DRIFT")
+
+    def test_cached_count_substitution_is_refused_by_durable_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.sqlite3"
+            with self._store(path) as store:
+                for index in range(2):
+                    store.commit_response(
+                        _observation(index), committed_at_utc="2026-08-12T00:00:00Z"
+                    )
+                verified = store._sources
+                store._sources = verified[:-1]
+                try:
+                    with self.assertRaises(HostResponseCommitError) as raised:
+                        store.verified_source_head()
+                    self.assertEqual(raised.exception.code, "HOST_SOURCE_HEAD_DRIFT")
+                finally:
+                    store._sources = verified
 
     def test_v2_host_never_returns_visible_response_when_commit_fails(self) -> None:
         executor = _Executor()

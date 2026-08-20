@@ -15,12 +15,18 @@ from pathlib import Path
 import numpy as np
 
 from vdbench.config import IndexTrack, Metric
+from vdbench.exp012_scale_contract import Exp012ScaleProfile, build_exp012_scale_contract
 from vdbench.host_observation import CompletedRangeQueryObservation, ServedQueryOutcome
 from vdbench.host_window_lineage import SQLiteHostResponseCommitStore
 from vdbench.milvus import CollectionIdentity
 from vdbench.milvus_actuation import CollectionIdentityBinding, StackHealth
 from vdbench.oracle import exact_range_search
 from vdbench.shadow_event_types import MonitorStreamKey
+from vdbench.shadow_search_telemetry import (
+    SQLiteShadowSearchTelemetryStore,
+    ShadowSearchRole,
+    ShadowSearchTelemetryBinding,
+)
 from vdbench.shadow_window import TRACE_QUERY_COUNT
 from vdbench.v2_milvus_shadow_capture import (
     V2MilvusShadowCaptureError,
@@ -138,7 +144,7 @@ def _observations(count: int, *, dimensions: int = 128):
         return store.poll(consumer_id="fixture", limit=count)
 
 
-def _executor(client) -> V2MilvusShadowCaptureExecutor:
+def _executor(client, telemetry=None) -> V2MilvusShadowCaptureExecutor:
     return V2MilvusShadowCaptureExecutor(
         client=client,
         stream_key=_stream(),
@@ -150,6 +156,7 @@ def _executor(client) -> V2MilvusShadowCaptureExecutor:
         environment_manifest_sha256=_ENVIRONMENT,
         stack_health_probe=_FakeHealthProbe(),
         occurred_at_clock=lambda: "2026-08-12T00:00:05Z",
+        search_telemetry_store=telemetry,
     )
 
 
@@ -204,6 +211,38 @@ class V2MilvusShadowCaptureTests(unittest.TestCase):
         # No candidate/LKG search: every HNSW call is the sentinel ef.
         self.assertEqual({call[1] for call in hnsw}, {100})
         self.assertEqual({call[1] for call in flat}, {None})
+
+    def test_scale_telemetry_binds_every_physical_search_to_source_and_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            binding = ShadowSearchTelemetryBinding(
+                campaign_id="exp012-scale-test",
+                scale_contract=build_exp012_scale_contract(
+                    Exp012ScaleProfile.SCALE_2400
+                ),
+                stream_key=_stream(),
+                source_revision=_REVISION,
+                environment_manifest_sha256=_ENVIRONMENT,
+            )
+            with SQLiteShadowSearchTelemetryStore(
+                Path(raw) / "telemetry.sqlite3", binding=binding
+            ) as telemetry:
+                _executor(_OracleBackedClient(), telemetry).capture(
+                    self.sources, trace_sequence_index=0
+                )
+                records = telemetry.records()
+                self.assertEqual(len(records), TRACE_QUERY_COUNT * 2)
+                for offset, source in enumerate(self.sources):
+                    pair = records[offset * 2 : offset * 2 + 2]
+                    self.assertEqual(
+                        tuple(item.role for item in pair),
+                        (
+                            ShadowSearchRole.FLAT_REFERENCE,
+                            ShadowSearchRole.HNSW_SENTINEL,
+                        ),
+                    )
+                    self.assertEqual({item.source_sequence for item in pair}, {source.source_sequence})
+                    self.assertEqual({item.source_sha256 for item in pair}, {source.source_sha256})
+                    self.assertEqual(len({item.attempt_sha256 for item in pair}), 1)
 
     def test_oracle_comes_from_dataset001_base_material(self) -> None:
         client = _OracleBackedClient()

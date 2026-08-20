@@ -2424,3 +2424,67 @@ calibrated, live, or prospective evidence. Promotion of EXP-011 to a run
 status still requires the full pre-registered protocol above, executed for
 real against a live, read-only-authorized Milvus stack, and independently
 reviewed — nothing in this addendum shortens that requirement.
+
+### EXP-012-SCALE: Multi-window host and shadow-pipeline scale validation
+
+Status: FOUNDATION IMPLEMENTED — FOCUSED VERIFICATION PASSED — NOT RUN
+
+Governing decision: ADR-019 Accepted for offline foundation work; no live scale
+campaign or ENV-002 execution is authorized by this entry.
+
+#### Objective and frozen profiles
+
+Determine whether the accepted v2 source, shadow, detector, attestation, and
+finalization path remains correct beyond EXP-010's frozen 600-source campaign.
+The v1 scale family is closed:
+
+- `scale-2400`: exactly 2,400 source records, sequences `0..2399`, twelve exact
+  200-source windows, 2,400 FLAT plus 2,400 HNSW-sentinel searches;
+- `scale-10000`: exactly 10,000 source records, sequences `0..9999`, fifty exact
+  200-source windows, 10,000 FLAT plus 10,000 HNSW-sentinel searches.
+
+No partial target, extra source, gap, duplicate query identity, missing role,
+duplicate role, failed search, unfinalized window, or altered 200-source window
+is a passing result. Detector reference/current progression must continue in
+natural canonical window order beyond three windows. A restart may continue
+only through the existing durable closed-attempt/window rules; orphan STARTED
+and ambiguous outcomes remain terminal and non-retriable.
+
+#### Evidence and measurement contract
+
+Campaign contracts, Gate-B plans/results, and Gate-C plans/results use the
+distinct ADR-019 EXP-012 schemas and digest domains. Existing EXP-010 evidence
+is neither migrated nor re-labeled. Gate-B normal target checks use the
+store-issued source/outbox head snapshot; explicit audit and reopen still
+perform complete chain reconstruction.
+
+The campaign must contain the exact immutable ADR-019 scale marker before any
+Gate-C operation. Legacy EXP-010 operators must refuse that marker, while the
+scale operators must reject a missing, malformed, or profile-substituted
+marker. The marker also pins the digest of a separately verified Gate-A
+authority root; no EXP-010 plan/evidence document is copied into or emitted
+inside the EXP-012 campaign root.
+
+Gate C must persist exactly one append-only telemetry record for each physical
+FLAT or HNSW-sentinel search. Every record binds campaign, scale contract,
+window, trace attempt, source sequence/digest, query-id digest, role, monotonic
+interval, derived latency, outcome/result count or error classification, and
+the previous telemetry digest. Exact cardinality and source-role conservation
+are reverified from canonical rows; no aggregate counter is evidence.
+
+#### Required offline verification before live preflight
+
+Focused tests must prove both exact targets and projected search counts;
+duplicate/gap/overshoot refusal; twelve/fifty-window planning and progression;
+acknowledgement/finalization continuation; closed-window restart; orphan
+STARTED refusal; large-history/source-head/outbox-head substitution refusal;
+telemetry append/reopen/hash-chain/schema/row/digest tamper refusal; and frozen
+EXP-010 operator regressions. Synthetic/fake scale benchmarks may characterize
+control-path complexity but are not live throughput/latency evidence.
+
+#### Live status and claims
+
+No 2,400- or 10,000-source campaign has been run. No live latency, throughput,
+error-rate, resource-pressure, restart, or remote/distributed-Milvus claim is
+made. Such claims require separately authorized live campaigns with preserved
+raw telemetry and environment evidence. ENV-002 remains out of this checkpoint.

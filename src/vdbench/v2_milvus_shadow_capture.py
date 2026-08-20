@@ -56,7 +56,13 @@ from .milvus_actuation import (
     MilvusActuationClient,
     ShadowAuditTrace,
 )
+from .shadow_attempt_store import build_shadow_attempt_identity
 from .shadow_event_types import MonitorStreamKey
+from .shadow_search_telemetry import (
+    SQLiteShadowSearchTelemetryStore,
+    ShadowSearchOutcome,
+    ShadowSearchRole,
+)
 from .shadow_window import TRACE_QUERY_COUNT
 
 __all__ = [
@@ -120,6 +126,7 @@ class V2MilvusShadowCaptureExecutor:
         stack_health_probe: Any,
         occurred_at_clock: Callable[[], str],
         clock_ns: Callable[[], int] = perf_counter_ns,
+        search_telemetry_store: SQLiteShadowSearchTelemetryStore | None = None,
     ) -> None:
         if type(stream_key) is not MonitorStreamKey:
             raise _error("CAPTURE_STREAM_INVALID")
@@ -149,6 +156,18 @@ class V2MilvusShadowCaptureExecutor:
         self._stack_health_probe = stack_health_probe
         self._occurred_at_clock = occurred_at_clock
         self._clock_ns = clock_ns
+        if search_telemetry_store is not None:
+            if type(search_telemetry_store) is not SQLiteShadowSearchTelemetryStore:
+                raise _error("CAPTURE_TELEMETRY_STORE_INVALID")
+            binding = search_telemetry_store.binding
+            if (
+                binding.stream_key != stream_key
+                or binding.source_revision != source_revision
+                or binding.environment_manifest_sha256
+                != environment_manifest_sha256
+            ):
+                raise _error("CAPTURE_TELEMETRY_BINDING_MISMATCH")
+        self._search_telemetry_store = search_telemetry_store
 
         base_ids, base_vectors, data_identity, dimensions = _load_verified_corpus(
             dataset001_dir
@@ -189,6 +208,17 @@ class V2MilvusShadowCaptureExecutor:
 
         validated = self._validated_slice(sources)
         workload = self._ephemeral_workload(validated)
+        telemetry_sink = None
+        if self._search_telemetry_store is not None:
+            identity = build_shadow_attempt_identity(
+                validated, trace_sequence_index=trace_sequence_index
+            )
+            telemetry_sink = _CaptureTelemetrySink(
+                store=self._search_telemetry_store,
+                sources=validated,
+                trace_sequence_index=trace_sequence_index,
+                attempt_sha256=identity.attempt_sha256,
+            )
         client = MilvusActuationClient(
             self._client,
             workload=workload,
@@ -196,6 +226,7 @@ class V2MilvusShadowCaptureExecutor:
             stack_health_probe=self._stack_health_probe,
             initial_ef=self.served_ef,
             clock_ns=self._clock_ns,
+            search_telemetry_sink=telemetry_sink,
         )
         context = ShadowActuationContext(
             metric=self.stream_key.metric,
@@ -278,6 +309,68 @@ class V2MilvusShadowCaptureExecutor:
             identity_bindings=self._identity_bindings,
             configuration_identity=self.stream_key.configuration_identity,
             data_identity=self.stream_key.data_identity,
+        )
+
+
+class _CaptureTelemetrySink:
+    """Bind Milvus search intervals to the exact committed source positions."""
+
+    def __init__(
+        self,
+        *,
+        store: SQLiteShadowSearchTelemetryStore,
+        sources: tuple[CommittedHostObservation, ...],
+        trace_sequence_index: int,
+        attempt_sha256: str,
+    ) -> None:
+        self._store = store
+        self._sources = {item.query_id: item for item in sources}
+        self._trace_sequence_index = trace_sequence_index
+        self._attempt_sha256 = attempt_sha256
+
+    def record_search(
+        self,
+        *,
+        query_id: object,
+        stage: str,
+        configuration: Any,
+        started_monotonic_ns: int,
+        completed_monotonic_ns: int,
+        result_count: int | None,
+        error_classification: str | None,
+    ) -> None:
+        try:
+            source = self._sources[query_id]
+        except (KeyError, TypeError) as exc:
+            raise _error("CAPTURE_TELEMETRY_SOURCE_MISMATCH") from exc
+        if stage == "FLAT" and configuration.index_track is IndexTrack.FLAT:
+            role = ShadowSearchRole.FLAT_REFERENCE
+        elif (
+            stage == "SENTINEL_HNSW"
+            and configuration.index_track is IndexTrack.HNSW
+            and configuration.ef == 100
+        ):
+            role = ShadowSearchRole.HNSW_SENTINEL
+        else:
+            raise _error("CAPTURE_TELEMETRY_ROLE_INVALID")
+        outcome = (
+            ShadowSearchOutcome.SUCCEEDED
+            if error_classification is None
+            else ShadowSearchOutcome.FAILED
+        )
+        self._store.append(
+            window_sequence=source.window_sequence,
+            trace_sequence_index=self._trace_sequence_index,
+            attempt_sha256=self._attempt_sha256,
+            source_sequence=source.source_sequence,
+            source_sha256=source.source_sha256,
+            query_id_sha256=source.query_id_sha256,
+            role=role,
+            started_monotonic_ns=started_monotonic_ns,
+            completed_monotonic_ns=completed_monotonic_ns,
+            outcome=outcome,
+            error_classification=error_classification,
+            result_count=result_count,
         )
 
 
