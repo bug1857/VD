@@ -519,11 +519,18 @@ def _validate_query(
         radius=radius,
         range_filter=range_filter,
         limit=limit,
+        dimensions=(
+            len(query.query_vector)
+            if type(query.query_vector) is tuple and query.query_vector
+            else None
+        ),
     )
     if agreement.kind is FlatOracleAgreementKind.MEMBERSHIP_MISMATCH:
         _add(reasons, "FLAT_ORACLE_ID_SET_MISMATCH")
     elif agreement.kind is FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH:
         _add(reasons, "FLAT_ORACLE_ORDER_MISMATCH")
+        for code in agreement.reason_codes:
+            _add(reasons, code)
     elif agreement.kind is FlatOracleAgreementKind.INVALID_EVIDENCE:
         for code in agreement.reason_codes:
             _add(reasons, code)

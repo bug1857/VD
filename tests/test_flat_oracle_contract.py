@@ -31,7 +31,14 @@ def _binary32(value: float) -> float:
     return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
-def _compare(flat, oracle, *, limit: int = _LIMIT, radius: float = _RADIUS):
+def _compare(
+    flat,
+    oracle,
+    *,
+    limit: int = _LIMIT,
+    radius: float = _RADIUS,
+    dimensions: int | None = None,
+):
     return compare_flat_oracle_hits(
         flat_hits=tuple(flat),
         oracle_result=oracle,
@@ -39,6 +46,7 @@ def _compare(flat, oracle, *, limit: int = _LIMIT, radius: float = _RADIUS):
         radius=radius,
         range_filter=_RANGE_FILTER,
         limit=limit,
+        dimensions=dimensions,
     )
 
 
@@ -177,6 +185,199 @@ class Rule4And5TieGroupTests(unittest.TestCase):
         self.assertIsNot(
             result.kind, FlatOracleAgreementKind.PRECISION_TIE_EQUIVALENT
         )
+
+
+class L2ExecutionTieTests(unittest.TestCase):
+    """ADR-015 amendment: formula-bound, exact returned-score L2 ties."""
+
+    def test_frozen_source_475_divergence_is_execution_tie_equivalent(self) -> None:
+        oracle_pairs = (
+            (4352, 181.933313757053),
+            (8999, 182.48259229506598),
+            (9017, 182.7277454875737),
+            (8745, 182.7277686415395),
+            (5249, 183.02588001577578),
+            (8643, 183.16591634483262),
+        )
+        flat_pairs = (
+            (4352, 181.9333038330078),
+            (8999, 182.4825897216797),
+            (8745, 182.72775268554688),
+            (9017, 182.72775268554688),
+            (5249, 183.02587890625),
+            (8643, 183.16592407226562),
+        )
+        self.assertNotEqual(
+            struct.pack("<f", oracle_pairs[2][1]),
+            struct.pack("<f", oracle_pairs[3][1]),
+        )
+        self.assertEqual(
+            struct.pack("<f", flat_pairs[2][1]),
+            struct.pack("<f", flat_pairs[3][1]),
+        )
+        self.assertEqual(
+            struct.unpack("<I", struct.pack("<f", oracle_pairs[2][1]))[0],
+            0x4336BA4E,
+        )
+        self.assertEqual(
+            struct.unpack("<I", struct.pack("<f", oracle_pairs[3][1]))[0],
+            0x4336BA4F,
+        )
+        result = _compare(
+            tuple(SearchHit(*pair) for pair in flat_pairs),
+            _oracle(oracle_pairs),
+            radius=191.85897352125554,
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT
+        )
+        self.assertTrue(result.agrees)
+
+    def test_cross_oracle_group_returned_tie_inside_interval_passes(self) -> None:
+        first = 182.7277454875737
+        second = 182.7277686415395
+        returned = _binary32(first)
+        result = _compare(
+            (SearchHit(2, returned), SearchHit(1, returned)),
+            _oracle(((1, first), (2, second))),
+            radius=200.0,
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT
+        )
+
+    def test_cross_oracle_group_returned_tie_outside_interval_fails(self) -> None:
+        result = _compare(
+            (SearchHit(2, 1.0), SearchHit(1, 1.0)),
+            _oracle(((1, 1.0), (2, 1.1))),
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_one_and_multiple_ulp_legal_ties_do_not_use_a_free_epsilon(self) -> None:
+        base_bits = struct.unpack("<I", struct.pack("<f", 1.0))[0]
+        for ulps in (1, 4):
+            with self.subTest(ulps=ulps):
+                separated = struct.unpack(
+                    "<f", struct.pack("<I", base_bits + ulps)
+                )[0]
+                result = _compare(
+                    (SearchHit(2, 1.0), SearchHit(1, 1.0)),
+                    _oracle(((1, 1.0), (2, separated))),
+                    dimensions=128,
+                )
+                self.assertIs(
+                    result.kind,
+                    FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT,
+                )
+
+    def test_large_multi_ulp_tie_outside_formula_bound_fails(self) -> None:
+        base_bits = struct.unpack("<I", struct.pack("<f", 1.0))[0]
+        separated = struct.unpack(
+            "<f", struct.pack("<I", base_bits + 512)
+        )[0]
+        result = _compare(
+            (SearchHit(2, 1.0), SearchHit(1, 1.0)),
+            _oracle(((1, 1.0), (2, separated))),
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_noncontiguous_oracle_ranks_cannot_form_execution_tie(self) -> None:
+        oracle = _oracle(((1, 1.0), (2, 1.000001), (3, 1.000002)))
+        flat = (
+            SearchHit(3, 1.0),
+            SearchHit(1, 1.0),
+            SearchHit(2, 1.000002),
+        )
+        result = _compare(flat, oracle, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_different_returned_scores_do_not_create_execution_tie(self) -> None:
+        first = 182.7277454875737
+        second = 182.7277686415395
+        result = _compare(
+            (SearchHit(2, _binary32(first)), SearchHit(1, _binary32(second))),
+            _oracle(((1, first), (2, second))),
+            radius=200.0,
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_binary64_values_that_only_cast_to_one_f32_are_not_returned_tie(self) -> None:
+        first = 182.7277454875737
+        second = 182.7277686415395
+        returned = _binary32(first)
+        result = _compare(
+            (
+                SearchHit(2, returned),
+                SearchHit(1, math.nextafter(returned, math.inf)),
+            ),
+            _oracle(((1, first), (2, second))),
+            radius=200.0,
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_execution_tie_is_unavailable_outside_governed_dimensions(self) -> None:
+        first = 182.7277454875737
+        second = 182.7277686415395
+        returned = _binary32(first)
+        for dimensions in (None, 127, 129):
+            with self.subTest(dimensions=dimensions):
+                result = _compare(
+                    (SearchHit(2, returned), SearchHit(1, returned)),
+                    _oracle(((1, first), (2, second))),
+                    radius=200.0,
+                    dimensions=dimensions,
+                )
+                self.assertIs(
+                    result.kind,
+                    FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH,
+                )
+
+    def test_cosine_contract_is_not_broadened(self) -> None:
+        result = compare_flat_oracle_hits(
+            flat_hits=(SearchHit(2, 0.9), SearchHit(1, 0.9)),
+            oracle_result=_oracle(((1, 0.90001), (2, 0.89999))),
+            metric=Metric.COSINE,
+            radius=0.25,
+            range_filter=1.0,
+            limit=100,
+            dimensions=128,
+        )
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_malformed_dimensions_fail_closed(self) -> None:
+        oracle = _oracle(((1, 1.0),))
+        for dimensions in (True, 128.0, "128", 0, -1):
+            with self.subTest(dimensions=dimensions):
+                result = compare_flat_oracle_hits(
+                    flat_hits=(SearchHit(1, 1.0),),
+                    oracle_result=oracle,
+                    metric=Metric.L2,
+                    radius=_RADIUS,
+                    range_filter=_RANGE_FILTER,
+                    limit=_LIMIT,
+                    dimensions=dimensions,
+                )
+                self.assertIs(
+                    result.kind, FlatOracleAgreementKind.INVALID_EVIDENCE
+                )
 
 
 class ToleranceScopeTests(unittest.TestCase):

@@ -2,10 +2,11 @@
 
 The independent oracle accumulates scores in binary64 while the governed
 vectors and Milvus search path use binary32.  Distinct oracle scores can
-therefore collapse to the same representable binary32 value.  This module
-keeps exact capped membership mandatory and permits a permutation only inside
-one such deterministic binary32 oracle-score group.  It never applies a free
-tolerance and never replaces ordered agreement with global set equality.
+therefore collapse to the same representable binary32 value, and legal
+binary32 L2 reduction orders can also collapse scores whose final oracle casts
+remain distinct.  This module keeps exact capped membership mandatory and
+permits only the two explicitly governed tie classes below.  It never applies
+a free tolerance and never replaces ordered agreement with global set equality.
 
 The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
 
@@ -21,8 +22,13 @@ The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
 4. Distinguishable oracle score-group order.  Oracle members are bucketed by
    the exact IEEE-754 binary32 bit pattern of their score, and those buckets
    must appear in metric order.
-5. Permutation is legal ONLY inside one exact binary32 oracle-score tie group.
-   Reordering across two groups is `NON_TIE_ORDER_MISMATCH`.
+5. Permutation is legal inside one exact binary32 oracle-score tie group.  For
+   governed 128-dimensional L2 only, a second, separately classified rule also
+   permits a contiguous oracle-rank permutation inside one exact returned-FLAT
+   binary32 tie block when every returned score lies inside the analytical
+   IEEE-754 execution interval for its independent oracle score.  The interval
+   covers binary32 subtraction and any legal binary32 product/FMA reduction
+   order; it is formula-derived, not fitted to observed evidence.
 6. No capped-membership substitution (the emphatic restatement of rule 1,
    because it is the rule most often mistaken for over-strictness).
 
@@ -42,8 +48,9 @@ import math
 import struct
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 
-from .config import NUMERIC_TOLERANCE, Metric
+from .config import EXP001_DATASET_SPEC, NUMERIC_TOLERANCE, Metric
 from .milvus import SearchHit
 from .oracle import OracleHit, OracleResult, threshold_violations, validate_range
 
@@ -59,6 +66,7 @@ class FlatOracleAgreementKind(StrEnum):
 
     EXACT_ORDERED = "EXACT_ORDERED"
     PRECISION_TIE_EQUIVALENT = "PRECISION_TIE_EQUIVALENT"
+    EXECUTION_TIE_EQUIVALENT = "EXECUTION_TIE_EQUIVALENT"
     MEMBERSHIP_MISMATCH = "MEMBERSHIP_MISMATCH"
     NON_TIE_ORDER_MISMATCH = "NON_TIE_ORDER_MISMATCH"
     INVALID_EVIDENCE = "INVALID_EVIDENCE"
@@ -66,7 +74,7 @@ class FlatOracleAgreementKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FlatOracleAgreementResult:
-    """Structured comparison result; only the first two kinds agree."""
+    """Structured comparison result; only the three explicit agreement kinds agree."""
 
     kind: FlatOracleAgreementKind
     reason_codes: tuple[str, ...]
@@ -76,6 +84,7 @@ class FlatOracleAgreementResult:
         return self.kind in {
             FlatOracleAgreementKind.EXACT_ORDERED,
             FlatOracleAgreementKind.PRECISION_TIE_EQUIVALENT,
+            FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT,
         }
 
 
@@ -116,6 +125,124 @@ def _valid_score(value: object) -> bool:
     return type(value) is float and math.isfinite(value)
 
 
+# IEEE-754 binary32 round-to-nearest unit roundoff and minimum normal.  The
+# latter deliberately covers both gradual-underflow rounding and a
+# flush-to-zero implementation, without requiring an unverified runtime FPCR
+# assumption.  These are format constants, not empirical tolerances.
+_BINARY32_UNIT_ROUNDOFF = Fraction(1, 2**24)
+_BINARY32_UNDERFLOW_ABSOLUTE_BOUND = Fraction(1, 2**126)
+_BINARY64_UNIT_ROUNDOFF = Fraction(1, 2**53)
+_GOVERNED_L2_DIMENSIONS = EXP001_DATASET_SPEC.dimensions
+
+
+def _l2_binary32_execution_interval(
+    oracle_score: float, *, dimensions: int
+) -> tuple[float, float]:
+    """Bound legal binary32 squared-L2 reductions around a binary64 oracle.
+
+    For ``n`` finite binary32 input components, a rounded subtraction perturbs
+    each exact difference by at most binary32 unit roundoff (a subnormal
+    cancellation is exact under gradual underflow).  Squaring contributes that
+    factor twice.  A product plus an arbitrary reduction tree contributes at
+    most ``n`` further rounded binary32 operations along any term's path; an
+    FMA path has no more error than this deliberately conservative model.
+
+    The independent oracle also performs finite binary64 subtraction, square,
+    and reduction operations.  ``gamma_(n+2)`` encloses its score around the
+    exact real sum.  The returned interval then composes that oracle interval
+    with ``(1 +/- u32) ** (n+2)`` and a geometric minimum-normal term for the
+    binary32 product/reduction operations.  All arithmetic is expanded by one
+    binary64 ``nextafter`` at each edge so host evaluation cannot narrow the
+    mathematical interval.  The absolute underflow term uses the minimum
+    normal, conservatively covering gradual underflow and flush-to-zero.
+    """
+
+    if dimensions <= 0 or oracle_score < 0.0 or not math.isfinite(oracle_score):
+        raise ValueError("invalid L2 execution-model input")
+    oracle_operations = dimensions + 2
+    gamma64_numerator = oracle_operations * _BINARY64_UNIT_ROUNDOFF
+    if gamma64_numerator >= 1:
+        raise ValueError("unsupported L2 execution-model dimensions")
+    gamma64 = gamma64_numerator / (1 - gamma64_numerator)
+    exact_score = Fraction.from_float(oracle_score)
+    exact_lower = exact_score / (1 + gamma64)
+    exact_upper = exact_score / (1 - gamma64)
+
+    binary32_operations = dimensions + 2
+    lower_factor = (1 - _BINARY32_UNIT_ROUNDOFF) ** binary32_operations
+    upper_factor = (1 + _BINARY32_UNIT_ROUNDOFF) ** binary32_operations
+    # Each product/reduction step may lose at most one minimum-normal unit even
+    # under flush-to-zero; later operations amplify it by at most (1+u32).
+    additive = _BINARY32_UNDERFLOW_ABSOLUTE_BOUND * sum(
+        (1 + _BINARY32_UNIT_ROUNDOFF) ** index
+        for index in range(binary32_operations)
+    )
+    lower_fraction = max(Fraction(0), exact_lower * lower_factor - additive)
+    upper_fraction = exact_upper * upper_factor + additive
+    lower = float(lower_fraction)
+    upper = float(upper_fraction)
+    if Fraction.from_float(lower) > lower_fraction:
+        lower = math.nextafter(lower, -math.inf)
+    if Fraction.from_float(upper) < upper_fraction:
+        upper = math.nextafter(upper, math.inf)
+    if not math.isfinite(upper):
+        raise ValueError("unsupported L2 execution-model range")
+    return (
+        max(0.0, math.nextafter(lower, -math.inf)),
+        math.nextafter(upper, math.inf),
+    )
+
+
+def _execution_tie_equivalent(
+    *,
+    flat_ids: tuple[int, ...],
+    flat_scores: tuple[float, ...],
+    oracle_ids: tuple[int, ...],
+    oracle_score_by_id: dict[int, float],
+    metric: Metric,
+    dimensions: int | None,
+) -> bool:
+    """Return whether every changed position is one proved L2 execution tie."""
+
+    if metric is not Metric.L2 or dimensions != _GOVERNED_L2_DIMENSIONS:
+        return False
+    oracle_rank = {identifier: rank for rank, identifier in enumerate(oracle_ids)}
+    changed = False
+    position = 0
+    while position < len(flat_ids):
+        returned_group, returned_value = _binary32(flat_scores[position])
+        stop = position + 1
+        while stop < len(flat_ids):
+            candidate_group, _ = _binary32(flat_scores[stop])
+            if candidate_group != returned_group:
+                break
+            stop += 1
+
+        block_ids = flat_ids[position:stop]
+        expected_ranks = tuple(range(position, stop))
+        actual_ranks = tuple(sorted(oracle_rank[identifier] for identifier in block_ids))
+        if actual_ranks != expected_ranks:
+            return False
+        if block_ids != oracle_ids[position:stop]:
+            changed = True
+            if any(
+                flat_scores[index] != returned_value
+                for index in range(position, stop)
+            ):
+                return False
+            for identifier in block_ids:
+                try:
+                    lower, upper = _l2_binary32_execution_interval(
+                        oracle_score_by_id[identifier], dimensions=dimensions
+                    )
+                except ValueError:
+                    return False
+                if not lower <= returned_value <= upper:
+                    return False
+        position = stop
+    return changed
+
+
 def compare_flat_oracle_hits(
     *,
     flat_hits: object,
@@ -124,6 +251,7 @@ def compare_flat_oracle_hits(
     radius: object,
     range_filter: object,
     limit: object,
+    dimensions: object = None,
 ) -> FlatOracleAgreementResult:
     """Compare one capped FLAT result with its independent exact oracle.
 
@@ -140,6 +268,10 @@ def compare_flat_oracle_hits(
         or type(range_filter) is not float
         or type(limit) is not int
         or limit <= 0
+        or (
+            dimensions is not None
+            and (type(dimensions) is not int or dimensions <= 0)
+        )
     ):
         return _result(
             FlatOracleAgreementKind.INVALID_EVIDENCE,
@@ -170,6 +302,7 @@ def compare_flat_oracle_hits(
 
     oracle_ids: list[int] = []
     oracle_group_by_id: dict[int, bytes] = {}
+    oracle_score_by_id: dict[int, float] = {}
     oracle_group_values: list[float] = []
     oracle_scores: list[float] = []
     for hit in oracle_hits:
@@ -196,6 +329,7 @@ def compare_flat_oracle_hits(
             )
         oracle_ids.append(hit.id)
         oracle_group_by_id[hit.id] = group
+        oracle_score_by_id[hit.id] = hit.score
         oracle_group_values.append(group_value)
         oracle_scores.append(hit.score)
 
@@ -281,6 +415,15 @@ def compare_flat_oracle_hits(
     flat_groups = tuple(oracle_group_by_id[item] for item in flat_ids)
     if flat_groups == oracle_groups:
         return _result(FlatOracleAgreementKind.PRECISION_TIE_EQUIVALENT)
+    if _execution_tie_equivalent(
+        flat_ids=tuple(flat_ids),
+        flat_scores=tuple(flat_scores),
+        oracle_ids=tuple(oracle_ids),
+        oracle_score_by_id=oracle_score_by_id,
+        metric=metric,
+        dimensions=dimensions,
+    ):
+        return _result(FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT)
     return _result(
         FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH,
         "FLAT_ORACLE_NON_TIE_ORDER_MISMATCH",

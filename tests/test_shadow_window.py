@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import unittest
 from dataclasses import replace
 
@@ -15,6 +16,10 @@ from vdbench.milvus_actuation import (
     ShadowQueryAuditTrace,
 )
 from vdbench.oracle import OracleHit, OracleResult
+from vdbench.shadow_artifacts import (
+    decode_persisted_shadow_trace_envelope,
+    encode_persisted_shadow_trace_envelope,
+)
 from vdbench.shadow_window import (
     AssembledShadowWindow,
     PersistedShadowTraceEnvelope,
@@ -127,6 +132,43 @@ class ShadowWindowAssemblyTests(unittest.TestCase):
         self.assertEqual(tuple(item.query_id for item in result.query_records), tuple(range(200)))
         self.assertEqual(result.metric, Metric.L2)
         self.assertEqual(result.threshold_stratum, "target-075")
+
+    def test_reconstruction_accepts_governed_l2_execution_tie(self) -> None:
+        values = list(_envelopes())
+        query = values[0].trace.queries[0]
+        first = 1.0
+        # Advance to the next binary32 group, while remaining far inside the
+        # formula-derived 128-dimensional execution interval.
+        second = struct.unpack("<f", struct.pack("<I", 0x3F800001))[0]
+        returned = 1.0
+        amended = replace(
+            query,
+            query_vector=(0.0,) * 128,
+            oracle_result=OracleResult(
+                (OracleHit(10_001, first), OracleHit(10_002, second)), 2, False
+            ),
+            exact_cardinality=2,
+            flat_hits=(SearchHit(10_002, returned), SearchHit(10_001, returned)),
+            sentinel_hits=(SearchHit(10_001, first), SearchHit(10_002, second)),
+            sentinel_recall=1.0,
+        )
+        trace = replace(
+            values[0].trace,
+            queries=(amended, *values[0].trace.queries[1:]),
+        )
+        values[0] = replace(
+            values[0],
+            trace=trace,
+            expected_trace_sha256=hash_shadow_audit_trace(trace),
+        )
+        persisted = tuple(
+            decode_persisted_shadow_trace_envelope(
+                encode_persisted_shadow_trace_envelope(value)
+            )
+            for value in values
+        )
+        result = assemble_shadow_window(window_id=1, envelopes=persisted)
+        self.assertTrue(result.complete, result.reason_codes)
 
     def test_fewer_than_four_envelopes_fails_closed(self) -> None:
         self.assert_incomplete(

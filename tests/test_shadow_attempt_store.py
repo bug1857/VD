@@ -990,6 +990,9 @@ class FlatOracleAgreementTests(unittest.TestCase):
         result = assemble_shadow_window(window_id=1, envelopes=tuple(values))
         self.assertFalse(result.complete)
         self.assertIn("FLAT_ORACLE_ORDER_MISMATCH", result.reason_codes)
+        self.assertIn(
+            "FLAT_ORACLE_NON_TIE_ORDER_MISMATCH", result.reason_codes
+        )
 
 
 if __name__ == "__main__":

@@ -706,6 +706,7 @@ class MilvusActuationClient:
         outcome: _SearchOutcome,
         oracle: OracleResult,
         configuration: SearchConfiguration,
+        dimensions: int,
     ) -> bool:
         if outcome.hits is None:
             return False
@@ -716,6 +717,7 @@ class MilvusActuationClient:
             radius=float(configuration.radius),
             range_filter=float(configuration.range_filter),
             limit=configuration.limit,
+            dimensions=dimensions,
         ).agrees
 
     def _run_audit(
@@ -828,7 +830,12 @@ class MilvusActuationClient:
                 flat_violations = self._violation_count(
                     flat.hits, flat_configuration
                 )
-                agrees = self._flat_agrees(flat, oracle, flat_configuration)
+                agrees = self._flat_agrees(
+                    flat,
+                    oracle,
+                    flat_configuration,
+                    int(query.shape[0]),
+                )
                 violations += flat_violations
                 flat_agreement &= agrees
                 if collect_trace:

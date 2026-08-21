@@ -2488,3 +2488,61 @@ No 2,400- or 10,000-source campaign has been run. No live latency, throughput,
 error-rate, resource-pressure, restart, or remote/distributed-Milvus claim is
 made. Such claims require separately authorized live campaigns with preserved
 raw telemetry and environment evidence. ENV-002 remains out of this checkpoint.
+
+#### 2026-08-21 EXP-012 scale-2400-v1 failed campaign — immutable
+
+Status: **FAILED_CLOSED — HISTORICAL EVIDENCE; NO RETRY OR COMPLETION CLAIM**
+
+Source revision: `810c569cb712296169a0bfe6c4dfd3d40aece0cf`
+
+Campaign root: `~/.local/share/vd/exp012-scale2400-v1`
+
+Profile: `scale-2400`; L2 `target-075`; DATASET-001/ENV-001 identities bound by
+the campaign's independently verified Gate-A authority.
+
+Gate B durably completed all 2,400 source records (`0..2399`) with no source
+gap or duplicate. Gate C stopped fail-closed after 1,000 physical searches:
+500 FLAT, 500 HNSW-sentinel, and exactly 1,000 matching telemetry records. Ten
+attempts reached `STARTED`; nine completed, one failed; two 200-source windows
+were finalized and 400 source positions acknowledged. No later source was
+searched or repaired.
+
+The terminal failure is window 2, trace 1, source 475
+(`logsim-v2:e8b4cde2f42c4d06cce2b91bf7c8ee15:475`), attempt SHA-256
+`5ef1529a7c8d700da5225514d93aee107f5cd3143d84f9d8eefddc5248b2d683`.
+The low-level comparator emitted `FLAT_ORACLE_NON_TIE_ORDER_MISMATCH`; the
+window/attempt layers preserved `FLAT_ORACLE_ORDER_MISMATCH`,
+`TRACE_INCOMPLETE`, and `STAGE_FAILED`. Oracle and FLAT membership were
+identical (76/76), and raw FLAT score order was valid. The first ID divergence
+was `9017` then `8745` in the oracle versus `8745` then `9017` from FLAT:
+
+- binary64 oracle: `182.7277454875737`, `182.7277686415395`;
+- oracle final binary32: `0x4336ba4e`, `0x4336ba4f`;
+- Milvus FLAT: both `182.72775268554688` (`0x4336ba4e`).
+
+The exact oracle margin was `2.315396579888329e-05`, about 1.5174 binary32 ULP
+at that magnitude. Frozen-input arithmetic and local inspection of the
+Knowhere/Faiss binary established the forensic root cause as
+`VD_ORACLE_NUMERIC_MODEL_MISMATCH`: legal binary32 L2 reduction orders can
+produce ordered, tied, or reversed outcomes even when binary64-final-cast
+oracle groups differ. This is a numerical-contract defect, not evidence of a
+membership, adapter, persistence, telemetry, or raw FLAT-order defect.
+
+Pre-amendment read-only census of all 500 persisted FLAT/oracle pairs was 499
+`EXACT_ORDERED`, zero `PRECISION_TIE_EQUIVALENT`, one
+`NON_TIE_ORDER_MISMATCH`, zero membership mismatches, and zero invalid evidence.
+The six SQLite databases reported `integrity_check = ok`; the source, attempt,
+and telemetry chains were independently verified. The campaign evidence
+baseline SHA-256 (sorted relative path plus per-file SHA-256, lock files
+excluded) is
+`f508efc7b90e9a67b90bf3cbf2c936102cb333eaf7111248f023fdcaa8f57653`;
+the telemetry chain has 1,000 records and head
+`1bbb9bb04ec3d96bdea9a63d204875a0415f10d8c2ac9e15efc9f59189fc382e`.
+
+The accepted 2026-08-21 ADR-015 amendment adds a separately identified,
+analytically bounded L2 execution-tie classification. A read-only forensic
+replay may state how source 475 would classify under new source, but it does
+not change this campaign's terminal state or evidence. This run makes **no**
+completed scale-2400, detector, latency, throughput, production, or remote
+Milvus claim. A fresh campaign identity and fresh Gate-A/B/C lifecycle are
+required after source freeze.

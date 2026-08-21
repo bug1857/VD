@@ -4385,6 +4385,79 @@ evidence available to this contract cannot prove interchangeable membership
 beyond the capped oracle payload; allowing it would weaken the contract into
 unverifiable set substitution.
 
+#### 2026-08-21 accepted numerical-model amendment — L2 execution ties
+
+The original oracle-final-cast rule above remains historical and continues to
+classify `PRECISION_TIE_EQUIVALENT`. It is incomplete for Milvus L2 execution:
+the independent oracle subtracts and accumulates in binary64 before its final
+binary32 cast, whereas the governed Milvus/Knowhere/Faiss ARM path performs
+binary32 component subtraction and binary32 product/FMA accumulation followed
+by a binary32 reduction. The locally inspected `milvusdb/milvus:v3.0.0`
+`libknowhere.so` exposes the Faiss `fvec_L2sqr_neon`, `fvec_L2sqr_sve`, and
+reference L2 kernels; disassembly of the active-platform NEON kernel shows
+`fsub`, `fmul`/`fmla`, block accumulation, and final pairwise `faddp`. A direct
+NEON-order emulation from the frozen source-475 operands reproduces both live
+returned score bit patterns exactly. Legal binary32 reduction order can
+therefore collapse or reverse two distances whose binary64-oracle final casts
+remain distinct.
+
+For the governed 128-dimensional L2 contract only, the comparator adds the
+distinct `EXECUTION_TIE_EQUIVALENT` outcome. Let `n = 128`, binary32 unit
+roundoff `u32 = 2^-24`, binary64 unit roundoff `u64 = 2^-53`, and binary32
+minimum normal `q32 = 2^-126`. The deliberately larger underflow constant also
+covers a flush-to-zero implementation without relying on an unverified FPCR
+mode. For a finite non-negative binary64 oracle score `O`, define:
+
+```
+g64 = ((n + 2) * u64) / (1 - ((n + 2) * u64))
+S_lower = O / (1 + g64)
+S_upper = O / (1 - g64)
+m = n + 2
+A = q32 * sum((1 + u32)^k for k in 0..m-1)
+L = nextDown(max(0, S_lower * (1 - u32)^m - A))
+U = nextUp(S_upper * (1 + u32)^m + A)
+```
+
+`g64` conservatively encloses the binary64 oracle subtraction, square, and
+reduction around the exact real squared-L2 sum. The two binary32 subtraction
+factors and at most `n` product/FMA/reduction roundings on any term's path give
+`m`; an FMA has no greater error than this deliberately conservative separate
+product/reduction model. `A` encloses both gradual-underflow and flush-to-zero
+loss.
+The outward binary64 `nextDown`/`nextUp` operations prevent host evaluation
+from narrowing the mathematical interval; the implementation evaluates the
+formula with exact rational arithmetic before outward binary64 conversion.
+This is an analytical IEEE-754 bound, not an epsilon, ULP allowance, or value
+calibrated from source 475.
+
+A cross-oracle-group permutation passes this new rule only when all of the
+following hold simultaneously:
+
+1. the existing exact capped membership, threshold validity, distinct-ID, and
+   raw metric-order requirements already pass;
+2. every changed position belongs to one **contiguous** returned FLAT block
+   whose scores are exact binary32 values with the same canonical IEEE-754 bit
+   pattern (binary64 values that merely round into that pattern do not qualify);
+3. that block's IDs occupy exactly the same contiguous oracle-rank interval;
+4. the common returned binary32 value lies in `[L, U]` independently for every
+   oracle member of the block; and
+5. the metric is L2 and the supplied, reconstructively verified query
+   dimensionality is exactly 128.
+
+No sorting, global-set-only agreement, capped-member substitution, arbitrary
+tolerance, or noncontiguous movement is permitted. Exact ordered and original
+same-oracle-binary32-group outcomes retain their original classifications.
+Different returned score bit patterns, a score outside any member's analytical
+interval, malformed dimensions/evidence, and distinguishable inversions remain
+fail-closed. COSINE and every unsupported dimensionality retain the original
+ADR-015 semantics; this amendment makes no COSINE numerical claim.
+
+The failed `exp012-scale2400-v1` campaign remains immutable `FAILED_CLOSED`
+under source revision `810c569cb712296169a0bfe6c4dfd3d40aece0cf`. Offline
+reclassification under this amendment is forensic analysis only and cannot
+repair, retry, complete, or reinterpret that historical run. Any scientific
+scale claim requires a fresh campaign under the amended source authority.
+
 #### Store and failure hardening
 
 The store uses private owner-controlled paths, mode `0600`, regular/single-link
