@@ -2427,7 +2427,7 @@ reviewed — nothing in this addendum shortens that requirement.
 
 ### EXP-012-SCALE: Multi-window host and shadow-pipeline scale validation
 
-Status: FOUNDATION IMPLEMENTED — FOCUSED VERIFICATION PASSED — NOT RUN
+Status: FOUNDATION IMPLEMENTED — SCALE-2400 V3 COMPLETE — SCALE-10000 NOT RUN
 
 Governing decision: ADR-019 Accepted for offline foundation work; no live scale
 campaign or ENV-002 execution is authorized by this entry.
@@ -2482,12 +2482,13 @@ telemetry append/reopen/hash-chain/schema/row/digest tamper refusal; and frozen
 EXP-010 operator regressions. Synthetic/fake scale benchmarks may characterize
 control-path complexity but are not live throughput/latency evidence.
 
-#### Live status and claims
+#### Live status and claims at foundation freeze
 
-No 2,400- or 10,000-source campaign has been run. No live latency, throughput,
-error-rate, resource-pressure, restart, or remote/distributed-Milvus claim is
-made. Such claims require separately authorized live campaigns with preserved
-raw telemetry and environment evidence. ENV-002 remains out of this checkpoint.
+At the initial foundation freeze, no 2,400- or 10,000-source campaign had been
+run. The later immutable campaign records below supersede only that historical
+run-status statement. They do not establish throughput, SLA, production,
+resource-pressure, restart, or remote/distributed-Milvus claims. ENV-002 remains
+out of this checkpoint.
 
 #### 2026-08-21 EXP-012 scale-2400-v1 failed campaign — immutable
 
@@ -2546,3 +2547,96 @@ not change this campaign's terminal state or evidence. This run makes **no**
 completed scale-2400, detector, latency, throughput, production, or remote
 Milvus claim. A fresh campaign identity and fresh Gate-A/B/C lifecycle are
 required after source freeze.
+
+#### 2026-08-21 EXP-012 scale-2400-v2 provenance-invalid campaign — immutable
+
+Status: **PROVENANCE INVALID — GATE C NOT STARTED — NO SCIENTIFIC CLAIM**
+
+Source revision: `bbc9fcc17277245435f4a508402b0d1f53645295`
+
+Campaign root: `~/.local/share/vd/exp012-scale2400-v2`
+
+Gate B durably recorded 2,400 source positions, but pre-execution review did
+not accept their workload provenance for the governed live scale claim. Gate C
+therefore remained completely absent: zero attempts, searches, telemetry,
+acknowledgements, detector events, attestations, and finalization events. The
+campaign is preserved as non-authorizing historical evidence and is not
+reinterpreted or reused by the successful V3 campaign.
+
+#### 2026-08-22 EXP-012 scale-2400-v3 completed campaign — immutable
+
+Status: **MECHANICALLY COMPLETE — VALID BOUNDED SCIENTIFIC EVIDENCE**
+
+Source revision: `bbc9fcc17277245435f4a508402b0d1f53645295`
+
+Campaign root: `~/.local/share/vd/exp012-scale2400-v3`
+
+Gate-A evidence SHA-256:
+`27996a691ff28a7959633fdd802f1123f0ca87d9f44a14be6c063222e49c1399`.
+Environment-manifest SHA-256:
+`11b616240869f778d158299df4231847af84bafa6b25d76b4da772ce44b49999`.
+The campaign is bound to DATASET-001, ENV-001, L2 `target-075`, Strong
+consistency, FLAT reference, and HNSW sentinel `ef=100` identities recorded in
+that authority.
+
+Gate B contains exactly 2,400 source records (`0..2399`) and twelve complete
+200-source windows. Gate C completed 48 of 48 durable trace attempts with no
+failure, orphan, or retry; issued exactly 2,400 FLAT and 2,400 HNSW-sentinel
+physical shadow searches; persisted 4,800 unique telemetry records; acknowledged
+all 2,400 sources; and finalized all twelve windows. Canonical reopen reported
+zero pending windows and `next_window_sequence = 12`. All six SQLite databases
+reported `integrity_check = ok`, and canonical readers reconstructed every hash
+chain and terminal count.
+
+The frozen ADR-015 comparator classified the 2,400 FLAT/oracle pairs as 2,396
+`EXACT_ORDERED`, three `PRECISION_TIE_EQUIVALENT`, one
+`EXECUTION_TIE_EQUIVALENT`, and zero membership mismatches, non-tie order
+mismatches, or invalid evidence. This live run supports that the amended L2
+execution-tie path operated as designed for its one observed qualifying case
+without an observed false acceptance in the governed failure categories. It is
+not universal proof of the numerical model.
+
+HNSW-sentinel recall over these exact 2,400 observations was: minimum `0.75`,
+mean `0.9150861173141502`, nearest-rank p50 `0.9206349206349206`, p95
+`0.9696969696969697`, p99 `0.9855072463768116`, and maximum `1.0`; no governed
+threshold or evidence-contract failure occurred. These are bounded ENV-001 /
+DATASET-001 / L2 / `target-075` observations, not universal or production
+recall and not qualification evidence.
+
+The persisted detector sequence was: window 0 `REBASELINE`; window 1
+`INSUFFICIENT_EVIDENCE` / `MISSING_PREVIOUS_WINDOW`; windows 2–5 `NO_DRIFT`;
+window 6 `INSUFFICIENT_EVIDENCE` / `PENDING_CONFIRMATION`; windows 7–9
+`DRIFT` / `INPUT_DRIFT`; and windows 10–11 `NO_DRIFT`. Therefore the governed
+result is a confirmed transient three-window INPUT_DRIFT episode followed by
+two windows that no longer satisfied the drift condition. The terminal
+`NO_DRIFT` state does not erase the persisted drift episode and creates no
+qualification, admission, grant, routing, activation, or actuation authority.
+
+Append-only local ENV-001 physical-shadow latency, retaining all outliers, was:
+
+- FLAT (`n=2400`): minimum `3.727542 ms`, mean `5.047436644166667 ms`,
+  nearest-rank p50 `4.36325 ms`, p95 `6.174709 ms`, p99 `21.161292 ms`, and
+  maximum `364.859208 ms`;
+- HNSW (`n=2400`): minimum `2.064583 ms`, mean `2.9761200329166666 ms`,
+  nearest-rank p50 `2.5665 ms`, p95 `4.384583 ms`, p99 `8.168417 ms`, and
+  maximum `172.259583 ms`.
+
+The telemetry binds timing, role, source, attempt, outcome, and result count,
+but contains no sufficient server/resource trace explaining either maximum;
+their causes are `UNKNOWN`. These values are not production, remote, SLA, or
+throughput evidence.
+
+Before the governed execute, one shell wrapper referenced a misspelled working
+directory and exited `127` before Python or the operator started. A durable
+zero-state check immediately afterward showed no attempt, acknowledgement,
+telemetry, detector, attestation, finalization, search, or serve call. The
+canonical operator was then invoked exactly once and exited `0`. This is
+classified `NON_GOVERNED_PRE_EXECUTION_OPERATOR_SHELL_ERROR`, not a Gate-C
+retry.
+
+The successful V3 campaign remains bound to its original source revision above.
+It proves bounded local scale-path completion and preserves a genuine detector
+result; it does **not** establish qualification, canary/actuation authority,
+production readiness, throughput/SLA, universal recall, or remote/distributed
+Milvus behavior. Scale-10000 requires a fresh campaign and independent Gate-A
+authority.
