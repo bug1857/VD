@@ -50,6 +50,7 @@ from vdbench.exp010_serving_configuration import (
     derive_serving_configuration_identity,
 )
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
+from vdbench.gate_c_window_execution import GateCWindowExecutionBound
 from vdbench.shadow_window import WINDOW_QUERY_COUNT
 
 _REVISION = "revision/exp010-gate-c"
@@ -611,6 +612,27 @@ class PreflightTests(unittest.TestCase):
 
 
 class ExecuteModeTests(unittest.TestCase):
+    def test_wrong_bounded_start_refuses_before_live_client_or_capture_construction(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _seed_campaign(root, sources=WINDOW_QUERY_COUNT)
+            operands = load_operands(_write_operands(root))
+            with mock.patch(
+                "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client"
+            ) as client, mock.patch(
+                "vdbench.v2_milvus_shadow_capture.V2MilvusShadowCaptureExecutor"
+            ) as capture, self.assertRaisesRegex(
+                Exception, "WINDOW_EXECUTION_BOUND_START_MISMATCH"
+            ):
+                gate_c_operator.run_gate_c_execute_from_cli(
+                    operands,
+                    execution_bound=GateCWindowExecutionBound(1, 1),
+                )
+            client.assert_not_called()
+            capture.assert_not_called()
+
     def test_execute_requires_the_separate_confirmation_flag(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

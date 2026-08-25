@@ -13,6 +13,7 @@ import ast
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.test_shadow_extraction import _identity, _query
 from vdbench.config import IndexTrack, Metric
@@ -808,6 +809,49 @@ class RealDetectorAttestationTests(unittest.TestCase):
                 with self.assertRaises(RealDetectorAttestationStoreError) as raised:
                     SQLiteRealDetectorAttestationStore(path, stream_key=_stream())
                 self.assertEqual(raised.exception.code, "ATTESTATION_STORE_BUSY")
+
+    def test_verified_record_head_commits_the_entire_ordered_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = _Harness(Path(directory), window_count=3)
+            try:
+                harness.rebaseline(0, persisted_at="2026-08-12T00:00:01Z")
+                first, _ = harness.evaluate(
+                    0, 1, persisted_at="2026-08-12T00:00:02Z"
+                )
+                second, _ = harness.evaluate(
+                    0, 2, persisted_at="2026-08-12T00:00:03Z"
+                )
+                first_prefix = harness.attestation_store.verified_record_head(
+                    before_window_sequence=2
+                )
+                full_prefix = harness.attestation_store.verified_record_head()
+                last_record = harness.attestation_store.load_for_detector_head(
+                    second.detector_head
+                )
+                self.assertEqual(first_prefix[0], 1)
+                self.assertEqual(full_prefix[0], 2)
+                self.assertNotEqual(full_prefix[1], first_prefix[1])
+                self.assertNotEqual(full_prefix[1], last_record.record_sha256)
+                self.assertIsNotNone(first.detector_head)
+            finally:
+                harness.close()
+
+    def test_forked_attestation_store_refuses_and_never_unlocks_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteRealDetectorAttestationStore(
+                Path(directory) / "attestation.sqlite3", stream_key=_stream()
+            )
+            with mock.patch(
+                "vdbench.real_detector_attestation_store.os.getpid",
+                return_value=store._pid + 1,
+            ), mock.patch(
+                "vdbench.real_detector_attestation_store.fcntl.flock"
+            ) as flock:
+                with self.assertRaises(RealDetectorAttestationStoreError) as raised:
+                    store.verified_record_head()
+                self.assertEqual(raised.exception.code, "ATTESTATION_STORE_FORKED")
+                store.close()
+            flock.assert_not_called()
 
     def test_tampered_attestation_record_fails_closed_on_reopen(self) -> None:
         import sqlite3

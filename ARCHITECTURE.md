@@ -5486,3 +5486,129 @@ This telemetry is measurement evidence only. It creates no qualification,
 policy, admission, grant, routing, activation, actuation, or production
 authority. ADR-019 authorizes offline implementation and focused verification,
 not a live 2,400/10,000 run and not ENV-002.
+
+#### Accepted amendment to ADR-016 / ADR-019: bounded Gate-C checkpoints
+
+Status: **Accepted 2026-08-23 for offline implementation and verification only;
+real bounded physical execution still requires a new reviewed preflight and
+separate explicit live authorization**
+
+Date: 2026-08-23
+
+Risk level: CRITICAL
+
+The accepted contracts above authorize only the canonical unbounded
+`Exp010LiveRunner.process_ready_windows()` transition and the exact full
+EXP-012 Gate-C result. They do not authorize one-window or other partial live
+execution. A full-campaign plan digest therefore cannot be treated as sufficient
+authorization for a bounded checkpoint. Until this amendment is implemented,
+verified, source-frozen, and separately authorized for a specific live bound,
+any request to execute fewer than all ready Gate-C windows must continue to
+fail before physical search.
+
+The accepted additive contract introduces one immutable bound with exactly two
+authoritative fields:
+
+```
+start_window_sequence: exact int >= 0 (bool forbidden)
+window_count: exact int > 0 (bool forbidden)
+```
+
+`allowed_window_sequences` is derived exactly as
+`tuple(range(start_window_sequence, start_window_sequence + window_count))`;
+`expected_next_window_sequence` is derived exactly as
+`start_window_sequence + window_count`. If either derived value is serialized
+for audit readability, verification must reconstruct and compare it. No caller
+may independently supply a different range, set, or postcondition. The runner
+must require its durable next-window authority to equal
+`start_window_sequence` before constructing a live client/executor or issuing a
+physical search. Every authorized source window must already be complete,
+ordered, identity-bound, and gap-free before the first authorized physical
+search.
+
+The canonical runner may accept this exact bound as an optional keyword-only
+input. No bound preserves the accepted unbounded behavior byte-for-byte at the
+public contract level. With a bound, one shared single-window transition must
+process and reconcile only the derived allowed sequences, stop normally after
+exactly `window_count` canonical transitions, verify the durable next-window
+authority equals the derived postcondition, and return before polling,
+preparing, constructing execution state for, or issuing a search for the next
+unauthorized window. Existing acknowledgement, attempt, detector, attestation,
+finalization, orphan-attempt, and no-physical-retry semantics remain the sole
+canonical Gate-C state machine.
+
+A bounded execution requires a detached envelope with schema
+`exp012-scale-gate-c-bounded-execution-envelope-v1` and digest domain
+`VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V1\0`. Its strict
+canonical payload binds the existing full Gate-C `plan_sha256`, campaign
+identity and campaign-binding digest, scale-contract payload/digest, Gate-A
+evidence digest, verified source-store binding/head, verified outbox head,
+source revision, mechanically reconstructed producer-run identity, source
+count, metric, threshold stratum, configuration identity, data identity, FLAT
+binding, HNSW binding, environment-manifest digest, and the two authoritative
+bound fields. The derived allowed sequence tuple and expected next sequence may
+also appear, but are never independent authority. The detached envelope digest
+is computed over the exact payload excluding its own digest. Mutation of any
+identity or bound changes the digest; malformed, mixed, or sequence-inconsistent
+producer identities fail before live-client/executor construction. The existing
+full-campaign Gate-C plan schema and digest domain do not change.
+
+Bounded execution is a distinct operator action and result, not partial success
+under the existing full result. The accepted CLI action is
+`--mode checkpoint-execute --execution-envelope <path>
+--confirm-bounded-physical-shadow-searches`. Its result schema is
+`exp012-scale-gate-c-checkpoint-result-v1` under
+`VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V1\0`. A checkpoint result must bind
+the verified envelope digest, canonical pre/post durable heads and next-window
+sequences, exact processed sequence tuple, and reconstructively verified
+acknowledgement/attempt/detector/attestation/finalization/telemetry effects. It
+must never deserialize or verify as `exp012-scale-gate-c-result-v1`, satisfy the
+full 50-window result, imply campaign completion, or create Gate-D, policy,
+qualification, admission, grant, routing, activation, actuation, or rollback
+authority.
+
+One additive checkpoint audit ledger is justified to distinguish authorization
+issuance from execution recovery. Its binding/event schemas are
+`exp012-scale-gate-c-checkpoint-binding-v1` and
+`exp012-scale-gate-c-checkpoint-event-v1`, under
+`VD::EXP012_SCALE_GATE_C_CHECKPOINT_BINDING::V1\0` and
+`VD::EXP012_SCALE_GATE_C_CHECKPOINT_EVENT::V1\0`. It may append only
+`CHECKPOINT_STARTED` and `CHECKPOINT_COMPLETED`. The ledger is never execution
+authority: every completion must be reconstructed from the existing canonical
+Gate-C stores. On reopen, a STARTED checkpoint with zero canonical effects may
+resume only after full envelope/store verification; one whose authorized
+windows are unambiguously complete may append completion without repeating any
+physical search; an orphan or ambiguous attempt, effect outside the authorized
+range, or inconsistent canonical state must refuse for forensic review. A
+checkpoint event can neither repair nor override canonical state.
+
+For the accepted SCALE10000 C1 checkpoint contract, the bound is `(0, 1)`, the derived
+allowed sequence is exactly `(0,)`, and the derived postcondition is exactly
+`1`. Current executable constants derive—not independently assert—the expected
+effects: `WINDOW_QUERY_COUNT = TRACE_COUNT * TRACE_QUERY_COUNT = 4 * 50 = 200`
+source acknowledgements; four canonical trace attempts; and two telemetry roles
+(`FLAT_REFERENCE`, `HNSW_SENTINEL`) for each source, hence 400 physical searches
+and 400 telemetry records. These cardinalities must be reconstructed from the
+governed source window, attempts, and telemetry ledger before checkpoint
+completion.
+
+Implementation under this acceptance is limited to: one neutral immutable bound and
+envelope contract; a shared single-window transition inside
+`Exp010LiveRunner`; a distinct EXP-012 checkpoint operator/result path; the
+non-authorizing checkpoint audit ledger; exact telemetry-prefix verification;
+and focused offline/adversarial/restart tests. Tests must prove one- and
+two-window bounds, resume from durable next sequence, default unbounded
+compatibility, exact pre-search refusal for malformed bounds/envelopes and all
+identity/head drift, zero activity outside the authorized range, reconstructive
+recovery for zero-effect and already-complete STARTED checkpoints, forensic
+refusal for ambiguous attempts, inability of a partial result to satisfy full
+completion, and an entirely fake 50-ready-window run that advances only window
+0 under `(0, 1)`. Historical EXP-010/V8, failed SCALE2400 evidence, completed
+SCALE2400 evidence, existing full plan/result schemas, and canonical SQLite
+stores require no migration or reinterpretation.
+
+Human acceptance on 2026-08-23 authorizes implementation and offline
+verification only. It does not authorize the real SCALE10000 C1 physical
+searches; those require a new bounded preflight, a reviewed envelope digest,
+and separate explicit live execution authorization after the implementation is
+source-frozen.

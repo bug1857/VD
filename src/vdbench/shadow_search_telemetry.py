@@ -410,15 +410,17 @@ class SQLiteShadowSearchTelemetryStore:
         if self._closed:
             return
         self._closed = True
+        owner_process = os.getpid() == self._pid
         connection = getattr(self, "_connection", None)
         if connection is not None:
             connection.close()
         if self._lock_handle is not None and not self._lock_handle.closed:
             try:
-                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+                if owner_process:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
             finally:
                 self._lock_handle.close()
-        if self._lock_inode is not None:
+        if owner_process and self._lock_inode is not None:
             with _OWNERSHIP_LOCK:
                 _OWNED_LOCK_INODES.discard(self._lock_inode)
             self._lock_inode = None
@@ -707,6 +709,68 @@ class SQLiteShadowSearchTelemetryStore:
             failed_count=0,
             head_sha256=None if not records else records[-1].record_sha256,
             complete=True,
+        )
+
+    def verify_prefix(
+        self, sources: tuple[CommittedHostObservation, ...]
+    ) -> ShadowSearchTelemetrySummary:
+        """Verify one exact successful canonical source prefix.
+
+        Bounded Gate-C checkpoints are deliberately not full-campaign
+        completion.  This method verifies all telemetry positions through the
+        supplied canonical prefix and refuses missing, extra, failed, or
+        substituted rows without setting the full-campaign ``complete`` flag.
+        """
+
+        contract = verify_exp012_scale_contract(self.binding.scale_contract)
+        if (
+            type(sources) is not tuple
+            or not sources
+            or len(sources) > contract.target_source_records
+            or len(sources) % WINDOW_QUERY_COUNT
+        ):
+            raise _error("TELEMETRY_PREFIX_SOURCE_SET_INVALID")
+        for expected, source in enumerate(sources):
+            if type(source) is not CommittedHostObservation or source.source_sequence != expected:
+                raise _error("TELEMETRY_PREFIX_SOURCE_SET_INVALID")
+        records = self.records()
+        expected_positions = {
+            (source_sequence, role)
+            for source_sequence in range(len(sources))
+            for role in ShadowSearchRole
+        }
+        if (
+            len(records) != len(expected_positions)
+            or any(item.outcome is not ShadowSearchOutcome.SUCCEEDED for item in records)
+            or {(item.source_sequence, item.role) for item in records}
+            != expected_positions
+        ):
+            raise _error("TELEMETRY_PREFIX_INVALID")
+        attempts: dict[int, str] = {}
+        for start in range(0, len(sources), TRACE_QUERY_COUNT):
+            trace_sources = sources[start : start + TRACE_QUERY_COUNT]
+            trace_index = (start % WINDOW_QUERY_COUNT) // TRACE_QUERY_COUNT
+            attempts[start // TRACE_QUERY_COUNT] = build_shadow_attempt_identity(
+                trace_sources, trace_sequence_index=trace_index
+            ).attempt_sha256
+        for record in records:
+            source = sources[record.source_sequence]
+            if (
+                record.source_sha256 != source.source_sha256
+                or record.query_id_sha256 != source.query_id_sha256
+                or record.window_sequence != source.window_sequence
+                or record.trace_sequence_index
+                != (source.within_window_index // TRACE_QUERY_COUNT)
+                or record.attempt_sha256
+                != attempts[record.source_sequence // TRACE_QUERY_COUNT]
+            ):
+                raise _error("TELEMETRY_SOURCE_BINDING_MISMATCH")
+        return ShadowSearchTelemetrySummary(
+            record_count=len(records),
+            succeeded_count=len(records),
+            failed_count=0,
+            head_sha256=records[-1].record_sha256,
+            complete=len(sources) == contract.target_source_records,
         )
 
     @staticmethod

@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -27,6 +28,7 @@ from vdbench.exp010_live_runner import (
     build_environment_manifest_sha256,
 )
 from vdbench.host_observation import RangeQueryRequest, ServedQueryOutcome
+from vdbench.gate_c_bounded_execution import GateCWindowExecutionBound
 from vdbench.host_window_detector_v2 import HostWindowV2Status
 from vdbench.milvus_actuation import ShadowAuditTrace
 from vdbench.shadow_window import WINDOW_QUERY_COUNT
@@ -204,6 +206,142 @@ class Exp010LiveRunnerTests(unittest.TestCase):
             finally:
                 harness.close()
 
+    def test_bounded_one_window_stops_before_second_ready_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = _Harness(Path(directory))
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 2)
+                results = harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 1)
+                )
+                self.assertEqual(tuple(item.window_sequence for item in results), (0,))
+                self.assertEqual(harness.shadow.calls, 4)
+                self.assertEqual(
+                    harness.runner.composition.finalization_store.next_window_sequence(), 1
+                )
+                acknowledgement = harness.runner.composition.response_store.consumer_acknowledgement_state(
+                    consumer_id="v2-shadow"
+                )
+                self.assertEqual(len(acknowledgement.event_ids), WINDOW_QUERY_COUNT)
+                self.assertEqual(
+                    harness.runner.composition.shadow_attempt_store.records_for_window(1), ()
+                )
+            finally:
+                harness.close()
+
+    def test_bounded_two_windows_and_resume_at_one_are_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 3)
+                first = harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 1)
+                )
+                self.assertEqual(tuple(item.window_sequence for item in first), (0,))
+                second = harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(1, 1)
+                )
+                self.assertEqual(tuple(item.window_sequence for item in second), (1,))
+                self.assertEqual(harness.shadow.calls, 8)
+                self.assertEqual(
+                    harness.runner.composition.shadow_attempt_store.records_for_window(2), ()
+                )
+            finally:
+                harness.close()
+
+    def test_bounded_count_two_processes_exactly_first_two_of_three(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = _Harness(Path(directory))
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 3)
+                results = harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 2)
+                )
+                self.assertEqual(tuple(item.window_sequence for item in results), (0, 1))
+                self.assertEqual(harness.shadow.calls, 8)
+                self.assertEqual(
+                    harness.runner.composition.finalization_store.next_window_sequence(), 2
+                )
+                self.assertEqual(
+                    harness.runner.composition.shadow_attempt_store.records_for_window(2), ()
+                )
+            finally:
+                harness.close()
+
+    def test_bounded_unavailable_or_start_mismatch_refuses_before_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = _Harness(Path(directory))
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with self.assertRaises(Exp010LiveRunnerError) as unavailable:
+                    harness.runner.process_ready_windows(
+                        execution_bound=GateCWindowExecutionBound(0, 2)
+                    )
+                self.assertEqual(
+                    unavailable.exception.code,
+                    "WINDOW_EXECUTION_BOUND_SOURCE_UNAVAILABLE",
+                )
+                self.assertEqual(harness.shadow.calls, 0)
+                harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 1)
+                )
+                calls = harness.shadow.calls
+                with self.assertRaises(Exp010LiveRunnerError) as replay:
+                    harness.runner.process_ready_windows(
+                        execution_bound=GateCWindowExecutionBound(0, 1)
+                    )
+                self.assertEqual(
+                    replay.exception.code, "WINDOW_EXECUTION_BOUND_START_MISMATCH"
+                )
+                self.assertEqual(harness.shadow.calls, calls)
+            finally:
+                harness.close()
+
+    def test_oversized_bound_refuses_before_materialization_or_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = _Harness(Path(directory))
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT)
+                with self.assertRaises(Exp010LiveRunnerError) as raised:
+                    harness.runner.process_ready_windows(
+                        execution_bound=GateCWindowExecutionBound(0, 10**100)
+                    )
+                self.assertEqual(
+                    raised.exception.code,
+                    "WINDOW_EXECUTION_BOUND_SOURCE_UNAVAILABLE",
+                )
+                self.assertEqual(harness.shadow.calls, 0)
+            finally:
+                harness.close()
+
+    def test_offline_fifty_ready_windows_bound_invokes_only_window_zero(self) -> None:
+        runner = object.__new__(Exp010LiveRunner)
+
+        class _Finalization:
+            next_sequence = 0
+
+            def next_window_sequence(self):
+                return self.next_sequence
+
+        finalization = _Finalization()
+        runner.composition = SimpleNamespace(finalization_store=finalization)
+        invoked: list[int] = []
+        runner._validate_bounded_windows = lambda _bound: None
+
+        def transition(*, expected_window_sequence):
+            invoked.append(expected_window_sequence)
+            finalization.next_sequence += 1
+            return SimpleNamespace(window_sequence=expected_window_sequence)
+
+        runner._process_next_ready_window = transition
+        results = runner.process_ready_windows(
+            execution_bound=GateCWindowExecutionBound(0, 1)
+        )
+        self.assertEqual(invoked, [0])
+        self.assertEqual(tuple(item.window_sequence for item in results), (0,))
+        self.assertEqual(finalization.next_sequence, 1)
+
     def test_canonical_200_boundary_and_rebaseline_then_insufficient(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = _Harness(Path(directory))
@@ -338,6 +476,36 @@ class Exp010LiveRunnerTests(unittest.TestCase):
                 self.assertEqual(reopened.shadow.calls, 0)
                 self.assertIsNone(
                     reopened.runner.composition.finalization_store.pending()
+                )
+            finally:
+                reopened.close()
+
+    def test_bounded_restart_reconciles_pending_window_without_touching_next(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 2)
+                with patch.object(
+                    harness.runner.composition.detector_store,
+                    "process_window",
+                    side_effect=RuntimeError("crash-before-detector"),
+                ), self.assertRaises(RuntimeError):
+                    harness.runner.process_ready_windows(
+                        execution_bound=GateCWindowExecutionBound(0, 1)
+                    )
+                self.assertEqual(harness.shadow.calls, 4)
+            finally:
+                harness.close()
+            reopened = _Harness(root)
+            try:
+                recovered = reopened.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 1)
+                )
+                self.assertEqual(tuple(item.window_sequence for item in recovered), (0,))
+                self.assertEqual(reopened.shadow.calls, 0)
+                self.assertEqual(
+                    reopened.runner.composition.shadow_attempt_store.records_for_window(1), ()
                 )
             finally:
                 reopened.close()
@@ -629,6 +797,8 @@ class Exp010LiveRunnerGuardTests(unittest.TestCase):
             "policy", "actuation", "canary_admission", "canary_approval",
             "canary_activation", "canary_route_authority", "canary_routing",
             "canary_live_runner", "canary_grant_store", "pymilvus",
+            "exp012_scale_contract", "exp012_scale_campaign",
+            "gate_c_bounded_execution", "gate_c_checkpoint_store",
         }
         offending = {
             item for item in imported

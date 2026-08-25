@@ -996,6 +996,29 @@ class SQLiteWindowFinalizationStore:
             return states[-1]
         return None
 
+    def verified_event_head(
+        self, *, before_window_sequence: int | None = None
+    ) -> tuple[int, str | None]:
+        """Return the verified finalization-event count/head for a window prefix."""
+
+        with self._mutex:
+            self._states()
+            if before_window_sequence is not None and (
+                type(before_window_sequence) is not int
+                or before_window_sequence < 0
+            ):
+                raise _error("WINDOW_FINALIZATION_EVENT_INVALID")
+            documents = tuple(
+                item
+                for item in self._documents()
+                if before_window_sequence is None
+                or item["window_sequence"] < before_window_sequence
+            )
+            return (
+                len(documents),
+                None if not documents else _digest(_EVENT_DOMAIN, documents[-1]),
+            )
+
     def _append(
         self,
         *,

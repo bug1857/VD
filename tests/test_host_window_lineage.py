@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from vdbench.config import Metric
 from vdbench.host_observation import (
@@ -419,6 +420,21 @@ class HostWindowLineageTests(unittest.TestCase):
                 self.assertEqual(
                     reopened.poll(consumer_id="shadow", limit=10)[-1].source_sequence, 1
                 )
+
+    def test_forked_close_never_unlocks_parent_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteHostResponseCommitStore(
+                Path(directory) / "source.sqlite3",
+                stream_key=_stream(),
+                source_revision="revision",
+                environment_manifest_sha256="a" * 64,
+            )
+            with mock.patch(
+                "vdbench.host_window_lineage.os.getpid",
+                return_value=store._pid + 1,
+            ), mock.patch("vdbench.host_window_lineage.fcntl.flock") as flock:
+                store.close()
+            flock.assert_not_called()
 
     def test_read_only_metadata_adapter_reconstructs_canonical_identity(self) -> None:
         provider = InjectedReadOnlyCaptureMetadataProvider(

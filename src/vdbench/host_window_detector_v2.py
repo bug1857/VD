@@ -912,15 +912,17 @@ class SQLiteHostWindowDetectorV2Store:
         if self._closed:
             return
         self._closed = True
+        owner_process = os.getpid() == self._pid
         database = getattr(self, "_db", None)
         if database is not None:
             database.close()
         if self._lock_handle is not None and not self._lock_handle.closed:
             try:
-                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+                if owner_process:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
             finally:
                 self._lock_handle.close()
-        if self._lock_inode is not None:
+        if owner_process and self._lock_inode is not None:
             with _OWNERSHIP_LOCK:
                 _OWNED_LOCK_INODES.discard(self._lock_inode)
             self._lock_inode = None
@@ -1100,6 +1102,28 @@ class SQLiteHostWindowDetectorV2Store:
                     None if reference is None else reference.shadow_window_sha256
                 ),
                 requires_rebaseline=reference is None or gap,
+            )
+
+    def verified_event_head(
+        self, *, before_window_sequence: int | None = None
+    ) -> tuple[int, str | None]:
+        """Return the verified detector-event count/head for a window prefix."""
+
+        with self._mutex:
+            _reference, _gap, _latest, _count, documents = self._reconstruct()
+            if before_window_sequence is not None and (
+                type(before_window_sequence) is not int
+                or before_window_sequence < 0
+            ):
+                raise _error("DETECTOR_V2_WINDOW_SEQUENCE_INVALID")
+            selected = (
+                documents
+                if before_window_sequence is None
+                else documents[:before_window_sequence]
+            )
+            return (
+                len(selected),
+                None if not selected else _digest(_EVENT_DOMAIN, selected[-1]),
             )
 
     def process_window(

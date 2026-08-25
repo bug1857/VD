@@ -1228,3 +1228,27 @@ class SQLiteShadowAttemptStore:
                 )
                 for item in records
             )
+
+    def verified_event_head(
+        self, *, before_window_sequence: int | None = None
+    ) -> tuple[int, str | None]:
+        """Return the verified lifecycle-event count/head for a window prefix."""
+
+        with self._mutex:
+            self._verify_all()
+            if before_window_sequence is not None and (
+                type(before_window_sequence) is not int
+                or before_window_sequence < 0
+            ):
+                raise _error("SHADOW_ATTEMPT_SLOT_INVALID")
+            documents = tuple(
+                document
+                for document, _trace in self._event_documents()
+                if before_window_sequence is None
+                or document["attempt_identity"]["window_sequence"]
+                < before_window_sequence
+            )
+            return (
+                len(documents),
+                None if not documents else _digest(_EVENT_DOMAIN, documents[-1]),
+            )

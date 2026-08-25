@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import fields
 from pathlib import Path
+from unittest import mock
 
 from vdbench.config import Metric
 from vdbench.drift import (
@@ -87,6 +88,20 @@ def _decision(reference, current, *, state=DetectorState.NO_DRIFT):
 
 
 class HostWindowDetectorV2Tests(unittest.TestCase):
+    def test_forked_close_never_unlocks_parent_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteHostWindowDetectorV2Store(
+                Path(directory) / "detector.sqlite3", stream_key=_stream()
+            )
+            with mock.patch(
+                "vdbench.host_window_detector_v2.os.getpid",
+                return_value=store._pid + 1,
+            ), mock.patch(
+                "vdbench.host_window_detector_v2.fcntl.flock"
+            ) as flock:
+                store.close()
+            flock.assert_not_called()
+
     def test_progression_gap_rebaseline_persisted_head_and_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

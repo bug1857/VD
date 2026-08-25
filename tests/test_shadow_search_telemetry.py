@@ -81,6 +81,20 @@ def _append(store, *, source=0, role=ShadowSearchRole.FLAT_REFERENCE, start=10, 
 
 
 class ShadowSearchTelemetryTests(unittest.TestCase):
+    def test_forked_close_never_unlocks_parent_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteShadowSearchTelemetryStore(
+                Path(directory) / "telemetry.sqlite3", binding=_binding()
+            )
+            with mock.patch(
+                "vdbench.shadow_search_telemetry.os.getpid",
+                return_value=store._pid + 1,
+            ), mock.patch(
+                "vdbench.shadow_search_telemetry.fcntl.flock"
+            ) as flock:
+                store.close()
+            flock.assert_not_called()
+
     def test_stream_key_is_reconstructed_and_valid_value_round_trips(self) -> None:
         stream = MonitorStreamKey(
             "stream", Metric.L2, "target-075", "cfg", "data", "flat", "hnsw"
@@ -329,6 +343,48 @@ class ShadowSearchTelemetryTests(unittest.TestCase):
             self.assertEqual(
                 raised.exception.code, "TELEMETRY_SOURCE_BINDING_MISMATCH"
             )
+
+    def test_checkpoint_prefix_requires_exact_two_roles_for_canonical_window(self) -> None:
+        sources = []
+        records = []
+        for source_sequence in range(200):
+            source = object.__new__(CommittedHostObservation)
+            object.__setattr__(source, "source_sequence", source_sequence)
+            object.__setattr__(source, "window_sequence", 0)
+            object.__setattr__(source, "within_window_index", source_sequence)
+            object.__setattr__(source, "source_sha256", f"{source_sequence + 1:064x}"[-64:])
+            object.__setattr__(source, "query_id_sha256", f"{source_sequence + 5000:064x}"[-64:])
+            sources.append(source)
+            for role in ShadowSearchRole:
+                records.append(
+                    SimpleNamespace(
+                        source_sequence=source_sequence,
+                        source_sha256=source.source_sha256,
+                        query_id_sha256=source.query_id_sha256,
+                        window_sequence=0,
+                        trace_sequence_index=source_sequence // 50,
+                        attempt_sha256=f"{source_sequence // 50 + 9000:064x}"[-64:],
+                        role=role,
+                        outcome=ShadowSearchOutcome.SUCCEEDED,
+                        record_sha256="f" * 64,
+                    )
+                )
+        with tempfile.TemporaryDirectory() as raw, SQLiteShadowSearchTelemetryStore(
+            Path(raw) / "telemetry.sqlite3", binding=_binding()
+        ) as store, mock.patch(
+            "vdbench.shadow_search_telemetry.build_shadow_attempt_identity",
+            side_effect=lambda group, *, trace_sequence_index: SimpleNamespace(
+                attempt_sha256=f"{group[0].source_sequence // 50 + 9000:064x}"[-64:]
+            ),
+        ):
+            store.records = lambda: tuple(records)
+            summary = store.verify_prefix(tuple(sources))
+            self.assertEqual(summary.record_count, 400)
+            self.assertFalse(summary.complete)
+            store.records = lambda: tuple(records[:-1])
+            with self.assertRaises(ShadowSearchTelemetryError) as missing:
+                store.verify_prefix(tuple(sources))
+            self.assertEqual(missing.exception.code, "TELEMETRY_PREFIX_INVALID")
 
 
 if __name__ == "__main__":

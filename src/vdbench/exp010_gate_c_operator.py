@@ -64,6 +64,7 @@ from .exp010_live_runner import (
     Exp010OperatorConfiguration,
     Exp010WindowResult,
 )
+from .gate_c_window_execution import GateCWindowExecutionBound
 from .exp010_serving_configuration import (
     Exp010ServingConfiguration,
     derive_serving_configuration_identity,
@@ -583,20 +584,42 @@ def run_gate_c_execute_from_cli(
     *,
     search_telemetry_store: Any | None = None,
     accepted_scale_contract_sha256: str | None = None,
+    execution_bound: GateCWindowExecutionBound | None = None,
 ) -> tuple[Exp010WindowResult, ...]:
     """The single real physical-execution seam.
 
-    Reached only after `build_gate_c_plan` has already opened and validated
-    every store against the operand identities, and only after the operator
-    passed both `--mode execute` and the explicit confirmation flag. This
-    repository never invokes it for real; tests patch this symbol to prove that
-    preflight never reaches it and that a mismatched operand set never does.
+    The unbounded CLI reaches this seam only after `build_gate_c_plan` and its
+    explicit execute confirmation.  The bounded EXP-012 caller reaches it only
+    after envelope verification, durable checkpoint STARTED evidence, and its
+    distinct bounded-execution confirmation.  A supplied bound is revalidated
+    with refusing executors before any Milvus-capable import or construction;
+    tests prove preflight and mismatched state cannot reach the live seam.
     """
 
     _require_campaign_namespace(
         operands,
         accepted_scale_contract_sha256=accepted_scale_contract_sha256,
     )
+
+    if execution_bound is not None:
+        # Mechanical pre-construction interlock: a wrong durable start or
+        # unavailable authorized source window is refused before importing or
+        # constructing any Milvus client/search-capable executor.  The real
+        # runner repeats this validation while processing as defense in depth.
+        validation_clock = MonotonicUtcClock()
+        validation_runner = Exp010LiveRunner(
+            configuration=operands.runner_configuration(),
+            serving_executor=_RefusingServingExecutor(),
+            shadow_capture_executor=_RefusingShadowCaptureExecutor(),
+            clock=validation_clock,
+            shadow_captured_at_clock=validation_clock,
+        )
+        try:
+            execution_bound = validation_runner.validate_execution_bound(
+                execution_bound
+            )
+        finally:
+            validation_runner.composition.close()
 
     from .config import IndexTrack
     from .docker_health import DockerSocketHealthProbe
@@ -656,7 +679,7 @@ def run_gate_c_execute_from_cli(
     try:
         # The one canonical Gate-C call. No retry, no replay, no recovery
         # override: an ambiguous STARTED propagates its reason code verbatim.
-        return runner.process_ready_windows()
+        return runner.process_ready_windows(execution_bound=execution_bound)
     finally:
         runner.composition.close()
 

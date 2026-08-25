@@ -67,6 +67,7 @@ __all__ = [
 
 _DB_VERSION = 1
 _RECORD_DOMAIN = b"VD::REAL_DETECTOR_ATTESTATION_RECORD::V1\x00"
+_RECORD_PREFIX_DOMAIN = b"VD::REAL_DETECTOR_ATTESTATION_PREFIX::V1\x00"
 _BINDING_DOMAIN = b"VD::REAL_DETECTOR_ATTESTATION_STORE::V1\x00"
 
 _OWNED_LOCK_INODES: set[tuple[int, int]] = set()
@@ -98,6 +99,19 @@ def _error(code: str, message: str | None = None) -> RealDetectorAttestationStor
 
 def _digest(domain: bytes, payload: dict[str, object]) -> str:
     return hashlib.sha256(domain + canonical_json_bytes(payload)).hexdigest()
+
+
+def _record_prefix_digest(documents: tuple[dict[str, object], ...]) -> str | None:
+    """Commit the exact ordered verified attestation-record prefix."""
+
+    if not documents:
+        return None
+    payload: dict[str, object] = {
+        "schema_version": "real-detector-attestation-prefix-v1",
+        "record_count": len(documents),
+        "record_sha256s": [_digest(_RECORD_DOMAIN, item) for item in documents],
+    }
+    return _digest(_RECORD_PREFIX_DOMAIN, payload)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -152,6 +166,7 @@ class SQLiteRealDetectorAttestationStore:
         self._lock_handle = None
         self._lock_inode: tuple[int, int] | None = None
         self._closed = False
+        self._pid = os.getpid()
         # See `SQLiteShadowAttemptStore.__init__`: releasing the flock, lock
         # descriptor, and process-local inode ownership on every `_open`
         # failure path keeps a failed construction reopenable.
@@ -253,18 +268,21 @@ class SQLiteRealDetectorAttestationStore:
         if self._closed:
             return
         self._closed = True
+        owner_process = os.getpid() == self._pid
         if self._connection is not None:
             try:
                 self._connection.close()
             except sqlite3.Error:
                 pass
             self._connection = None
-        if self._lock_inode is not None:
+        if owner_process and self._lock_inode is not None:
             with _OWNERSHIP_LOCK:
                 _OWNED_LOCK_INODES.discard(self._lock_inode)
             self._lock_inode = None
         if self._lock_handle is not None:
             try:
+                if owner_process:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
                 self._lock_handle.close()
             except OSError:
                 pass
@@ -273,6 +291,8 @@ class SQLiteRealDetectorAttestationStore:
     def _require_live(self) -> sqlite3.Connection:
         if self._closed or self._connection is None:
             raise _error("ATTESTATION_STORE_CLOSED")
+        if os.getpid() != self._pid:
+            raise _error("ATTESTATION_STORE_FORKED")
         return self._connection
 
     def _verify_schema(self) -> None:
@@ -310,9 +330,15 @@ class SQLiteRealDetectorAttestationStore:
             "SELECT record_sequence,detector_head_sha256,current_window_sequence,record_json,previous_record_sha256,record_sha256 FROM attestation_records ORDER BY record_sequence"
         ).fetchall()
         previous: str | None = None
+        previous_window_sequence = -1
         documents: list[dict[str, object]] = []
         for index, row in enumerate(rows):
-            if row[0] != index or row[4] != previous:
+            if (
+                row[0] != index
+                or row[4] != previous
+                or type(row[2]) is not int
+                or row[2] <= previous_window_sequence
+            ):
                 raise _error("ATTESTATION_CHAIN_INVALID")
             document = json.loads(bytes(row[3]).decode("utf-8"))
             if (
@@ -325,6 +351,7 @@ class SQLiteRealDetectorAttestationStore:
                 raise _error("ATTESTATION_RECORD_DIGEST_MISMATCH")
             documents.append(document)
             previous = row[5]
+            previous_window_sequence = row[2]
         return tuple(documents)
 
     # -- append ----------------------------------------------------------
@@ -488,6 +515,28 @@ class SQLiteRealDetectorAttestationStore:
                 attestation=self._attestation_from_document(document["attestation"]),
                 window_evidence=evidence,
                 record_sha256=_digest(_RECORD_DOMAIN, document),
+            )
+
+    def verified_record_head(
+        self, *, before_window_sequence: int | None = None
+    ) -> tuple[int, str | None]:
+        """Return the verified attestation-record count/head for a window prefix."""
+
+        with self._mutex:
+            if before_window_sequence is not None and (
+                type(before_window_sequence) is not int
+                or before_window_sequence < 0
+            ):
+                raise _error("ATTESTATION_RECORD_INVALID")
+            documents = tuple(
+                item
+                for item in self._verify_all()
+                if before_window_sequence is None
+                or item["current_window_sequence"] < before_window_sequence
+            )
+            return (
+                len(documents),
+                _record_prefix_digest(documents),
             )
 
     # -- real head verification ------------------------------------------

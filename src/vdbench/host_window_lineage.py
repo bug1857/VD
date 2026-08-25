@@ -575,15 +575,17 @@ class SQLiteHostResponseCommitStore:
         if self._closed:
             return
         self._closed = True
+        owner_process = os.getpid() == self._pid
         connection = getattr(self, "_connection", None)
         if connection is not None:
             connection.close()
         if self._lock_handle is not None and not self._lock_handle.closed:
             try:
-                fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+                if owner_process:
+                    fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
             finally:
                 self._lock_handle.close()
-        if self._lock_inode is not None:
+        if owner_process and self._lock_inode is not None:
             with _OWNERSHIP_LOCK:
                 _OWNED_LOCK_INODES.discard(self._lock_inode)
             self._lock_inode = None
@@ -1021,6 +1023,37 @@ class SQLiteHostResponseCommitStore:
                 start_source_sequence=start_source_sequence,
                 event_ids=tuple(row[1] for row in rows),
                 head_sha256=None if not rows else rows[-1][2],
+            )
+
+    def consumer_acknowledgement_prefix_state(
+        self, *, consumer_id: str, acknowledged_count: int
+    ) -> HostConsumerAcknowledgementState:
+        """Return one verified durable acknowledgement prefix.
+
+        This is a read-only evidence projection for bounded Gate-C auditing.
+        The complete acknowledgement chain is verified first; callers cannot
+        supply a head or use this method to advance consumer state.
+        """
+
+        with self._mutex:
+            self._verify_all()
+            consumer = _text(consumer_id, code="HOST_SOURCE_CONSUMER_INVALID")
+            if type(acknowledged_count) is not int or acknowledged_count < 0:
+                raise _error("HOST_SOURCE_SEQUENCE_INVALID")
+            rows = self._connection.execute(
+                "SELECT source_sequence,event_id,ack_sha256 FROM consumer_acknowledgements WHERE consumer_id=? ORDER BY ack_sequence",
+                (consumer,),
+            ).fetchall()
+            if acknowledged_count > len(rows):
+                raise _error("HOST_SOURCE_ACKNOWLEDGEMENT_PREFIX_INVALID")
+            prefix = rows[:acknowledged_count]
+            if any(row[0] != index for index, row in enumerate(prefix)):
+                raise _error("HOST_SOURCE_ACKNOWLEDGEMENT_PREFIX_INVALID")
+            return HostConsumerAcknowledgementState(
+                consumer_id=consumer,
+                start_source_sequence=0,
+                event_ids=tuple(row[1] for row in prefix),
+                head_sha256=None if not prefix else prefix[-1][2],
             )
 
     def window_sha256(self, window_sequence: int) -> str | None:

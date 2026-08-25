@@ -38,6 +38,11 @@ from .artifacts import canonical_json_bytes
 from .config import Metric
 from .drift import DetectorState
 from .exp010_v2_host import SHADOW_CONSUMER_ID, Exp010V2HostComposition
+from .gate_c_window_execution import (
+    GateCWindowExecutionBound,
+    GateCWindowExecutionError,
+    verify_gate_c_window_execution_bound,
+)
 from .host_observation import RangeQueryRequest
 from .host_window_detector_v2 import HostWindowV2Status
 from .host_window_lineage import V2VisibleResponse
@@ -259,40 +264,121 @@ class Exp010LiveRunner:
 
     # -- Gate C/D: deterministic windowing loop --------------------------
 
-    def process_ready_windows(self) -> tuple[Exp010WindowResult, ...]:
-        """Process every *complete* canonical 200-source window now available.
+    def process_ready_windows(
+        self,
+        *,
+        execution_bound: GateCWindowExecutionBound | None = None,
+    ) -> tuple[Exp010WindowResult, ...]:
+        """Process complete canonical windows, optionally under one exact bound.
 
-        Only whole windows are processed in order. The next window comes from
-        the verified finalization history; the independent `v2-shadow`
+        Without a bound, every ready whole window is processed in order. With a
+        bound, only its derived contiguous sequence is processed and the method
+        returns before the next window. The next window always comes from the
+        verified finalization history; the independent `v2-shadow`
         acknowledgement prefix must agree exactly. An incomplete tail stays
         pending and is never acknowledged. Restart first reconciles every
         already-durable detector/attestation/acknowledgement artifact.
         """
 
-        results: list[Exp010WindowResult] = []
+        if execution_bound is None:
+            results: list[Exp010WindowResult] = []
+            while True:
+                expected = self.composition.finalization_store.next_window_sequence()
+                result = self._process_next_ready_window(
+                    expected_window_sequence=expected,
+                )
+                if result is None:
+                    return tuple(results)
+                results.append(result)
+
+        bound = self.validate_execution_bound(execution_bound)
+        results = []
+        for expected in bound.allowed_window_sequences:
+            result = self._process_next_ready_window(
+                expected_window_sequence=expected,
+            )
+            if result is None:
+                raise _error("WINDOW_EXECUTION_BOUND_SOURCE_UNAVAILABLE")
+            results.append(result)
+        if (
+            self.composition.finalization_store.next_window_sequence()
+            != bound.expected_next_window_sequence
+        ):
+            raise _error("WINDOW_EXECUTION_BOUND_POSTCONDITION_FAILED")
+        return tuple(results)
+
+    def validate_execution_bound(
+        self, execution_bound: GateCWindowExecutionBound
+    ) -> GateCWindowExecutionBound:
+        """Validate one bound against durable state without live execution."""
+
+        try:
+            bound = verify_gate_c_window_execution_bound(execution_bound)
+        except GateCWindowExecutionError as exc:
+            raise _error("WINDOW_EXECUTION_BOUND_INVALID", exc.code) from exc
+        self._validate_bounded_windows(bound)
+        return bound
+
+    def _validate_bounded_windows(self, bound: GateCWindowExecutionBound) -> None:
+        """Validate the complete authorized source range before live execution."""
+
+        current = self.composition.finalization_store.next_window_sequence()
+        if current != bound.start_window_sequence:
+            raise _error("WINDOW_EXECUTION_BOUND_START_MISMATCH")
+        source_head = self.composition.response_store.verified_source_head()
+        complete_source_windows = source_head.source_count // WINDOW_QUERY_COUNT
+        if bound.expected_next_window_sequence > complete_source_windows:
+            raise _error("WINDOW_EXECUTION_BOUND_SOURCE_UNAVAILABLE")
+        pending = self.composition.finalization_store.pending()
+        if pending is not None and pending.prepared.window_sequence != current:
+            raise _error("WINDOW_EXECUTION_BOUND_PENDING_MISMATCH")
+        for window_sequence in bound.allowed_window_sequences:
+            sources = self.composition.response_store.load_window(window_sequence)
+            if sources is None or len(sources) != WINDOW_QUERY_COUNT:
+                raise _error("WINDOW_EXECUTION_BOUND_SOURCE_UNAVAILABLE")
+            expected_start = window_sequence * WINDOW_QUERY_COUNT
+            if tuple(item.source_sequence for item in sources) != tuple(
+                range(expected_start, expected_start + WINDOW_QUERY_COUNT)
+            ):
+                raise _error("WINDOW_EXECUTION_BOUND_SOURCE_MISMATCH")
+
+    def _process_next_ready_window(
+        self, *, expected_window_sequence: int
+    ) -> Exp010WindowResult | None:
+        """Advance exactly one canonical window, or return None if unavailable."""
+
+        if type(expected_window_sequence) is not int or expected_window_sequence < 0:
+            raise _error("WINDOW_SEQUENCE_INVALID")
+        current = self.composition.finalization_store.next_window_sequence()
+        if current != expected_window_sequence:
+            raise _error("WINDOW_SEQUENCE_MISMATCH")
         recovered = self._reconcile_pending()
         if recovered is not None:
-            results.append(recovered)
-        while True:
-            window_sequence = self.composition.finalization_store.next_window_sequence()
-            observations = self.composition.shadow_source.poll(
-                limit=WINDOW_QUERY_COUNT
-            )
-            if len(observations) < WINDOW_QUERY_COUNT:
-                break  # incomplete tail: remains pending, not acknowledged
-            sources = self.composition.response_store.load_window(window_sequence)
-            if sources is None:
-                break
-            if tuple(item.event_id for item in observations) != tuple(
-                item.event_id for item in sources
-            ):
-                raise _error("WINDOW_SOURCE_CURSOR_MISMATCH")
-            self._prepare_window(tuple(sources))
-            reconciled = self._reconcile_pending()
-            if reconciled is None:
-                raise _error("WINDOW_FINALIZATION_INCOMPLETE")
-            results.append(reconciled)
-        return tuple(results)
+            if recovered.window_sequence != expected_window_sequence:
+                raise _error("WINDOW_SEQUENCE_MISMATCH")
+            return recovered
+        if (
+            self.composition.finalization_store.next_window_sequence()
+            != expected_window_sequence
+        ):
+            raise _error("WINDOW_SEQUENCE_MISMATCH")
+        observations = self.composition.shadow_source.poll(limit=WINDOW_QUERY_COUNT)
+        if len(observations) < WINDOW_QUERY_COUNT:
+            return None  # incomplete tail: remains pending, not acknowledged
+        sources = self.composition.response_store.load_window(expected_window_sequence)
+        if sources is None:
+            return None
+        if tuple(item.event_id for item in observations) != tuple(
+            item.event_id for item in sources
+        ):
+            raise _error("WINDOW_SOURCE_CURSOR_MISMATCH")
+        self._prepare_window(tuple(sources))
+        reconciled = self._reconcile_pending()
+        if reconciled is None:
+            raise _error("WINDOW_FINALIZATION_INCOMPLETE")
+        if reconciled.window_sequence != expected_window_sequence:
+            raise _error("WINDOW_SEQUENCE_MISMATCH")
+        return reconciled
 
     def _load_bound_bundle(self, prepared: PreparedWindowFinalization):
         sources = self.composition.response_store.load_window(
