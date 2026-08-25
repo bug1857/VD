@@ -5612,3 +5612,55 @@ verification only. It does not authorize the real SCALE10000 C1 physical
 searches; those require a new bounded preflight, a reviewed envelope digest,
 and separate explicit live execution authorization after the implementation is
 source-frozen.
+
+#### Accepted dual-revision provenance amendment to ADR-016 / ADR-019
+
+Status: **Accepted 2026-08-25 for offline implementation and verification
+only; no live C1 execution is authorized**
+
+The original `source_revision` meaning is unchanged. It identifies the exact
+repository revision that produced and attested the immutable Gate-A/Gate-B
+upstream evidence. A prospective bounded Gate-C checkpoint additionally binds
+`execution_source_revision`: the exact committed repository revision whose
+runtime code may verify, recover, or execute that checkpoint. These revisions
+are independent provenance identities. Neither supplies window-range,
+qualification, admission, routing, actuation, Gate-D, or other downstream
+authority.
+
+Prospective bounded envelopes use schema
+`exp012-scale-gate-c-bounded-execution-envelope-v2` and digest domain
+`VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V2\0`. The v2 payload is
+the strict v1 payload plus `execution_source_revision`; it continues to bind
+the unchanged upstream `source_revision`, all upstream evidence identities,
+and the exact derived execution bound. Prospective checkpoint results use
+`exp012-scale-gate-c-checkpoint-result-v2` under
+`VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V2\0`. They explicitly bind both
+revisions and the v2 envelope digest. Prospective checkpoint events use
+`exp012-scale-gate-c-checkpoint-event-v2` under
+`VD::EXP012_SCALE_GATE_C_CHECKPOINT_EVENT::V2\0`; every STARTED and COMPLETED
+event explicitly binds `execution_source_revision`. The existing v1 checkpoint
+binding remains an upstream/campaign binding and is unchanged. Historical v1
+envelope, result, and event schemas retain their original interpretation and
+canonical bytes. Mixed v1/v2 documents or event chains fail closed.
+
+The execution revision is derived mechanically; it is never a caller-supplied
+CLI authority field. Before any live-capable client or capture executor is
+constructed, the bounded operator must, in order: verify the immutable
+Gate-A/Gate-B authority under `source_revision`; reconstruct and verify the
+complete v2 envelope and bound; then verify that repository `HEAD` is the exact
+`execution_source_revision`, that every tracked runtime byte beneath
+`src/vdbench` equals that commit, that no untracked executable module can
+shadow the runtime package, and that loaded `vdbench` modules resolve beneath
+that repository's `src/vdbench` tree. Unrelated documentation, reports, and
+artifacts are outside this executable identity and do not cause rejection.
+Wrong upstream revision and wrong execution revision fail independently.
+
+Checkpoint recovery and completion must reconstruct the same v2 envelope,
+event chain, result, and exact `execution_source_revision`. Reopening under a
+different executor revision or with executable-source drift refuses before a
+physical search; it cannot migrate, complete, or replay the old checkpoint.
+Gate-A/Gate-B evidence is never rewritten or rerun merely because bounded
+Gate-C code changed. Existing unbounded Gate-C plans, historical evidence, and
+full-campaign source-revision semantics remain unchanged. Acceptance of this
+amendment authorizes only offline implementation and verification; it does not
+authorize a live envelope, physical search, C1 execution, or any later gate.

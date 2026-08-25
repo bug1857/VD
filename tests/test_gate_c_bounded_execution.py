@@ -16,13 +16,18 @@ from vdbench.gate_c_bounded_execution import (
     GateCBoundedExecutionError,
     GateCWindowExecutionBound,
     build_gate_c_bounded_execution_envelope,
+    build_gate_c_bounded_execution_envelope_v2,
     build_gate_c_canonical_state,
     build_gate_c_checkpoint_result,
+    build_gate_c_checkpoint_result_v2,
     build_gate_c_window_checkpoint_effect,
     gate_c_bounded_execution_envelope_document,
+    gate_c_bounded_execution_envelope_document_v2,
     gate_c_bounded_execution_envelope_payload,
     verify_gate_c_bounded_execution_envelope,
+    verify_gate_c_bounded_execution_envelope_v2,
     verify_gate_c_checkpoint_result,
+    verify_gate_c_checkpoint_result_v2,
     verify_gate_c_window_execution_bound,
 )
 from vdbench.gate_c_window_execution import GateCWindowExecutionError
@@ -33,7 +38,12 @@ from vdbench.config import Metric
 from vdbench.shadow_event_types import MonitorStreamKey
 
 
-def _sources(count: int, *, producer: str = "a" * 32):
+def _sources(
+    count: int,
+    *,
+    producer: str = "a" * 32,
+    source_revision: str = "revision",
+):
     result = []
     stream = MonitorStreamKey(
         "stream", Metric.L2, "target-075", "cfg", "data", "flat", "hnsw"
@@ -43,14 +53,20 @@ def _sources(count: int, *, producer: str = "a" * 32):
         object.__setattr__(source, "source_sequence", sequence)
         object.__setattr__(source, "query_id", f"logsim-v2:{producer}:{sequence}")
         object.__setattr__(source, "stream_key", stream)
-        object.__setattr__(source, "source_revision", "revision")
+        object.__setattr__(source, "source_revision", source_revision)
         object.__setattr__(source, "environment_manifest_sha256", "e" * 64)
         object.__setattr__(source, "source_sha256", f"{sequence + 1:064x}"[-64:])
         result.append(source)
     return tuple(result)
 
 
-def _fixture(*, start: int = 0, count: int = 1, target_profile=Exp012ScaleProfile.SCALE_2400):
+def _fixture(
+    *,
+    start: int = 0,
+    count: int = 1,
+    target_profile=Exp012ScaleProfile.SCALE_2400,
+    source_revision: str = "revision",
+):
     contract = build_exp012_scale_contract(target_profile)
     plan = {
         "schema_version": "exp012-scale-gate-c-plan-v1",
@@ -63,7 +79,7 @@ def _fixture(*, start: int = 0, count: int = 1, target_profile=Exp012ScaleProfil
             "configuration_identity": "cfg", "data_identity": "data",
             "flat_binding_id": "flat", "hnsw_binding_id": "hnsw",
         },
-        "source_revision": "revision",
+        "source_revision": source_revision,
         "environment_manifest_sha256": "e" * 64,
         "gate_a_authority": {"evidence_sha256": "a" * 64},
         "stores": {"root": "/tmp/campaign/stores"},
@@ -90,7 +106,10 @@ def _fixture(*, start: int = 0, count: int = 1, target_profile=Exp012ScaleProfil
             b"VD::EXP012_SCALE_CAMPAIGN::V1\x00", campaign_payload
         ),
     )
-    sources = _sources(contract.target_source_records)
+    sources = _sources(
+        contract.target_source_records,
+        source_revision=source_revision,
+    )
     head_payload = {
         "schema_version": "response-profile-host-verified-head-v1",
         "source_count": contract.target_source_records,
@@ -114,6 +133,31 @@ def _fixture(*, start: int = 0, count: int = 1, target_profile=Exp012ScaleProfil
     envelope = build_gate_c_bounded_execution_envelope(
         plan=plan, campaign_binding=campaign, source_head=head,
         sources=sources, execution_bound=bound,
+    )
+    return plan, campaign, head, sources, envelope
+
+
+def _fixture_v2(
+    *,
+    start: int = 0,
+    count: int = 1,
+    target_profile=Exp012ScaleProfile.SCALE_2400,
+    source_revision: str = "revision",
+    execution_source_revision: str = "b" * 40,
+):
+    plan, campaign, head, sources, _legacy = _fixture(
+        start=start,
+        count=count,
+        target_profile=target_profile,
+        source_revision=source_revision,
+    )
+    envelope = build_gate_c_bounded_execution_envelope_v2(
+        plan=plan,
+        campaign_binding=campaign,
+        source_head=head,
+        sources=sources,
+        execution_bound=GateCWindowExecutionBound(start, count),
+        execution_source_revision=execution_source_revision,
     )
     return plan, campaign, head, sources, envelope
 
@@ -151,6 +195,101 @@ class GateCBoundedExecutionTests(unittest.TestCase):
             source_head=head, sources=sources,
         )
         self.assertEqual(verified, envelope)
+
+    def test_v1_envelope_golden_digest_is_frozen(self) -> None:
+        *_unused, envelope = _fixture()
+        self.assertEqual(
+            envelope.envelope_sha256,
+            "cf601041c7e0462732a3c05d5319b24f57dcc72a9c70c047c6274220ee930d7e",
+        )
+
+    def test_v2_envelope_binds_both_revisions_and_round_trips(self) -> None:
+        plan, campaign, head, sources, envelope = _fixture_v2()
+        document = gate_c_bounded_execution_envelope_document_v2(envelope)
+        verified = verify_gate_c_bounded_execution_envelope_v2(
+            document,
+            plan=plan,
+            campaign_binding=campaign,
+            source_head=head,
+            sources=sources,
+            execution_source_revision="b" * 40,
+        )
+        self.assertEqual(verified, envelope)
+        payload = document["envelope_payload"]
+        self.assertEqual(payload["source_revision"], "revision")
+        self.assertEqual(payload["execution_source_revision"], "b" * 40)
+
+        *_unused, changed = _fixture_v2(execution_source_revision="c" * 40)
+        self.assertNotEqual(changed.envelope_sha256, envelope.envelope_sha256)
+
+    def test_v1_and_v2_envelopes_never_cross_deserialize(self) -> None:
+        legacy_plan, legacy_campaign, legacy_head, legacy_sources, legacy = _fixture()
+        current_plan, current_campaign, current_head, current_sources, current = _fixture_v2()
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_bounded_execution_envelope_v2(
+                gate_c_bounded_execution_envelope_document(legacy),
+                plan=current_plan,
+                campaign_binding=current_campaign,
+                source_head=current_head,
+                sources=current_sources,
+                execution_source_revision="b" * 40,
+            )
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_bounded_execution_envelope(
+                gate_c_bounded_execution_envelope_document_v2(current),
+                plan=legacy_plan,
+                campaign_binding=legacy_campaign,
+                source_head=legacy_head,
+                sources=legacy_sources,
+            )
+
+    def test_v2_execution_revision_is_exact_commit_identity(self) -> None:
+        plan, campaign, head, sources, _envelope = _fixture_v2()
+        for invalid in ("revision", "B" * 40, "b" * 39, True, 1):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                GateCBoundedExecutionError
+            ):
+                build_gate_c_bounded_execution_envelope_v2(
+                    plan=plan,
+                    campaign_binding=campaign,
+                    source_head=head,
+                    sources=sources,
+                    execution_bound=GateCWindowExecutionBound(0, 1),
+                    execution_source_revision=invalid,
+                )
+
+        *_unused, envelope = _fixture_v2()
+        forged = object.__new__(type(envelope))
+        for field in fields(type(envelope)):
+            object.__setattr__(forged, field.name, getattr(envelope, field.name))
+        object.__setattr__(forged, "execution_source_revision", False)
+        with self.assertRaises(GateCBoundedExecutionError):
+            gate_c_bounded_execution_envelope_document_v2(forged)
+
+    def test_v2_upstream_and_execution_revisions_cannot_be_swapped(self) -> None:
+        plan, campaign, head, sources, envelope = _fixture_v2(
+            source_revision="a" * 40,
+            execution_source_revision="b" * 40,
+        )
+        document = gate_c_bounded_execution_envelope_document_v2(envelope)
+        payload = document["envelope_payload"]
+        payload["source_revision"], payload["execution_source_revision"] = (
+            payload["execution_source_revision"],
+            payload["source_revision"],
+        )
+        document["envelope_sha256"] = strict_canonical_digest(
+            b"VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V2\x00",
+            payload,
+        )
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_bounded_execution_envelope_v2(
+                document,
+                plan=plan,
+                campaign_binding=campaign,
+                source_head=head,
+                sources=sources,
+                execution_source_revision="b" * 40,
+            )
 
     def test_every_bound_and_identity_mutation_changes_or_invalidates_digest(self) -> None:
         plan, campaign, head, sources, envelope = _fixture()

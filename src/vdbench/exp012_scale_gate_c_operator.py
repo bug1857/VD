@@ -42,16 +42,20 @@ from .exp012_scale_contract import (
     verify_exp012_scale_contract,
 )
 from .gate_c_bounded_execution import (
-    GateCBoundedExecutionEnvelope,
+    GateCBoundedExecutionEnvelopeV2,
     GateCBoundedExecutionError,
     GateCWindowExecutionBound,
-    build_gate_c_bounded_execution_envelope,
+    build_gate_c_bounded_execution_envelope_v2,
     build_gate_c_canonical_state,
-    build_gate_c_checkpoint_result,
+    build_gate_c_checkpoint_result_v2,
     build_gate_c_window_checkpoint_effect,
-    gate_c_bounded_execution_envelope_document,
-    parse_gate_c_bounded_execution_envelope_document,
-    verify_gate_c_bounded_execution_envelope,
+    gate_c_bounded_execution_envelope_document_v2,
+    parse_gate_c_bounded_execution_envelope_document_v2,
+    verify_gate_c_bounded_execution_envelope_v2,
+)
+from .gate_c_execution_source import (
+    GateCExecutionSourceError,
+    derive_gate_c_execution_source,
 )
 from .gate_c_window_execution import GateCWindowExecutionError
 from .gate_c_checkpoint_store import (
@@ -363,46 +367,55 @@ def _plan_at_checkpoint_start(
 def build_gate_c_checkpoint_envelope(
     operands: Exp012ScaleGateCOperands,
     execution_bound: GateCWindowExecutionBound,
-) -> GateCBoundedExecutionEnvelope:
+) -> GateCBoundedExecutionEnvelopeV2:
     """Build a fresh pre-search envelope from canonical persisted authority."""
 
     plan = build_gate_c_plan(operands)
     binding = _telemetry_binding(operands)
     sources, source_head = _verified_sources_and_head(operands, binding)
     campaign = _campaign_binding(operands, plan)
-    return build_gate_c_bounded_execution_envelope(
+    execution_source = derive_gate_c_execution_source()
+    return build_gate_c_bounded_execution_envelope_v2(
         plan=plan,
         campaign_binding=campaign,
         source_head=source_head,
         sources=sources,
         execution_bound=execution_bound,
+        execution_source_revision=execution_source.execution_source_revision,
     )
 
 
 def _verify_current_checkpoint_envelope(
     operands: Exp012ScaleGateCOperands,
     document: dict[str, object],
-) -> tuple[GateCBoundedExecutionEnvelope, dict[str, object], tuple[object, ...]]:
-    supplied = parse_gate_c_bounded_execution_envelope_document(document)
+) -> tuple[GateCBoundedExecutionEnvelopeV2, dict[str, object], tuple[object, ...]]:
+    # Upstream Gate-A/Gate-B authority remains the first verification boundary.
     current_plan = build_gate_c_plan(operands)
+    supplied = parse_gate_c_bounded_execution_envelope_document_v2(document)
     normalized_plan = _plan_at_checkpoint_start(
         current_plan, supplied.execution_bound
     )
     binding = _telemetry_binding(operands)
     sources, source_head = _verified_sources_and_head(operands, binding)
     campaign = _campaign_binding(operands, current_plan)
-    envelope = verify_gate_c_bounded_execution_envelope(
+    envelope = verify_gate_c_bounded_execution_envelope_v2(
         document,
         plan=normalized_plan,
         campaign_binding=campaign,
         source_head=source_head,
         sources=sources,
+        execution_source_revision=supplied.execution_source_revision,
+    )
+    # Executor identity is independent of upstream evidence identity and is
+    # checked only after the bounded envelope has been fully reconstructed.
+    derive_gate_c_execution_source(
+        expected_revision=envelope.execution_source_revision
     )
     return envelope, current_plan, sources
 
 
 def _checkpoint_ledger_binding(
-    envelope: GateCBoundedExecutionEnvelope,
+    envelope: GateCBoundedExecutionEnvelopeV2,
 ) -> GateCCheckpointLedgerBinding:
     return GateCCheckpointLedgerBinding(
         campaign_identity=envelope.campaign_identity,
@@ -433,7 +446,7 @@ def _checkpoint_runner(operands: Exp012ScaleGateCOperands):
 
 def _verified_checkpoint_transition(
     operands: Exp012ScaleGateCOperands,
-    envelope: GateCBoundedExecutionEnvelope,
+    envelope: GateCBoundedExecutionEnvelopeV2,
     sources: tuple[object, ...],
     *,
     current_sequence: int,
@@ -715,7 +728,7 @@ def _verified_checkpoint_transition(
 
 def _require_safe_checkpoint_start(
     operands: Exp012ScaleGateCOperands,
-    envelope: GateCBoundedExecutionEnvelope,
+    envelope: GateCBoundedExecutionEnvelopeV2,
     sources: tuple[object, ...],
 ) -> dict[str, object]:
     pre, post, effects = _verified_checkpoint_transition(
@@ -773,7 +786,7 @@ def run_gate_c_checkpoint(
             sources,
             current_sequence=bound.expected_next_window_sequence,
         )
-        result = build_gate_c_checkpoint_result(
+        result = build_gate_c_checkpoint_result_v2(
             envelope=envelope,
             pre_state=pre_state,
             post_state=post_state,
@@ -852,10 +865,10 @@ def _run_gate_c_after_plan(
 
 
 def _write_checkpoint_envelope(
-    path: Path, envelope: GateCBoundedExecutionEnvelope
+    path: Path, envelope: GateCBoundedExecutionEnvelopeV2
 ) -> None:
     raw = strict_canonical_json_bytes(
-        gate_c_bounded_execution_envelope_document(envelope)
+        gate_c_bounded_execution_envelope_document_v2(envelope)
     )
     if path.exists():
         try:
@@ -901,7 +914,7 @@ def _load_checkpoint_envelope(path: Path) -> dict[str, object]:
         raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_INVALID") from exc
     if type(value) is not dict:
         raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_INVALID")
-    parse_gate_c_bounded_execution_envelope_document(value)
+    parse_gate_c_bounded_execution_envelope_document_v2(value)
     return value
 
 
@@ -970,7 +983,7 @@ def main(argv: list[str] | None = None) -> int:
             _write_checkpoint_envelope(args.execution_envelope, envelope)
             sys.stdout.write(
                 strict_canonical_json_bytes(
-                    gate_c_bounded_execution_envelope_document(envelope)
+                    gate_c_bounded_execution_envelope_document_v2(envelope)
                 ).decode()
                 + os.linesep
             )
@@ -997,6 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
         GateCBoundedExecutionError,
         GateCWindowExecutionError,
         GateCCheckpointLedgerError,
+        GateCExecutionSourceError,
     ) as exc:
         sys.stderr.write(f"{exc.code}: {exc}{os.linesep}")
         return 2

@@ -23,9 +23,13 @@ from typing import Self
 from .canonical_serialization import strict_canonical_digest, strict_canonical_json_bytes
 from .gate_c_bounded_execution import (
     GateCBoundedExecutionEnvelope,
+    GateCBoundedExecutionEnvelopeV2,
     gate_c_bounded_execution_envelope_document,
+    gate_c_bounded_execution_envelope_document_v2,
     parse_gate_c_bounded_execution_envelope_document,
+    parse_gate_c_bounded_execution_envelope_document_v2,
     verify_gate_c_checkpoint_result,
+    verify_gate_c_checkpoint_result_v2,
 )
 
 __all__ = [
@@ -39,8 +43,10 @@ __all__ = [
 
 _BINDING_SCHEMA = "exp012-scale-gate-c-checkpoint-binding-v1"
 _EVENT_SCHEMA = "exp012-scale-gate-c-checkpoint-event-v1"
+_EVENT_SCHEMA_V2 = "exp012-scale-gate-c-checkpoint-event-v2"
 _BINDING_DOMAIN = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_BINDING::V1\x00"
 _EVENT_DOMAIN = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_EVENT::V1\x00"
+_EVENT_DOMAIN_V2 = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_EVENT::V2\x00"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -87,7 +93,7 @@ class GateCCheckpointLedgerBinding:
 
 @dataclass(frozen=True, slots=True)
 class GateCCheckpointLedgerState:
-    envelope: GateCBoundedExecutionEnvelope
+    envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2
     started_event_sha256: str
     completed_event_sha256: str | None
     checkpoint_result: dict[str, object] | None
@@ -161,6 +167,92 @@ def _event_document(
         "event_payload": payload,
         "event_sha256": strict_canonical_digest(_EVENT_DOMAIN, payload),
     }
+
+
+def _event_document_v2(
+    *,
+    event_sequence: int,
+    kind: GateCCheckpointEventKind,
+    binding_sha256: str,
+    envelope: GateCBoundedExecutionEnvelopeV2,
+    checkpoint_result: dict[str, object] | None,
+    recorded_at_utc: str,
+    previous_event_sha256: str,
+) -> dict[str, object]:
+    if type(event_sequence) is not int or event_sequence < 0:
+        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+    if type(kind) is not GateCCheckpointEventKind:
+        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+    _sha(binding_sha256)
+    _sha(previous_event_sha256)
+    _text(recorded_at_utc)
+    envelope_document = gate_c_bounded_execution_envelope_document_v2(envelope)
+    if kind is GateCCheckpointEventKind.CHECKPOINT_STARTED:
+        if checkpoint_result is not None:
+            raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+    else:
+        if checkpoint_result is None:
+            raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+        verify_gate_c_checkpoint_result_v2(checkpoint_result, envelope=envelope)
+    payload: dict[str, object] = {
+        "schema_version": _EVENT_SCHEMA_V2,
+        "event_sequence": event_sequence,
+        "event_kind": kind.value,
+        "binding_sha256": binding_sha256,
+        "envelope_sha256": envelope.envelope_sha256,
+        "execution_source_revision": envelope.execution_source_revision,
+        "envelope": envelope_document if kind is GateCCheckpointEventKind.CHECKPOINT_STARTED else None,
+        "checkpoint_result": checkpoint_result,
+        "recorded_at_utc": recorded_at_utc,
+        "previous_event_sha256": previous_event_sha256,
+    }
+    return {
+        "event_payload": payload,
+        "event_sha256": strict_canonical_digest(_EVENT_DOMAIN_V2, payload),
+    }
+
+
+def _event_document_for(
+    *,
+    event_sequence: int,
+    kind: GateCCheckpointEventKind,
+    binding_sha256: str,
+    envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
+    checkpoint_result: dict[str, object] | None,
+    recorded_at_utc: str,
+    previous_event_sha256: str,
+) -> dict[str, object]:
+    if type(envelope) is GateCBoundedExecutionEnvelope:
+        return _event_document(
+            event_sequence=event_sequence,
+            kind=kind,
+            binding_sha256=binding_sha256,
+            envelope=envelope,
+            checkpoint_result=checkpoint_result,
+            recorded_at_utc=recorded_at_utc,
+            previous_event_sha256=previous_event_sha256,
+        )
+    if type(envelope) is GateCBoundedExecutionEnvelopeV2:
+        return _event_document_v2(
+            event_sequence=event_sequence,
+            kind=kind,
+            binding_sha256=binding_sha256,
+            envelope=envelope,
+            checkpoint_result=checkpoint_result,
+            recorded_at_utc=recorded_at_utc,
+            previous_event_sha256=previous_event_sha256,
+        )
+    raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+
+
+def _envelope_document_for(
+    envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
+) -> dict[str, object]:
+    if type(envelope) is GateCBoundedExecutionEnvelope:
+        return gate_c_bounded_execution_envelope_document(envelope)
+    if type(envelope) is GateCBoundedExecutionEnvelopeV2:
+        return gate_c_bounded_execution_envelope_document_v2(envelope)
+    raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
 
 
 _TABLES = {
@@ -371,6 +463,7 @@ class SQLiteGateCCheckpointLedger:
     def _states(self) -> tuple[GateCCheckpointLedgerState, ...]:
         binding_sha = self._verify_binding()
         previous = binding_sha
+        chain_schema: str | None = None
         states: dict[str, GateCCheckpointLedgerState] = {}
         order: list[str] = []
         rows = self._db.execute(
@@ -386,12 +479,29 @@ class SQLiteGateCCheckpointLedger:
             if type(document) is not dict or set(document) != {"event_payload", "event_sha256"}:
                 raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
             payload = document["event_payload"]
-            if type(payload) is not dict or set(payload) != {
+            if type(payload) is not dict:
+                raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+            schema_version = payload.get("schema_version")
+            if type(schema_version) is not str:
+                raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+            v1_fields = {
                 "schema_version", "event_sequence", "event_kind", "binding_sha256",
                 "envelope_sha256", "envelope", "checkpoint_result",
                 "recorded_at_utc", "previous_event_sha256",
-            }:
+            }
+            v2_fields = v1_fields | {"execution_source_revision"}
+            if (
+                schema_version == _EVENT_SCHEMA
+                and set(payload) != v1_fields
+            ) or (
+                schema_version == _EVENT_SCHEMA_V2
+                and set(payload) != v2_fields
+            ) or schema_version not in {_EVENT_SCHEMA, _EVENT_SCHEMA_V2}:
                 raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+            if chain_schema is None:
+                chain_schema = schema_version
+            elif schema_version != chain_schema:
+                raise _error("GATE_C_CHECKPOINT_EVENT_VERSION_MIXED")
             try:
                 kind = GateCCheckpointEventKind(payload["event_kind"])
             except (TypeError, ValueError) as exc:
@@ -402,7 +512,16 @@ class SQLiteGateCCheckpointLedger:
                     item.completed_event_sha256 is None for item in states.values()
                 ):
                     raise _error("GATE_C_CHECKPOINT_TRANSITION_INVALID")
-                envelope = parse_gate_c_bounded_execution_envelope_document(payload["envelope"])
+                if schema_version == _EVENT_SCHEMA:
+                    envelope = parse_gate_c_bounded_execution_envelope_document(
+                        payload["envelope"]
+                    )
+                else:
+                    envelope = parse_gate_c_bounded_execution_envelope_document_v2(
+                        payload["envelope"]
+                    )
+                    if payload["execution_source_revision"] != envelope.execution_source_revision:
+                        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
                 result = None
                 if envelope.envelope_sha256 in states:
                     raise _error("GATE_C_CHECKPOINT_TRANSITION_INVALID")
@@ -412,10 +531,21 @@ class SQLiteGateCCheckpointLedger:
                 if prior is None or prior.completed_event_sha256 is not None:
                     raise _error("GATE_C_CHECKPOINT_TRANSITION_INVALID")
                 envelope = prior.envelope
-                result = verify_gate_c_checkpoint_result(
-                    payload["checkpoint_result"], envelope=envelope
-                )
-            expected_document = _event_document(
+                if schema_version == _EVENT_SCHEMA:
+                    if type(envelope) is not GateCBoundedExecutionEnvelope:
+                        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+                    result = verify_gate_c_checkpoint_result(
+                        payload["checkpoint_result"], envelope=envelope
+                    )
+                else:
+                    if type(envelope) is not GateCBoundedExecutionEnvelopeV2:
+                        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+                    if payload["execution_source_revision"] != envelope.execution_source_revision:
+                        raise _error("GATE_C_CHECKPOINT_EVENT_INVALID")
+                    result = verify_gate_c_checkpoint_result_v2(
+                        payload["checkpoint_result"], envelope=envelope
+                    )
+            expected_document = _event_document_for(
                 event_sequence=expected_sequence,
                 kind=kind,
                 binding_sha256=binding_sha,
@@ -451,8 +581,11 @@ class SQLiteGateCCheckpointLedger:
             previous = document["event_sha256"]
         return tuple(states[item] for item in order)
 
-    def state(self, envelope: GateCBoundedExecutionEnvelope) -> GateCCheckpointLedgerState | None:
-        document = gate_c_bounded_execution_envelope_document(envelope)
+    def state(
+        self,
+        envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
+    ) -> GateCCheckpointLedgerState | None:
+        document = _envelope_document_for(envelope)
         with self._mutex:
             return next(
                 (item for item in self._states() if item.envelope.envelope_sha256 == document["envelope_sha256"]),
@@ -463,12 +596,14 @@ class SQLiteGateCCheckpointLedger:
         self,
         *,
         kind: GateCCheckpointEventKind,
-        envelope: GateCBoundedExecutionEnvelope,
+        envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
         checkpoint_result: dict[str, object] | None,
         recorded_at_utc: str,
     ) -> GateCCheckpointLedgerState:
         with self._mutex:
             states = self._states()
+            if states and any(type(item.envelope) is not type(envelope) for item in states):
+                raise _error("GATE_C_CHECKPOINT_EVENT_VERSION_MIXED")
             current = next(
                 (item for item in states if item.envelope.envelope_sha256 == envelope.envelope_sha256),
                 None,
@@ -485,7 +620,7 @@ class SQLiteGateCCheckpointLedger:
                 "SELECT event_sha256 FROM gate_c_checkpoint_events ORDER BY event_sequence DESC LIMIT 1"
             ).fetchone()
             previous = binding_sha if row is None else row[0]
-            document = _event_document(
+            document = _event_document_for(
                 event_sequence=sum(2 if item.completed_event_sha256 else 1 for item in states),
                 kind=kind,
                 binding_sha256=binding_sha,
@@ -521,7 +656,10 @@ class SQLiteGateCCheckpointLedger:
             return state
 
     def start(
-        self, envelope: GateCBoundedExecutionEnvelope, *, recorded_at_utc: str
+        self,
+        envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
+        *,
+        recorded_at_utc: str,
     ) -> GateCCheckpointLedgerState:
         return self._append(
             kind=GateCCheckpointEventKind.CHECKPOINT_STARTED,
@@ -532,7 +670,7 @@ class SQLiteGateCCheckpointLedger:
 
     def complete(
         self,
-        envelope: GateCBoundedExecutionEnvelope,
+        envelope: GateCBoundedExecutionEnvelope | GateCBoundedExecutionEnvelopeV2,
         *,
         checkpoint_result: dict[str, object],
         recorded_at_utc: str,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import time
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tests.test_gate_c_bounded_execution import _fixture as _bounded_fixture
+from tests.test_gate_c_bounded_execution import _fixture_v2 as _bounded_fixture
 from tests.test_exp010_live_runner import (
     DATASET001,
     _ENVIRONMENT,
@@ -16,6 +17,7 @@ from tests.test_exp010_live_runner import (
 )
 
 from vdbench.config import Metric
+from vdbench.canonical_serialization import strict_canonical_digest
 from vdbench import exp012_scale_gate_c_operator as gate_c_scale_operator
 from vdbench.exp010_gate_b_operator import Exp010GateBOperands
 from vdbench.exp010_gate_c_operator import Exp010GateCOperands
@@ -42,8 +44,14 @@ from vdbench.exp012_scale_gate_c_operator import (
 from vdbench.gate_c_bounded_execution import (
     GateCBoundedExecutionError,
     GateCWindowExecutionBound,
+    build_gate_c_bounded_execution_envelope_v2,
     build_gate_c_canonical_state,
     build_gate_c_window_checkpoint_effect,
+    gate_c_bounded_execution_envelope_document_v2,
+)
+from vdbench.gate_c_execution_source import (
+    GateCExecutionSourceError,
+    VerifiedGateCExecutionSource,
 )
 from vdbench.shadow_attempt_store import build_shadow_attempt_identity
 from vdbench.shadow_search_telemetry import (
@@ -151,6 +159,36 @@ def _base_c_plan(operands: Exp012ScaleGateCOperands, *, finalized=0):
             "hnsw_sentinel_searches": (contract.expected_windows - finalized) * 200,
         },
     }
+
+
+def _operator_v2_fixture():
+    plan, campaign, head, sources, _envelope = _bounded_fixture(
+        target_profile=Exp012ScaleProfile.SCALE_10000
+    )
+    plan = copy.deepcopy(plan)
+    plan["observed"].update(
+        {
+            "shadow_acknowledged_count": 0,
+            "windows_pending": 50,
+        }
+    )
+    plan["projected_physical_work"] = {
+        "flat_searches": 10000,
+        "hnsw_sentinel_searches": 10000,
+    }
+    plan.pop("plan_sha256")
+    plan["plan_sha256"] = strict_canonical_digest(
+        b"VD::EXP012_SCALE_GATE_C_PLAN::V1\x00", plan
+    )
+    envelope = build_gate_c_bounded_execution_envelope_v2(
+        plan=plan,
+        campaign_binding=campaign,
+        source_head=head,
+        sources=sources,
+        execution_bound=GateCWindowExecutionBound(0, 1),
+        execution_source_revision="b" * 40,
+    )
+    return plan, campaign, head, sources, envelope
 
 
 def _checkpoint_transition_fixture():
@@ -600,11 +638,150 @@ class Exp012ScaleOperatorTests(unittest.TestCase):
         self.assertEqual(
             result["checkpoint_result_payload"]["processed_window_sequences"], [0]
         )
+        self.assertEqual(
+            result["checkpoint_result_payload"]["schema_version"],
+            "exp012-scale-gate-c-checkpoint-result-v2",
+        )
+        self.assertEqual(
+            result["checkpoint_result_payload"]["source_revision"], "revision"
+        )
+        self.assertEqual(
+            result["checkpoint_result_payload"]["execution_source_revision"],
+            "b" * 40,
+        )
         self.assertFalse(result["checkpoint_result_payload"]["full_campaign_complete"])
         self.assertEqual(
             execute.call_args.kwargs["execution_bound"],
             GateCWindowExecutionBound(0, 1),
         )
+
+    def test_checkpoint_preflight_derives_v2_execution_revision(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        plan, campaign, head, sources, _envelope = _operator_v2_fixture()
+        identity = VerifiedGateCExecutionSource(Path("/repository"), "b" * 40)
+        with mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value=plan
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_sources_and_head",
+            return_value=(sources, head),
+        ), mock.patch.object(
+            gate_c_scale_operator, "_campaign_binding", return_value=campaign
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "derive_gate_c_execution_source",
+            return_value=identity,
+        ) as derive:
+            envelope = gate_c_scale_operator.build_gate_c_checkpoint_envelope(
+                operands, GateCWindowExecutionBound(0, 1)
+            )
+        self.assertEqual(envelope.source_revision, "revision")
+        self.assertEqual(envelope.execution_source_revision, "b" * 40)
+        self.assertEqual(
+            envelope.schema_version,
+            "exp012-scale-gate-c-bounded-execution-envelope-v2",
+        )
+        derive.assert_called_once_with()
+
+    def test_upstream_drift_refuses_before_execution_revision_check(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        plan, campaign, head, sources, envelope = _operator_v2_fixture()
+        document = gate_c_bounded_execution_envelope_document_v2(envelope)
+        document["envelope_payload"]["source_revision"] = "changed-upstream"
+        document["envelope_sha256"] = strict_canonical_digest(
+            b"VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V2\x00",
+            document["envelope_payload"],
+        )
+        with mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value=plan
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_sources_and_head",
+            return_value=(sources, head),
+        ), mock.patch.object(
+            gate_c_scale_operator, "_campaign_binding", return_value=campaign
+        ), mock.patch.object(
+            gate_c_scale_operator, "derive_gate_c_execution_source"
+        ) as derive, self.assertRaises(GateCBoundedExecutionError):
+            gate_c_scale_operator._verify_current_checkpoint_envelope(
+                operands, document
+            )
+        derive.assert_not_called()
+
+    def test_wrong_execution_revision_refuses_before_live_or_ledger_construction(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        plan, campaign, head, sources, envelope = _operator_v2_fixture()
+        document = gate_c_bounded_execution_envelope_document_v2(envelope)
+        with mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value=plan
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_sources_and_head",
+            return_value=(sources, head),
+        ), mock.patch.object(
+            gate_c_scale_operator, "_campaign_binding", return_value=campaign
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "derive_gate_c_execution_source",
+            side_effect=GateCExecutionSourceError(
+                "GATE_C_EXECUTION_SOURCE_REVISION_MISMATCH"
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedger"
+        ) as ledger, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaises(GateCExecutionSourceError):
+            run_gate_c_checkpoint(operands, document)
+        ledger.assert_not_called()
+        execute.assert_not_called()
+
+    def test_startup_hook_drift_refuses_before_live_or_ledger_construction(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        plan, campaign, head, sources, envelope = _operator_v2_fixture()
+        document = gate_c_bounded_execution_envelope_document_v2(envelope)
+        with mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value=plan
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_sources_and_head",
+            return_value=(sources, head),
+        ), mock.patch.object(
+            gate_c_scale_operator, "_campaign_binding", return_value=campaign
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "derive_gate_c_execution_source",
+            side_effect=GateCExecutionSourceError(
+                "GATE_C_EXECUTION_SOURCE_DRIFT"
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedger"
+        ) as ledger, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaises(GateCExecutionSourceError):
+            run_gate_c_checkpoint(operands, document)
+        ledger.assert_not_called()
+        execute.assert_not_called()
+
+    def test_execution_revision_is_not_a_cli_authority_field(self) -> None:
+        with self.assertRaises(SystemExit):
+            gate_c_scale_operator._parser().parse_args(
+                [
+                    "--operands",
+                    "/tmp/operands.json",
+                    "--mode",
+                    "checkpoint-preflight",
+                    "--execution-source-revision",
+                    "b" * 40,
+                ]
+            )
 
     def test_checkpoint_reconciles_completed_canonical_state_without_search(self) -> None:
         operands = _base_c(Exp012ScaleProfile.SCALE_10000)
