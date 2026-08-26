@@ -314,46 +314,59 @@ def _append_checkpoint_telemetry(
 ) -> None:
     """Append exact successful telemetry through repository production APIs."""
 
-    first_source = start_window_sequence * WINDOW_QUERY_COUNT
-    final_source = (start_window_sequence + window_count) * WINDOW_QUERY_COUNT
     with SQLiteShadowSearchTelemetryStore(
         operands.telemetry_path,
         binding=gate_c_scale_operator._telemetry_binding(operands),
     ) as telemetry:
-        next_tick = len(telemetry.records()) * 2
-        attempts: dict[tuple[int, int], str] = {}
-        for source in sources[first_source:final_source]:
-            trace_sequence_index = (
-                source.within_window_index // TRACE_QUERY_COUNT
+        _append_checkpoint_telemetry_records(
+            telemetry,
+            sources,
+            start_window_sequence=start_window_sequence,
+            window_count=window_count,
+        )
+
+
+def _append_checkpoint_telemetry_records(
+    telemetry: SQLiteShadowSearchTelemetryStore,
+    sources: tuple[object, ...],
+    *,
+    start_window_sequence: int,
+    window_count: int,
+) -> None:
+    first_source = start_window_sequence * WINDOW_QUERY_COUNT
+    final_source = (start_window_sequence + window_count) * WINDOW_QUERY_COUNT
+    next_tick = len(telemetry.records()) * 2
+    attempts: dict[tuple[int, int], str] = {}
+    for source in sources[first_source:final_source]:
+        trace_sequence_index = source.within_window_index // TRACE_QUERY_COUNT
+        attempt_key = (source.window_sequence, trace_sequence_index)
+        attempt_sha256 = attempts.get(attempt_key)
+        if attempt_sha256 is None:
+            trace_start = (
+                source.window_sequence * WINDOW_QUERY_COUNT
+                + trace_sequence_index * TRACE_QUERY_COUNT
             )
-            attempt_key = (source.window_sequence, trace_sequence_index)
-            attempt_sha256 = attempts.get(attempt_key)
-            if attempt_sha256 is None:
-                trace_start = (
-                    source.window_sequence * WINDOW_QUERY_COUNT
-                    + trace_sequence_index * TRACE_QUERY_COUNT
-                )
-                attempt_sha256 = build_shadow_attempt_identity(
-                    tuple(sources[trace_start : trace_start + TRACE_QUERY_COUNT]),
-                    trace_sequence_index=trace_sequence_index,
-                ).attempt_sha256
-                attempts[attempt_key] = attempt_sha256
-            for role in ShadowSearchRole:
-                telemetry.append(
-                    window_sequence=source.window_sequence,
-                    trace_sequence_index=trace_sequence_index,
-                    attempt_sha256=attempt_sha256,
-                    source_sequence=source.source_sequence,
-                    source_sha256=source.source_sha256,
-                    query_id_sha256=source.query_id_sha256,
-                    role=role,
-                    started_monotonic_ns=next_tick,
-                    completed_monotonic_ns=next_tick + 1,
-                    outcome=ShadowSearchOutcome.SUCCEEDED,
-                    error_classification=None,
-                    result_count=1,
-                )
-                next_tick += 2
+            attempt_sha256 = build_shadow_attempt_identity(
+                tuple(sources[trace_start : trace_start + TRACE_QUERY_COUNT]),
+                trace_sequence_index=trace_sequence_index,
+            ).attempt_sha256
+            attempts[attempt_key] = attempt_sha256
+        for role in ShadowSearchRole:
+            telemetry.append(
+                window_sequence=source.window_sequence,
+                trace_sequence_index=trace_sequence_index,
+                attempt_sha256=attempt_sha256,
+                source_sequence=source.source_sequence,
+                source_sha256=source.source_sha256,
+                query_id_sha256=source.query_id_sha256,
+                role=role,
+                started_monotonic_ns=next_tick,
+                completed_monotonic_ns=next_tick + 1,
+                outcome=ShadowSearchOutcome.SUCCEEDED,
+                error_classification=None,
+                result_count=1,
+            )
+            next_tick += 2
 
 
 class _RecoveringCheckpointLedger:
@@ -668,6 +681,817 @@ class Exp012ScaleOperatorTests(unittest.TestCase):
             result["checkpoint_result_payload"]["schema_version"],
             "exp012-scale-gate-c-checkpoint-result-v3",
         )
+
+    def test_v3_mid_batch_recovery_executes_only_derived_remaining_suffix(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+        plan = {"observed": {"next_window_sequence": 2}}
+        remaining = GateCWindowExecutionBound(2, 1)
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            completed = None
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return SimpleNamespace(envelope=envelope)
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256=None
+                )
+
+            def start(self, *_args, **_kwargs):
+                raise AssertionError("a resumed envelope must not start again")
+
+            def complete(self, _envelope, *, checkpoint_result, **_kwargs):
+                _Ledger.completed = checkpoint_result
+
+        class _Telemetry:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        execute = mock.Mock(return_value=(SimpleNamespace(window_sequence=2),))
+        result = {"checkpoint": "completed"}
+        observer = mock.Mock(
+            return_value=envelope.execution_environment_attestation
+        )
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_v3_recovery_suffix",
+            return_value=({}, remaining),
+        ) as prefix, mock.patch.object(
+            gate_c_scale_operator, "SQLiteShadowSearchTelemetryStore", _Telemetry
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "run_gate_c_execute_from_cli",
+            execute,
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=({}, {}, ()),
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "build_gate_c_checkpoint_result_v3",
+            return_value=result,
+        ) as result_builder:
+            actual = run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        self.assertIs(actual, result)
+        prefix.assert_called_once_with(
+            operands, envelope, tuple(range(10_000)), current_sequence=2
+        )
+        self.assertEqual(
+            execute.call_args.kwargs["execution_bound"].allowed_window_sequences,
+            (2,),
+        )
+        self.assertEqual(
+            result_builder.call_args.kwargs["processed_window_sequences"],
+            (1, 2),
+        )
+        self.assertEqual(observer.call_count, 3)
+        self.assertIs(_Ledger.completed, result)
+
+    def test_v3_fresh_multibound_uses_original_authorized_range(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            starts = 0
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return None
+
+            def state(self, _envelope):
+                return None
+
+            def start(self, *_args, **_kwargs):
+                type(self).starts += 1
+                return SimpleNamespace(terminal_event_sha256=None)
+
+            def complete(self, *_args, **_kwargs):
+                return None
+
+        class _Telemetry:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        execute = mock.Mock(
+            return_value=(
+                SimpleNamespace(window_sequence=1),
+                SimpleNamespace(window_sequence=2),
+            )
+        )
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(
+                envelope,
+                {"observed": {"next_window_sequence": 1}},
+                tuple(range(10_000)),
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_require_safe_checkpoint_start_v3",
+            return_value={},
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteShadowSearchTelemetryStore", _Telemetry
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli", execute
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=({}, {}, ()),
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "build_gate_c_checkpoint_result_v3",
+            return_value={"checkpoint": "completed"},
+        ):
+            run_gate_c_checkpoint_v3(
+                operands,
+                {"ignored": True},
+                runtime_observer=lambda *_args, **_kwargs: (
+                    envelope.execution_environment_attestation
+                ),
+            )
+        self.assertEqual(_Ledger.starts, 1)
+        self.assertEqual(
+            execute.call_args.kwargs["execution_bound"].allowed_window_sequences,
+            (1, 2),
+        )
+
+    def test_v3_multibound_completion_only_recovery_issues_zero_searches(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return SimpleNamespace(envelope=envelope)
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256=None
+                )
+
+            def complete(self, *_args, **_kwargs):
+                return None
+
+        observer = mock.Mock(side_effect=AssertionError("runtime contacted"))
+        execute = mock.Mock(side_effect=AssertionError("search seam reached"))
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(
+                envelope,
+                {"observed": {"next_window_sequence": 3}},
+                tuple(range(10_000)),
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=({}, {}, ()),
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "build_gate_c_checkpoint_result_v3",
+            return_value={"checkpoint": "completed"},
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli", execute
+        ):
+            run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        observer.assert_not_called()
+        execute.assert_not_called()
+
+    def test_v3_multibound_terminal_checkpoint_cannot_replay(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return None
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256="f" * 64
+                )
+
+        observer = mock.Mock(side_effect=AssertionError("runtime contacted"))
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(
+                envelope,
+                {"observed": {"next_window_sequence": 3}},
+                tuple(range(10_000)),
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_CHECKPOINT_ENVELOPE_TERMINAL"
+        ):
+            run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        observer.assert_not_called()
+        execute.assert_not_called()
+
+    def test_v3_mid_batch_runtime_recheck_refuses_before_remaining_search(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return SimpleNamespace(envelope=envelope)
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256=None
+                )
+
+            def abort_pre_search(self, *_args, **_kwargs):
+                raise AssertionError("a completed prefix cannot be zero-effect aborted")
+
+        checks = iter(((None, True), (None, True), (None, False)))
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(
+                envelope,
+                {"observed": {"next_window_sequence": 2}},
+                tuple(range(10_000)),
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_current_execution_attestation",
+            side_effect=lambda *_args, **_kwargs: next(checks),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_v3_recovery_suffix",
+            return_value=({}, GateCWindowExecutionBound(2, 1)),
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE"
+        ):
+            run_gate_c_checkpoint_v3(operands, {"ignored": True})
+        execute.assert_not_called()
+
+    def test_v3_mid_batch_without_original_started_checkpoint_refuses(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return None
+
+            def state(self, _envelope):
+                return None
+
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(
+                envelope,
+                {"observed": {"next_window_sequence": 2}},
+                tuple(range(10_000)),
+            ),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID"
+        ):
+            run_gate_c_checkpoint_v3(
+                operands,
+                {"ignored": True},
+                runtime_observer=lambda *_args, **_kwargs: (
+                    envelope.execution_environment_attestation
+                ),
+            )
+        execute.assert_not_called()
+
+    def test_v3_progress_outside_original_bound_refuses_before_runtime(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+        for current in (0, 4, False, 1.0):
+            with self.subTest(current=current), mock.patch.object(
+                gate_c_scale_operator,
+                "_verify_current_checkpoint_envelope_v3",
+                return_value=(
+                    envelope,
+                    {"observed": {"next_window_sequence": current}},
+                    tuple(range(10_000)),
+                ),
+            ), mock.patch.object(
+                gate_c_scale_operator, "GateCCampaignCheckpointLock"
+            ) as authority, mock.patch.object(
+                gate_c_scale_operator, "run_gate_c_execute_from_cli"
+            ) as execute, self.assertRaisesRegex(
+                Exception, "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID"
+            ):
+                run_gate_c_checkpoint_v3(
+                    operands,
+                    {"ignored": True},
+                    runtime_observer=mock.Mock(
+                        side_effect=AssertionError("runtime observed")
+                    ),
+                )
+            authority.assert_not_called()
+            execute.assert_not_called()
+
+    def test_v3_mid_batch_prefix_evidence_failures_refuse_before_search(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=1,
+            count=2,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return SimpleNamespace(envelope=envelope)
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256=None
+                )
+
+        codes = (
+            "EXP012_GATE_C_CHECKPOINT_ACKNOWLEDGEMENT_INVALID",
+            "EXP012_GATE_C_CHECKPOINT_TELEMETRY_SUFFIX_INVALID",
+            "EXP012_GATE_C_CHECKPOINT_FINALIZATION_SUFFIX_INVALID",
+            "EXP012_GATE_C_CHECKPOINT_ORPHANED_SUFFIX",
+            "EXP012_GATE_C_CHECKPOINT_ATTEMPT_SUFFIX_INVALID",
+        )
+        for code in codes:
+            with self.subTest(code=code), mock.patch.object(
+                gate_c_scale_operator,
+                "_verify_current_checkpoint_envelope_v3",
+                return_value=(
+                    envelope,
+                    {"observed": {"next_window_sequence": 2}},
+                    tuple(range(10_000)),
+                ),
+            ), mock.patch.object(
+                gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+            ), mock.patch.object(
+                gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+            ), mock.patch.object(
+                gate_c_scale_operator,
+                "_verified_v3_recovery_suffix",
+                side_effect=gate_c_scale_operator.Exp012ScaleGateCOperatorError(
+                    code
+                ),
+            ), mock.patch.object(
+                gate_c_scale_operator, "run_gate_c_execute_from_cli"
+            ) as execute, self.assertRaisesRegex(Exception, code):
+                run_gate_c_checkpoint_v3(
+                    operands,
+                    {"ignored": True},
+                    runtime_observer=lambda *_args, **_kwargs: (
+                        envelope.execution_environment_attestation
+                    ),
+                )
+            execute.assert_not_called()
+
+    def test_v3_recovery_suffix_supports_multiple_completed_prefix_windows(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            start=5,
+            count=4,
+            target_profile=Exp012ScaleProfile.SCALE_10000,
+        )
+        effects = tuple(
+            {"effect_payload": {"window_sequence": sequence}}
+            for sequence in (5, 6)
+        )
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=({"pre": True}, {"current": True}, effects),
+        ):
+            pre, remaining = gate_c_scale_operator._verified_v3_recovery_suffix(
+                operands,
+                envelope,
+                tuple(range(10_000)),
+                current_sequence=7,
+            )
+        self.assertEqual(pre, {"pre": True})
+        self.assertEqual(remaining.start_window_sequence, 7)
+        self.assertEqual(remaining.window_count, 2)
+        self.assertEqual(remaining.allowed_window_sequences, (7, 8))
+        self.assertEqual(remaining.expected_next_window_sequence, 9)
+
+    def test_real_canonical_v3_mid_batch_prefix_proves_only_window_two_remaining(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            operands = _canonical_checkpoint_operands(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 3)
+                completed = harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 2)
+                )
+                self.assertEqual(
+                    tuple(item.window_sequence for item in completed), (0, 1)
+                )
+                sources = harness.runner.composition.response_store.poll(
+                    consumer_id="checkpoint-test",
+                    limit=WINDOW_QUERY_COUNT * 3,
+                )
+            finally:
+                harness.close()
+            _append_checkpoint_telemetry(
+                operands,
+                sources,
+                start_window_sequence=0,
+                window_count=2,
+            )
+            *_unused, envelope = _bounded_fixture_v3(
+                start=1,
+                count=2,
+                target_profile=Exp012ScaleProfile.SCALE_10000,
+            )
+            pre, remaining = gate_c_scale_operator._verified_v3_recovery_suffix(
+                operands,
+                envelope,
+                sources,
+                current_sequence=2,
+            )
+            self.assertEqual(
+                pre["state_payload"]["next_window_sequence"], 1
+            )
+            self.assertEqual(remaining.allowed_window_sequences, (2,))
+            self.assertEqual(remaining.expected_next_window_sequence, 3)
+
+    def test_real_v3_mid_batch_restart_completes_original_envelope_without_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            operands = _canonical_checkpoint_operands(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 3)
+                harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 2)
+                )
+                sources = harness.runner.composition.response_store.poll(
+                    consumer_id="checkpoint-test",
+                    limit=WINDOW_QUERY_COUNT * 3,
+                )
+            finally:
+                harness.close()
+            _append_checkpoint_telemetry(
+                operands,
+                sources,
+                start_window_sequence=0,
+                window_count=2,
+            )
+            *_unused, envelope = _bounded_fixture_v3(
+                start=1,
+                count=2,
+                target_profile=Exp012ScaleProfile.SCALE_10000,
+            )
+
+            class _Authority:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+            class _Ledger:
+                completed = None
+
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def unfinished(self):
+                    return SimpleNamespace(envelope=envelope)
+
+                def state(self, _envelope):
+                    return SimpleNamespace(
+                        envelope=envelope, terminal_event_sha256=None
+                    )
+
+                def start(self, *_args, **_kwargs):
+                    raise AssertionError("checkpoint replayed STARTED")
+
+                def complete(self, _envelope, *, checkpoint_result, **_kwargs):
+                    type(self).completed = checkpoint_result
+
+            invoked_bounds = []
+
+            def execute(*_args, **kwargs):
+                bound = kwargs["execution_bound"]
+                invoked_bounds.append(bound.allowed_window_sequences)
+                reopened = _Harness(root)
+                try:
+                    results = reopened.runner.process_ready_windows(
+                        execution_bound=bound
+                    )
+                    self.assertEqual(reopened.shadow.calls, 4)
+                finally:
+                    reopened.close()
+                _append_checkpoint_telemetry_records(
+                    kwargs["search_telemetry_store"],
+                    sources,
+                    start_window_sequence=2,
+                    window_count=1,
+                )
+                return results
+
+            with mock.patch.object(
+                gate_c_scale_operator,
+                "_verify_current_checkpoint_envelope_v3",
+                return_value=(
+                    envelope,
+                    {"observed": {"next_window_sequence": 2}},
+                    sources,
+                ),
+            ), mock.patch.object(
+                gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+            ), mock.patch.object(
+                gate_c_scale_operator,
+                "SQLiteGateCCheckpointLedgerV3",
+                _Ledger,
+            ), mock.patch.object(
+                gate_c_scale_operator,
+                "run_gate_c_execute_from_cli",
+                side_effect=execute,
+            ):
+                result = run_gate_c_checkpoint_v3(
+                    operands,
+                    {"ignored": True},
+                    runtime_observer=lambda *_args, **_kwargs: (
+                        envelope.execution_environment_attestation
+                    ),
+                )
+            self.assertEqual(invoked_bounds, [(2,)])
+            payload = result["checkpoint_result_payload"]
+            self.assertEqual(payload["processed_window_sequences"], [1, 2])
+            self.assertEqual(
+                payload["checkpoint_counts"]["acknowledgement"],
+                {"pre": 200, "post": 600, "delta": 400},
+            )
+            self.assertEqual(
+                payload["checkpoint_counts"]["attempt"],
+                {"pre": 4, "post": 12, "delta": 8},
+            )
+            self.assertEqual(
+                payload["checkpoint_counts"]["telemetry_record"],
+                {"pre": 400, "post": 1200, "delta": 800},
+            )
+            self.assertIs(_Ledger.completed, result)
+
+    def test_real_v3_mid_batch_incomplete_telemetry_refuses_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = _Harness(root)
+            operands = _canonical_checkpoint_operands(root)
+            try:
+                harness.serve_many(WINDOW_QUERY_COUNT * 3)
+                harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 2)
+                )
+                sources = harness.runner.composition.response_store.poll(
+                    consumer_id="checkpoint-test",
+                    limit=WINDOW_QUERY_COUNT * 3,
+                )
+            finally:
+                harness.close()
+            _append_checkpoint_telemetry(
+                operands,
+                sources,
+                start_window_sequence=0,
+                window_count=1,
+            )
+            *_unused, envelope = _bounded_fixture_v3(
+                start=1,
+                count=2,
+                target_profile=Exp012ScaleProfile.SCALE_10000,
+            )
+            with self.assertRaisesRegex(
+                Exception, "TELEMETRY_PREFIX_INVALID"
+            ):
+                gate_c_scale_operator._verified_v3_recovery_suffix(
+                    operands,
+                    envelope,
+                    sources,
+                    current_sequence=2,
+                )
 
     def test_v3_exact_envelope_file_round_trip_and_tamper_refusal(self) -> None:
         *_unused, envelope = _bounded_fixture_v3(

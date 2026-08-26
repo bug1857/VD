@@ -669,7 +669,11 @@ def _verified_checkpoint_transition(
 
     bound = envelope.execution_bound
     start = bound.start_window_sequence
-    if current_sequence not in {start, bound.expected_next_window_sequence}:
+    if (
+        type(current_sequence) is not int
+        or current_sequence < start
+        or current_sequence > bound.expected_next_window_sequence
+    ):
         raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
     post = current_sequence
     runner = _checkpoint_runner(operands)
@@ -937,6 +941,56 @@ def _verified_checkpoint_transition(
         runner.composition.close()
 
 
+def _verified_v3_recovery_suffix(
+    operands: Exp012ScaleGateCOperands,
+    envelope: GateCBoundedExecutionEnvelopeV3,
+    sources: tuple[object, ...],
+    *,
+    current_sequence: int,
+) -> tuple[dict[str, object], GateCWindowExecutionBound]:
+    """Prove one durable prefix and derive its remaining bounded suffix.
+
+    The original envelope remains the sole authority.  ``current_sequence`` is
+    accepted only as reconstructed durable progress inside that envelope; it
+    never supplies an independent range.  Full transition reconstruction also
+    rejects unresolved attempts and every effect beyond the completed prefix.
+    """
+
+    bound = envelope.execution_bound
+    pre_state, _current_state, completed_effects = (
+        _verified_checkpoint_transition(
+            operands,
+            envelope,
+            sources,
+            current_sequence=current_sequence,
+        )
+    )
+    completed_count = current_sequence - bound.start_window_sequence
+    expected_prefix = bound.allowed_window_sequences[:completed_count]
+    if (
+        completed_count < 0
+        or completed_count >= bound.window_count
+        or tuple(
+            effect["effect_payload"]["window_sequence"]
+            for effect in completed_effects
+        )
+        != expected_prefix
+    ):
+        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+    remaining = GateCWindowExecutionBound(
+        start_window_sequence=current_sequence,
+        window_count=bound.expected_next_window_sequence - current_sequence,
+    )
+    if (
+        remaining.allowed_window_sequences
+        != bound.allowed_window_sequences[completed_count:]
+        or remaining.expected_next_window_sequence
+        != bound.expected_next_window_sequence
+    ):
+        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+    return pre_state, remaining
+
+
 def _require_safe_checkpoint_start(
     operands: Exp012ScaleGateCOperands,
     envelope: GateCBoundedExecutionEnvelopeV2,
@@ -1070,6 +1124,12 @@ def run_gate_c_checkpoint_v3(
     bound = envelope.execution_bound
     current_next = current_plan["observed"]["next_window_sequence"]
     binding = _checkpoint_ledger_binding(envelope)
+    if (
+        type(current_next) is not int
+        or current_next < bound.start_window_sequence
+        or current_next > bound.expected_next_window_sequence
+    ):
+        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
 
     # Completion-only recovery is derived entirely from already-durable
     # canonical effects.  It must not recreate or substitute a live runtime.
@@ -1131,11 +1191,20 @@ def run_gate_c_checkpoint_v3(
                 )
                 return result
 
-            if current_next != bound.start_window_sequence:
-                raise _error("EXP012_GATE_C_CHECKPOINT_START_MISMATCH")
-            pre_state = _require_safe_checkpoint_start_v3(
-                operands, envelope, sources
-            )
+            if current_next == bound.start_window_sequence:
+                pre_state = _require_safe_checkpoint_start_v3(
+                    operands, envelope, sources
+                )
+                remaining_bound = bound
+            else:
+                if state is None:
+                    raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+                pre_state, remaining_bound = _verified_v3_recovery_suffix(
+                    operands,
+                    envelope,
+                    sources,
+                    current_sequence=current_next,
+                )
 
             # The final pre-STARTED observation is the TOCTOU interlock.  The
             # live/search-capable capture executor is still unreachable here.
@@ -1157,6 +1226,8 @@ def run_gate_c_checkpoint_v3(
                 )
             )
             if not after_started_valid:
+                if current_next != bound.start_window_sequence:
+                    raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE")
                 post_zero, post_again, effects = _verified_checkpoint_transition(
                     operands,
                     envelope,
@@ -1198,9 +1269,12 @@ def run_gate_c_checkpoint_v3(
                     operands.base,
                     search_telemetry_store=telemetry,
                     accepted_scale_contract_sha256=operands.contract.contract_sha256,
-                    execution_bound=bound,
+                    execution_bound=remaining_bound,
                 )
-            if tuple(item.window_sequence for item in results) != bound.allowed_window_sequences:
+            if (
+                tuple(item.window_sequence for item in results)
+                != remaining_bound.allowed_window_sequences
+            ):
                 raise _error("EXP012_GATE_C_CHECKPOINT_RESULT_MISMATCH")
             pre_state, post_state, checkpoint_effects = _verified_checkpoint_transition(
                 operands,
