@@ -14,6 +14,7 @@ import json
 import os
 import stat
 import sys
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,15 +44,29 @@ from .exp012_scale_contract import (
 )
 from .gate_c_bounded_execution import (
     GateCBoundedExecutionEnvelopeV2,
+    GateCBoundedExecutionEnvelopeV3,
     GateCBoundedExecutionError,
     GateCWindowExecutionBound,
     build_gate_c_bounded_execution_envelope_v2,
+    build_gate_c_bounded_execution_envelope_v3,
     build_gate_c_canonical_state,
     build_gate_c_checkpoint_result_v2,
+    build_gate_c_checkpoint_result_v3,
     build_gate_c_window_checkpoint_effect,
     gate_c_bounded_execution_envelope_document_v2,
+    gate_c_bounded_execution_envelope_document_v3,
     parse_gate_c_bounded_execution_envelope_document_v2,
+    parse_gate_c_bounded_execution_envelope_document_v3,
     verify_gate_c_bounded_execution_envelope_v2,
+    verify_gate_c_bounded_execution_envelope_v3,
+)
+from .gate_c_execution_environment import (
+    DockerExecutionMetadataInspector,
+    GateCExecutionEnvironmentAttestation,
+    GateCExecutionEnvironmentError,
+    GateCExecutionEnvironmentObservationSpec,
+    observe_gate_c_execution_environment,
+    verify_gate_c_execution_environment_eligibility,
 )
 from .gate_c_execution_source import (
     GateCExecutionSourceError,
@@ -62,6 +77,13 @@ from .gate_c_checkpoint_store import (
     GateCCheckpointLedgerBinding,
     GateCCheckpointLedgerError,
     SQLiteGateCCheckpointLedger,
+    SQLiteGateCCheckpointLedgerV3,
+    build_gate_c_pre_search_abort_proof,
+    v3_checkpoint_path,
+)
+from .gate_c_checkpoint_lock import (
+    GateCCampaignCheckpointLock,
+    GateCCampaignCheckpointLockError,
 )
 from .host_window_lineage import HostResponseCommitError, SQLiteHostResponseCommitStore
 from .shadow_attempt_store import ShadowAttemptStatus
@@ -78,10 +100,12 @@ __all__ = [
     "Exp012ScaleGateCOperatorError",
     "build_gate_c_plan",
     "build_gate_c_checkpoint_envelope",
+    "build_gate_c_checkpoint_envelope_v3",
     "load_operands",
     "main",
     "run_gate_c",
     "run_gate_c_checkpoint",
+    "run_gate_c_checkpoint_v3",
 ]
 
 
@@ -123,6 +147,10 @@ class Exp012ScaleGateCOperands:
     @property
     def checkpoint_path(self) -> Path:
         return self.base.store_root / _CHECKPOINT_FILENAME
+
+    @property
+    def checkpoint_v3_path(self) -> Path:
+        return v3_checkpoint_path(self.checkpoint_path)
 
 
 def _text(values: dict[str, object], name: str) -> str:
@@ -385,6 +413,160 @@ def build_gate_c_checkpoint_envelope(
     )
 
 
+def _execution_environment_governed_bindings(
+    operands: Exp012ScaleGateCOperands,
+    plan: dict[str, object],
+) -> tuple[GateCExecutionEnvironmentObservationSpec, dict[str, object]]:
+    from .config import INDEX_NAME
+    from .exp010_gate_a_operator import load_verified_gate_a_evidence
+
+    evidence = load_verified_gate_a_evidence(operands.gate_a_campaign_root)
+    try:
+        containers = evidence["containers"]
+        flat = evidence["flat"]["live"]
+        hnsw = evidence["hnsw"]["live"]
+        stream = plan["stream"]
+        gate_a = plan["gate_a_authority"]
+        if not all(
+            type(value) is dict
+            for value in (containers, flat, hnsw, stream, gate_a)
+        ):
+            raise TypeError
+        milvus_container = containers["milvus"]["container_name"]
+        expected_count = flat["row_count"]
+        if (
+            type(expected_count) is not int
+            or type(expected_count) is bool
+            or hnsw["row_count"] != expected_count
+            or gate_a["evidence_sha256"] != evidence["evidence_sha256"]
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_INVALID") from exc
+    spec = GateCExecutionEnvironmentObservationSpec(
+        milvus_uri=operands.base.milvus_uri,
+        database_name="default",
+        etcd_container=operands.base.etcd_container,
+        minio_container=operands.base.minio_container,
+        milvus_container=milvus_container,
+        flat_collection_name=operands.base.flat_collection_name,
+        hnsw_collection_name=operands.base.hnsw_collection_name,
+        index_name=INDEX_NAME,
+        metric=operands.base.metric.value,
+        dimensions=operands.base.dimensions,
+        expected_entity_count=expected_count,
+    )
+    governed = {
+        "campaign_identity": operands.base.store_root.parent.name,
+        "scale_contract_sha256": operands.contract.contract_sha256,
+        "gate_a_evidence_sha256": evidence["evidence_sha256"],
+        "source_revision": operands.base.source_revision,
+        "environment_manifest_sha256": operands.base.environment_manifest_sha256,
+        "data_identity": stream["data_identity"],
+        "configuration_identity": operands.base.configuration_identity,
+        "flat_binding_id": operands.base.flat_binding_id,
+        "hnsw_binding_id": operands.base.hnsw_binding_id,
+        "metric": operands.base.metric.value,
+        "dimensions": operands.base.dimensions,
+        "expected_entity_count": expected_count,
+        "served_ef": operands.base.served_ef,
+        "consistency_level": operands.base.consistency_level,
+        "flat_collection_name": operands.base.flat_collection_name,
+        "hnsw_collection_name": operands.base.hnsw_collection_name,
+        "flat_gate_a_binding": {
+            "binding_id": evidence["flat"]["binding_id"],
+            "live": evidence["flat"]["live"],
+        },
+        "hnsw_gate_a_binding": {
+            "binding_id": evidence["hnsw"]["binding_id"],
+            "live": evidence["hnsw"]["live"],
+        },
+    }
+    return spec, governed
+
+
+def _default_milvus_healthz_probe() -> bool:
+    from .config import ENV001_PINS
+
+    try:
+        with urllib.request.urlopen(ENV001_PINS.health_uri, timeout=2.0) as response:
+            return response.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def _observe_current_execution_environment(
+    operands: Exp012ScaleGateCOperands,
+    *,
+    execution_source_revision: str,
+    plan: dict[str, object] | None = None,
+) -> GateCExecutionEnvironmentAttestation:
+    """Observe metadata only; no search-capable executor is constructed."""
+
+    from .v2_milvus_shadow_capture import build_readonly_milvus_client
+
+    current_plan = build_gate_c_plan(operands) if plan is None else plan
+    spec, governed = _execution_environment_governed_bindings(
+        operands, current_plan
+    )
+    client = build_readonly_milvus_client(operands.base.milvus_uri)
+    inspector = DockerExecutionMetadataInspector()
+    attestation = observe_gate_c_execution_environment(
+        spec,
+        metadata_reader=client,
+        container_inspector=inspector.inspect_container,
+        image_inspector=inspector.inspect_image,
+        milvus_healthz_probe=_default_milvus_healthz_probe,
+        execution_source_revision=execution_source_revision,
+        governed_bindings=governed,
+    )
+    return attestation
+
+
+def build_gate_c_checkpoint_envelope_v3(
+    operands: Exp012ScaleGateCOperands,
+    execution_bound: GateCWindowExecutionBound,
+    *,
+    runtime_observer=None,
+) -> GateCBoundedExecutionEnvelopeV3:
+    """Build one prospective v3 envelope from current metadata-only evidence."""
+
+    plan = build_gate_c_plan(operands)
+    binding = _telemetry_binding(operands)
+    sources, source_head = _verified_sources_and_head(operands, binding)
+    campaign = _campaign_binding(operands, plan)
+    execution_source = derive_gate_c_execution_source()
+    observer = runtime_observer or _observe_current_execution_environment
+    attestation = observer(
+        operands,
+        execution_source_revision=execution_source.execution_source_revision,
+        plan=plan,
+    )
+    if type(attestation) is not GateCExecutionEnvironmentAttestation:
+        raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_INVALID")
+    verify_gate_c_execution_environment_eligibility(attestation)
+    _require_current_gate_a_binding_authority(operands, plan, attestation)
+    return build_gate_c_bounded_execution_envelope_v3(
+        plan=plan,
+        campaign_binding=campaign,
+        source_head=source_head,
+        sources=sources,
+        execution_bound=execution_bound,
+        execution_source_revision=execution_source.execution_source_revision,
+        execution_environment_attestation=attestation,
+    )
+
+
+def _require_current_gate_a_binding_authority(
+    operands: Exp012ScaleGateCOperands,
+    plan: dict[str, object],
+    attestation: GateCExecutionEnvironmentAttestation,
+) -> None:
+    _, expected_governed = _execution_environment_governed_bindings(operands, plan)
+    if attestation.payload["governed_bindings"] != expected_governed:
+        raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_MISMATCH")
+
+
 def _verify_current_checkpoint_envelope(
     operands: Exp012ScaleGateCOperands,
     document: dict[str, object],
@@ -414,8 +596,37 @@ def _verify_current_checkpoint_envelope(
     return envelope, current_plan, sources
 
 
+def _verify_current_checkpoint_envelope_v3(
+    operands: Exp012ScaleGateCOperands,
+    document: dict[str, object],
+) -> tuple[GateCBoundedExecutionEnvelopeV3, dict[str, object], tuple[object, ...]]:
+    current_plan = build_gate_c_plan(operands)
+    supplied = parse_gate_c_bounded_execution_envelope_document_v3(document)
+    normalized_plan = _plan_at_checkpoint_start(
+        current_plan, supplied.execution_bound
+    )
+    binding = _telemetry_binding(operands)
+    sources, source_head = _verified_sources_and_head(operands, binding)
+    campaign = _campaign_binding(operands, current_plan)
+    envelope = verify_gate_c_bounded_execution_envelope_v3(
+        document,
+        plan=normalized_plan,
+        campaign_binding=campaign,
+        source_head=source_head,
+        sources=sources,
+        execution_source_revision=supplied.execution_source_revision,
+    )
+    derive_gate_c_execution_source(
+        expected_revision=envelope.execution_source_revision
+    )
+    _require_current_gate_a_binding_authority(
+        operands, current_plan, envelope.execution_environment_attestation
+    )
+    return envelope, current_plan, sources
+
+
 def _checkpoint_ledger_binding(
-    envelope: GateCBoundedExecutionEnvelopeV2,
+    envelope: GateCBoundedExecutionEnvelopeV2 | GateCBoundedExecutionEnvelopeV3,
 ) -> GateCCheckpointLedgerBinding:
     return GateCCheckpointLedgerBinding(
         campaign_identity=envelope.campaign_identity,
@@ -446,7 +657,7 @@ def _checkpoint_runner(operands: Exp012ScaleGateCOperands):
 
 def _verified_checkpoint_transition(
     operands: Exp012ScaleGateCOperands,
-    envelope: GateCBoundedExecutionEnvelopeV2,
+    envelope: GateCBoundedExecutionEnvelopeV2 | GateCBoundedExecutionEnvelopeV3,
     sources: tuple[object, ...],
     *,
     current_sequence: int,
@@ -742,6 +953,22 @@ def _require_safe_checkpoint_start(
     return pre
 
 
+def _require_safe_checkpoint_start_v3(
+    operands: Exp012ScaleGateCOperands,
+    envelope: GateCBoundedExecutionEnvelopeV3,
+    sources: tuple[object, ...],
+) -> dict[str, object]:
+    pre, post, effects = _verified_checkpoint_transition(
+        operands,
+        envelope,  # runtime type is used only for the shared bound/contract fields
+        sources,
+        current_sequence=envelope.execution_bound.start_window_sequence,
+    )
+    if pre != post or effects:
+        raise _error("EXP012_GATE_C_CHECKPOINT_START_STATE_INVALID")
+    return pre
+
+
 def run_gate_c_checkpoint(
     operands: Exp012ScaleGateCOperands,
     envelope_document: dict[str, object],
@@ -799,6 +1026,201 @@ def run_gate_c_checkpoint(
             recorded_at_utc=_checkpoint_clock(),
         )
         return result
+
+
+def _current_execution_attestation(
+    operands: Exp012ScaleGateCOperands,
+    envelope: GateCBoundedExecutionEnvelopeV3,
+    plan: dict[str, object],
+    runtime_observer,
+) -> tuple[GateCExecutionEnvironmentAttestation, bool]:
+    observer = runtime_observer or _observe_current_execution_environment
+    attestation = observer(
+        operands,
+        execution_source_revision=envelope.execution_source_revision,
+        plan=plan,
+    )
+    if type(attestation) is not GateCExecutionEnvironmentAttestation:
+        raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_INVALID")
+    valid = (
+        attestation.execution_source_revision == envelope.execution_source_revision
+        and attestation.execution_environment_identity_sha256
+        == envelope.execution_environment_identity_sha256
+        and attestation.payload["governed_bindings"]
+        == envelope.execution_environment_attestation.payload["governed_bindings"]
+    )
+    try:
+        verify_gate_c_execution_environment_eligibility(attestation)
+    except GateCExecutionEnvironmentError:
+        valid = False
+    return attestation, valid
+
+
+def run_gate_c_checkpoint_v3(
+    operands: Exp012ScaleGateCOperands,
+    envelope_document: dict[str, object],
+    *,
+    runtime_observer=None,
+) -> dict[str, object]:
+    """Execute/recover one exact v3 envelope under global PF-004 exclusion."""
+
+    envelope, current_plan, sources = _verify_current_checkpoint_envelope_v3(
+        operands, envelope_document
+    )
+    bound = envelope.execution_bound
+    current_next = current_plan["observed"]["next_window_sequence"]
+    binding = _checkpoint_ledger_binding(envelope)
+
+    # Completion-only recovery is derived entirely from already-durable
+    # canonical effects.  It must not recreate or substitute a live runtime.
+    if current_next != bound.expected_next_window_sequence:
+        _, initially_valid = _current_execution_attestation(
+            operands, envelope, current_plan, runtime_observer
+        )
+        if not initially_valid:
+            raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE")
+
+    with GateCCampaignCheckpointLock(operands.checkpoint_path) as authority_lock:
+        if operands.checkpoint_path.exists():
+            with SQLiteGateCCheckpointLedger(
+                operands.checkpoint_path,
+                binding=binding,
+                authority_lock=authority_lock,
+            ) as legacy:
+                if legacy.unfinished() is not None:
+                    raise _error("EXP012_GATE_C_GLOBAL_CHECKPOINT_CONFLICT")
+
+        with SQLiteGateCCheckpointLedgerV3(
+            operands.checkpoint_v3_path,
+            legacy_path=operands.checkpoint_path,
+            binding=binding,
+            authority_lock=authority_lock,
+        ) as ledger:
+            other = ledger.unfinished()
+            state = ledger.state(envelope)
+            if other is not None and (
+                state is None
+                or other.envelope.envelope_sha256 != envelope.envelope_sha256
+            ):
+                raise _error("EXP012_GATE_C_GLOBAL_CHECKPOINT_CONFLICT")
+            if state is not None and state.terminal_event_sha256 is not None:
+                raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_TERMINAL")
+
+            if current_next == bound.expected_next_window_sequence:
+                if state is None:
+                    raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+                pre_state, post_state, checkpoint_effects = (
+                    _verified_checkpoint_transition(
+                        operands,
+                        envelope,
+                        sources,
+                        current_sequence=bound.expected_next_window_sequence,
+                    )
+                )
+                result = build_gate_c_checkpoint_result_v3(
+                    envelope=envelope,
+                    pre_state=pre_state,
+                    post_state=post_state,
+                    processed_window_sequences=bound.allowed_window_sequences,
+                    checkpoint_effects=checkpoint_effects,
+                )
+                ledger.complete(
+                    envelope,
+                    checkpoint_result=result,
+                    recorded_at_utc=_checkpoint_clock(),
+                )
+                return result
+
+            if current_next != bound.start_window_sequence:
+                raise _error("EXP012_GATE_C_CHECKPOINT_START_MISMATCH")
+            pre_state = _require_safe_checkpoint_start_v3(
+                operands, envelope, sources
+            )
+
+            # The final pre-STARTED observation is the TOCTOU interlock.  The
+            # live/search-capable capture executor is still unreachable here.
+            _, before_started_valid = _current_execution_attestation(
+                operands, envelope, current_plan, runtime_observer
+            )
+            if not before_started_valid:
+                raise _error("EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE")
+            if state is None:
+                state = ledger.start(
+                    envelope, recorded_at_utc=_checkpoint_clock()
+                )
+
+            # Detect the narrow STARTED-before-attempt runtime race.  A valid
+            # abort requires a complete checkpoint-local zero-effect proof.
+            observed_after_started, after_started_valid = (
+                _current_execution_attestation(
+                    operands, envelope, current_plan, runtime_observer
+                )
+            )
+            if not after_started_valid:
+                post_zero, post_again, effects = _verified_checkpoint_transition(
+                    operands,
+                    envelope,
+                    sources,
+                    current_sequence=bound.start_window_sequence,
+                )
+                if pre_state != post_zero or post_zero != post_again or effects:
+                    raise _error("EXP012_GATE_C_CHECKPOINT_ABORT_AMBIGUOUS")
+                proof = build_gate_c_pre_search_abort_proof(
+                    envelope=envelope,
+                    pre_state=pre_state,
+                    post_state=post_again,
+                    observed_execution_environment_identity_sha256=(
+                        observed_after_started.execution_environment_identity_sha256
+                    ),
+                    observed_execution_environment_attestation_sha256=(
+                        observed_after_started.execution_environment_attestation_sha256
+                    ),
+                    execution_authority_valid=False,
+                    attempt_started_delta=0,
+                    attempt_completed_delta=0,
+                    attempt_orphaned_delta=0,
+                    pending_finalization_pre=False,
+                    pending_finalization_post=False,
+                    prepared_finalization_pre=False,
+                    prepared_finalization_post=False,
+                )
+                ledger.abort_pre_search(
+                    envelope,
+                    abort_proof=proof,
+                    recorded_at_utc=_checkpoint_clock(),
+                )
+                raise _error("EXP012_GATE_C_EXECUTION_AUTHORITY_ABORTED_PRE_SEARCH")
+
+            with SQLiteShadowSearchTelemetryStore(
+                operands.telemetry_path, binding=_telemetry_binding(operands)
+            ) as telemetry:
+                results = run_gate_c_execute_from_cli(
+                    operands.base,
+                    search_telemetry_store=telemetry,
+                    accepted_scale_contract_sha256=operands.contract.contract_sha256,
+                    execution_bound=bound,
+                )
+            if tuple(item.window_sequence for item in results) != bound.allowed_window_sequences:
+                raise _error("EXP012_GATE_C_CHECKPOINT_RESULT_MISMATCH")
+            pre_state, post_state, checkpoint_effects = _verified_checkpoint_transition(
+                operands,
+                envelope,
+                sources,
+                current_sequence=bound.expected_next_window_sequence,
+            )
+            result = build_gate_c_checkpoint_result_v3(
+                envelope=envelope,
+                pre_state=pre_state,
+                post_state=post_state,
+                processed_window_sequences=bound.allowed_window_sequences,
+                checkpoint_effects=checkpoint_effects,
+            )
+            ledger.complete(
+                envelope,
+                checkpoint_result=result,
+                recorded_at_utc=_checkpoint_clock(),
+            )
+            return result
 
 
 def _checkpoint_clock() -> str:
@@ -899,6 +1321,41 @@ def _write_checkpoint_envelope(
         raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_WRITE_FAILED") from exc
 
 
+def _write_checkpoint_envelope_v3(
+    path: Path, envelope: GateCBoundedExecutionEnvelopeV3
+) -> None:
+    raw = strict_canonical_json_bytes(
+        gate_c_bounded_execution_envelope_document_v3(envelope)
+    )
+    if path.exists():
+        try:
+            info = os.lstat(path)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_UNSAFE")
+            if path.read_bytes() == raw:
+                return
+        except OSError as exc:
+            raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_WRITE_FAILED") from exc
+        raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_EXISTS")
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_WRITE_FAILED") from exc
+
+
 def _load_checkpoint_envelope(path: Path) -> dict[str, object]:
     try:
         info = os.lstat(path)
@@ -918,12 +1375,39 @@ def _load_checkpoint_envelope(path: Path) -> dict[str, object]:
     return value
 
 
+def _load_checkpoint_envelope_v3(path: Path) -> dict[str, object]:
+    try:
+        info = os.lstat(path)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_UNSAFE")
+        value = decode_strict_canonical_json(path.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_INVALID") from exc
+    if type(value) is not dict:
+        raise _error("EXP012_GATE_C_CHECKPOINT_ENVELOPE_INVALID")
+    parse_gate_c_bounded_execution_envelope_document_v3(value)
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--operands", type=Path, required=True)
     parser.add_argument(
         "--mode",
-        choices=("preflight", "execute", "checkpoint-preflight", "checkpoint-execute"),
+        choices=(
+            "preflight",
+            "execute",
+            "checkpoint-preflight",
+            "checkpoint-execute",
+            "checkpoint-v3-preflight",
+            "checkpoint-v3-prepare",
+            "checkpoint-v3-execute",
+        ),
         required=True,
     )
     parser.add_argument("--confirm-physical-shadow-searches", action="store_true")
@@ -988,7 +1472,7 @@ def main(argv: list[str] | None = None) -> int:
                 + os.linesep
             )
             return 0
-        else:
+        elif args.mode == "checkpoint-execute":
             if (
                 args.execution_envelope is None
                 or args.start_window_sequence is not None
@@ -1000,6 +1484,61 @@ def main(argv: list[str] | None = None) -> int:
             result = run_gate_c_checkpoint(
                 operands, _load_checkpoint_envelope(args.execution_envelope)
             )
+        elif args.mode in {"checkpoint-v3-preflight", "checkpoint-v3-prepare"}:
+            if (
+                args.start_window_sequence is None
+                or args.window_count is None
+                or args.confirm_physical_shadow_searches
+                or args.confirm_bounded_physical_shadow_searches
+                or (
+                    args.mode == "checkpoint-v3-preflight"
+                    and args.execution_envelope is not None
+                )
+                or (
+                    args.mode == "checkpoint-v3-prepare"
+                    and args.execution_envelope is None
+                )
+            ):
+                raise _error("EXP012_GATE_C_CHECKPOINT_ARGUMENT_INVALID")
+            envelope = build_gate_c_checkpoint_envelope_v3(
+                operands,
+                GateCWindowExecutionBound(
+                    start_window_sequence=args.start_window_sequence,
+                    window_count=args.window_count,
+                ),
+            )
+            if args.mode == "checkpoint-v3-prepare":
+                _write_checkpoint_envelope_v3(args.execution_envelope, envelope)
+            report = {
+                "schema_version": "exp012-scale-gate-c-v3-preparation-report-v1",
+                "status": (
+                    "READY_FOR_V3_ENVELOPE_PREPARATION"
+                    if args.mode == "checkpoint-v3-preflight"
+                    else "V3_ENVELOPE_PREPARED"
+                ),
+                "execution_environment_identity_sha256": (
+                    envelope.execution_environment_identity_sha256
+                ),
+                "execution_environment_attestation_sha256": (
+                    envelope.execution_environment_attestation_sha256
+                ),
+                "envelope_sha256": envelope.envelope_sha256,
+                "envelope_written": args.mode == "checkpoint-v3-prepare",
+            }
+            sys.stdout.write(strict_canonical_json_bytes(report).decode() + os.linesep)
+            return 0
+        else:
+            if (
+                args.execution_envelope is None
+                or args.start_window_sequence is not None
+                or args.window_count is not None
+                or args.confirm_physical_shadow_searches
+                or not args.confirm_bounded_physical_shadow_searches
+            ):
+                raise _error("EXP012_GATE_C_CHECKPOINT_CONFIRMATION_REQUIRED")
+            result = run_gate_c_checkpoint_v3(
+                operands, _load_checkpoint_envelope_v3(args.execution_envelope)
+            )
         sys.stdout.write(strict_canonical_json_bytes(result).decode() + os.linesep)
         return 0
     except (
@@ -1010,7 +1549,9 @@ def main(argv: list[str] | None = None) -> int:
         GateCBoundedExecutionError,
         GateCWindowExecutionError,
         GateCCheckpointLedgerError,
+        GateCCampaignCheckpointLockError,
         GateCExecutionSourceError,
+        GateCExecutionEnvironmentError,
     ) as exc:
         sys.stderr.write(f"{exc.code}: {exc}{os.linesep}")
         return 2

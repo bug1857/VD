@@ -9,22 +9,30 @@ from dataclasses import fields
 from pathlib import Path
 from unittest import mock
 
-from tests.test_gate_c_bounded_execution import _fixture, _fixture_v2
+from tests.test_gate_c_bounded_execution import _fixture, _fixture_v2, _fixture_v3
 from vdbench.canonical_serialization import strict_canonical_json_bytes
 from vdbench.gate_c_bounded_execution import (
     GateCBoundedExecutionError,
     GateCBoundedExecutionEnvelopeV2,
+    GateCBoundedExecutionEnvelopeV3,
     GateCWindowExecutionBound,
     build_gate_c_canonical_state,
     build_gate_c_checkpoint_result,
     build_gate_c_checkpoint_result_v2,
+    build_gate_c_checkpoint_result_v3,
     build_gate_c_window_checkpoint_effect,
 )
 from vdbench.gate_c_checkpoint_store import (
+    GateCCheckpointEventKindV3,
     GateCCheckpointLedgerBinding,
     GateCCheckpointLedgerError,
     SQLiteGateCCheckpointLedger,
+    SQLiteGateCCheckpointLedgerV3,
+    build_gate_c_pre_search_abort_proof,
+    verify_gate_c_pre_search_abort_proof,
+    v3_checkpoint_path,
 )
+from vdbench.gate_c_checkpoint_lock import GateCCampaignCheckpointLock
 
 
 def _binding(envelope):
@@ -89,11 +97,10 @@ def _result(envelope):
         telemetry_record_count=400,
         telemetry_record_head_sha256="a" * 64,
     )
-    builder = (
-        build_gate_c_checkpoint_result_v2
-        if type(envelope) is GateCBoundedExecutionEnvelopeV2
-        else build_gate_c_checkpoint_result
-    )
+    builder = {
+        GateCBoundedExecutionEnvelopeV2: build_gate_c_checkpoint_result_v2,
+        GateCBoundedExecutionEnvelopeV3: build_gate_c_checkpoint_result_v3,
+    }.get(type(envelope), build_gate_c_checkpoint_result)
     return builder(
         envelope=envelope,
         pre_state=pre,
@@ -104,6 +111,241 @@ def _result(envelope):
 
 
 class GateCCheckpointStoreTests(unittest.TestCase):
+    def test_v3_started_completed_chain_survives_reopen(self) -> None:
+        *_unused, envelope = _fixture_v3()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            legacy_path = root / "checkpoints.sqlite3"
+            path = v3_checkpoint_path(legacy_path)
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    path,
+                    legacy_path=legacy_path,
+                    binding=_binding(envelope),
+                    authority_lock=authority,
+                ) as ledger:
+                    state = ledger.start(
+                        envelope, recorded_at_utc="2026-08-26T00:00:00Z"
+                    )
+                    self.assertEqual(
+                        state.started_event_sha256,
+                        "814835197adf9d6ca24fff1f0ec750f3f49a55262648a32035370acb9f944e2f",
+                    )
+                    self.assertTrue(state.unfinished)
+                    completed = ledger.complete(
+                        envelope,
+                        checkpoint_result=_result(envelope),
+                        recorded_at_utc="2026-08-26T00:01:00Z",
+                    )
+                    self.assertEqual(
+                        completed.terminal_kind,
+                        GateCCheckpointEventKindV3.CHECKPOINT_COMPLETED,
+                    )
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    path,
+                    legacy_path=legacy_path,
+                    binding=_binding(envelope),
+                    authority_lock=authority,
+                    create=False,
+                ) as ledger:
+                    self.assertFalse(ledger.state(envelope).unfinished)
+                    self.assertIsNone(ledger.unfinished())
+
+    def test_v3_post_commit_reconciliation_failure_poisons_until_reopen(self) -> None:
+        *_unused, envelope = _fixture_v3()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            legacy_path = root / "checkpoints.sqlite3"
+            path = v3_checkpoint_path(legacy_path)
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                ledger = SQLiteGateCCheckpointLedgerV3(
+                    path,
+                    legacy_path=legacy_path,
+                    binding=_binding(envelope),
+                    authority_lock=authority,
+                )
+                with mock.patch.object(
+                    ledger, "state", side_effect=RuntimeError("injected")
+                ), self.assertRaisesRegex(
+                    GateCCheckpointLedgerError,
+                    "GATE_C_CHECKPOINT_V3_RECONCILIATION_FAILED",
+                ):
+                    ledger.start(
+                        envelope, recorded_at_utc="2026-08-26T00:00:00Z"
+                    )
+                raw = sqlite3.connect(path)
+                try:
+                    self.assertEqual(
+                        raw.execute(
+                            "SELECT COUNT(*) FROM gate_c_checkpoint_v3_events"
+                        ).fetchone(),
+                        (1,),
+                    )
+                finally:
+                    raw.close()
+                with self.assertRaisesRegex(
+                    GateCCheckpointLedgerError,
+                    "GATE_C_CHECKPOINT_V3_LEDGER_POISONED",
+                ):
+                    ledger.states()
+                ledger.close()
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    path,
+                    legacy_path=legacy_path,
+                    binding=_binding(envelope),
+                    authority_lock=authority,
+                    create=False,
+                ) as reopened:
+                    self.assertTrue(reopened.state(envelope).unfinished)
+
+    def test_pre_search_abort_is_terminal_and_requires_exact_zero_effect(self) -> None:
+        *_unused, envelope = _fixture_v3()
+        state = _result(envelope)["checkpoint_result_payload"]["pre_state"]
+        proof = build_gate_c_pre_search_abort_proof(
+            envelope=envelope,
+            pre_state=state,
+            post_state=state,
+            observed_execution_environment_identity_sha256="f" * 64,
+            observed_execution_environment_attestation_sha256="e" * 64,
+            execution_authority_valid=False,
+            attempt_started_delta=0,
+            attempt_completed_delta=0,
+            attempt_orphaned_delta=0,
+            pending_finalization_pre=False,
+            pending_finalization_post=False,
+            prepared_finalization_pre=False,
+            prepared_finalization_post=False,
+        )
+        self.assertEqual(
+            verify_gate_c_pre_search_abort_proof(proof, envelope=envelope), proof
+        )
+        violations = {
+            "attempt_started_delta": 1,
+            "attempt_completed_delta": 1,
+            "attempt_orphaned_delta": 1,
+            "pending_finalization_pre": True,
+            "pending_finalization_post": True,
+            "prepared_finalization_pre": True,
+            "prepared_finalization_post": True,
+            "execution_authority_valid": True,
+        }
+        defaults = {
+            "execution_authority_valid": False,
+            "attempt_started_delta": 0,
+            "attempt_completed_delta": 0,
+            "attempt_orphaned_delta": 0,
+            "pending_finalization_pre": False,
+            "pending_finalization_post": False,
+            "prepared_finalization_pre": False,
+            "prepared_finalization_post": False,
+        }
+        for name, value in violations.items():
+            with self.subTest(name=name):
+                arguments = defaults | {name: value}
+                with self.assertRaises(GateCCheckpointLedgerError):
+                    build_gate_c_pre_search_abort_proof(
+                        envelope=envelope,
+                        pre_state=state,
+                        post_state=state,
+                        observed_execution_environment_identity_sha256="f" * 64,
+                        observed_execution_environment_attestation_sha256="e" * 64,
+                        **arguments,
+                    )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            legacy_path = root / "checkpoints.sqlite3"
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    v3_checkpoint_path(legacy_path),
+                    legacy_path=legacy_path,
+                    binding=_binding(envelope),
+                    authority_lock=authority,
+                ) as ledger:
+                    ledger.start(envelope, recorded_at_utc="2026-08-26T00:00:00Z")
+                    aborted = ledger.abort_pre_search(
+                        envelope,
+                        abort_proof=proof,
+                        recorded_at_utc="2026-08-26T00:00:01Z",
+                    )
+                    self.assertEqual(
+                        aborted.terminal_kind,
+                        GateCCheckpointEventKindV3.CHECKPOINT_ABORTED_PRE_SEARCH,
+                    )
+                    self.assertIsNone(ledger.unfinished())
+                    with self.assertRaises(GateCCheckpointLedgerError):
+                        ledger.start(
+                            envelope, recorded_at_utc="2026-08-26T00:00:02Z"
+                        )
+
+    def test_global_exclusion_blocks_cross_generation_unfinished_only(self) -> None:
+        *_unused, legacy_envelope = _fixture_v2(source_revision="3" * 40)
+        *_unused, v3_envelope = _fixture_v3()
+        self.assertEqual(_binding(legacy_envelope), _binding(v3_envelope))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            legacy_path = root / "checkpoints.sqlite3"
+            binding = _binding(v3_envelope)
+            with SQLiteGateCCheckpointLedger(
+                legacy_path, binding=binding
+            ) as legacy:
+                legacy.start(
+                    legacy_envelope, recorded_at_utc="2026-08-26T00:00:00Z"
+                )
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    v3_checkpoint_path(legacy_path),
+                    legacy_path=legacy_path,
+                    binding=binding,
+                    authority_lock=authority,
+                ) as v3:
+                    with self.assertRaises(GateCCheckpointLedgerError):
+                        v3.start(
+                            v3_envelope, recorded_at_utc="2026-08-26T00:00:01Z"
+                        )
+
+    def test_completed_legacy_allows_v3_but_unfinished_v3_blocks_legacy(self) -> None:
+        *_unused, legacy_envelope = _fixture_v2(source_revision="3" * 40)
+        *_unused, v3_envelope = _fixture_v3()
+        binding = _binding(v3_envelope)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            legacy_path = root / "checkpoints.sqlite3"
+            with SQLiteGateCCheckpointLedger(legacy_path, binding=binding) as legacy:
+                legacy.start(
+                    legacy_envelope, recorded_at_utc="2026-08-26T00:00:00Z"
+                )
+                legacy.complete(
+                    legacy_envelope,
+                    checkpoint_result=_result(legacy_envelope),
+                    recorded_at_utc="2026-08-26T00:00:01Z",
+                )
+            with GateCCampaignCheckpointLock(legacy_path) as authority:
+                with SQLiteGateCCheckpointLedgerV3(
+                    v3_checkpoint_path(legacy_path),
+                    legacy_path=legacy_path,
+                    binding=binding,
+                    authority_lock=authority,
+                ) as v3:
+                    v3.start(
+                        v3_envelope, recorded_at_utc="2026-08-26T00:00:02Z"
+                    )
+            with SQLiteGateCCheckpointLedger(legacy_path, binding=binding) as legacy:
+                *_unused, second_legacy = _fixture_v2(
+                    start=1, source_revision="3" * 40
+                )
+                with self.assertRaises(GateCCheckpointLedgerError):
+                    legacy.start(
+                        second_legacy, recorded_at_utc="2026-08-26T00:00:03Z"
+                    )
+
     def test_v1_and_v2_started_event_golden_digests_are_frozen(self) -> None:
         cases = (
             (

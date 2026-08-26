@@ -8,7 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tests.test_gate_c_bounded_execution import _fixture_v2 as _bounded_fixture
+from tests.test_gate_c_bounded_execution import (
+    _fixture_v2 as _bounded_fixture,
+    _fixture_v3 as _bounded_fixture_v3,
+)
 from tests.test_exp010_live_runner import (
     DATASET001,
     _ENVIRONMENT,
@@ -39,6 +42,7 @@ from vdbench.exp012_scale_gate_c_operator import (
     Exp012ScaleGateCOperands,
     build_gate_c_plan,
     run_gate_c_checkpoint,
+    run_gate_c_checkpoint_v3,
     run_gate_c,
 )
 from vdbench.gate_c_bounded_execution import (
@@ -48,6 +52,12 @@ from vdbench.gate_c_bounded_execution import (
     build_gate_c_canonical_state,
     build_gate_c_window_checkpoint_effect,
     gate_c_bounded_execution_envelope_document_v2,
+    gate_c_bounded_execution_envelope_document_v3,
+)
+from vdbench.gate_c_execution_environment import (
+    GateCExecutionEnvironmentError,
+    build_gate_c_execution_environment_attestation,
+    parse_gate_c_execution_environment_identity_document,
 )
 from vdbench.gate_c_execution_source import (
     GateCExecutionSourceError,
@@ -227,6 +237,40 @@ def _checkpoint_transition_fixture():
     return pre, post, (effect,)
 
 
+def _unhealthy_attestation(envelope):
+    attestation = envelope.execution_environment_attestation
+    payload = attestation.payload
+    metadata = copy.deepcopy(payload["observation_metadata"])
+    metadata["milvus_healthz"] = False
+    return build_gate_c_execution_environment_attestation(
+        identity=parse_gate_c_execution_environment_identity_document(
+            payload["execution_environment_identity"]
+        ),
+        execution_source_revision=payload["execution_source_revision"],
+        governed_bindings=payload["governed_bindings"],
+        observed_runtime=payload["observed_runtime"],
+        observation_metadata=metadata,
+        compatibility_verified=True,
+    )
+
+
+def _governed_drift_attestation(envelope):
+    attestation = envelope.execution_environment_attestation
+    payload = attestation.payload
+    governed = copy.deepcopy(payload["governed_bindings"])
+    governed["served_ef"] = 800
+    return build_gate_c_execution_environment_attestation(
+        identity=parse_gate_c_execution_environment_identity_document(
+            payload["execution_environment_identity"]
+        ),
+        execution_source_revision=payload["execution_source_revision"],
+        governed_bindings=governed,
+        observed_runtime=payload["observed_runtime"],
+        observation_metadata=payload["observation_metadata"],
+        compatibility_verified=True,
+    )
+
+
 def _canonical_checkpoint_operands(root: Path) -> Exp012ScaleGateCOperands:
     """Point the scale wrapper at the real offline runner stores."""
 
@@ -356,6 +400,369 @@ def _reconstruct_checkpoint(
 
 
 class Exp012ScaleOperatorTests(unittest.TestCase):
+    def test_v3_preparation_binding_mismatch_refuses_before_envelope_construction(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        observer = mock.Mock(
+            side_effect=GateCExecutionEnvironmentError(
+                "GATE_C_EXECUTION_COMPATIBILITY_FAILED"
+            )
+        )
+        with mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value={"plan": True}
+        ), mock.patch.object(
+            gate_c_scale_operator, "_telemetry_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_sources_and_head",
+            return_value=((), object()),
+        ), mock.patch.object(
+            gate_c_scale_operator, "_campaign_binding", return_value=object()
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "derive_gate_c_execution_source",
+            return_value=SimpleNamespace(execution_source_revision="5" * 40),
+        ), mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_bounded_execution_envelope_v3"
+        ) as envelope_builder, self.assertRaisesRegex(
+            GateCExecutionEnvironmentError,
+            "GATE_C_EXECUTION_COMPATIBILITY_FAILED",
+        ):
+            gate_c_scale_operator.build_gate_c_checkpoint_envelope_v3(
+                operands,
+                GateCWindowExecutionBound(0, 1),
+                runtime_observer=observer,
+            )
+        observer.assert_called_once()
+        envelope_builder.assert_not_called()
+
+    def test_v3_execute_binding_mismatch_refuses_before_checkpoint_or_live_seam(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        plan = {"observed": {"next_window_sequence": 0}}
+        observer = mock.Mock(
+            side_effect=GateCExecutionEnvironmentError(
+                "GATE_C_EXECUTION_COMPATIBILITY_FAILED"
+            )
+        )
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock"
+        ) as authority, mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3"
+        ) as ledger, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            GateCExecutionEnvironmentError,
+            "GATE_C_EXECUTION_COMPATIBILITY_FAILED",
+        ):
+            run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        authority.assert_not_called()
+        ledger.assert_not_called()
+        execute.assert_not_called()
+
+    def test_v3_stale_runtime_refuses_before_lock_ledger_or_live_seam(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        plan = {"observed": {"next_window_sequence": 0}}
+        observer = mock.Mock(return_value=_unhealthy_attestation(envelope))
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock"
+        ) as authority, mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3"
+        ) as ledger, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE"
+        ):
+            run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        authority.assert_not_called()
+        ledger.assert_not_called()
+        execute.assert_not_called()
+
+    def test_v3_governed_binding_drift_refuses_before_durable_or_live_seam(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        plan = {"observed": {"next_window_sequence": 0}}
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock"
+        ) as authority, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_EXECUTION_ENVIRONMENT_STALE"
+        ):
+            run_gate_c_checkpoint_v3(
+                operands,
+                {"ignored": True},
+                runtime_observer=lambda *_args, **_kwargs: (
+                    _governed_drift_attestation(envelope)
+                ),
+            )
+        authority.assert_not_called()
+        execute.assert_not_called()
+
+    def test_v3_post_started_health_failure_durably_aborts_with_zero_effects(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        plan = {"observed": {"next_window_sequence": 0}}
+        pre, _post, _effects = _checkpoint_transition_fixture()
+        calls = iter(
+            (
+                envelope.execution_environment_attestation,
+                envelope.execution_environment_attestation,
+                _unhealthy_attestation(envelope),
+            )
+        )
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            instance = None
+
+            def __init__(self, *_args, **_kwargs):
+                self.started = False
+                self.abort_proof = None
+                _Ledger.instance = self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return None
+
+            def state(self, _envelope):
+                return None
+
+            def start(self, _envelope, **_kwargs):
+                self.started = True
+                return SimpleNamespace(unfinished=True)
+
+            def abort_pre_search(self, _envelope, *, abort_proof, **_kwargs):
+                self.abort_proof = abort_proof
+
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_require_safe_checkpoint_start_v3",
+            return_value=pre,
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=(pre, pre, ()),
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaisesRegex(
+            Exception, "EXP012_GATE_C_EXECUTION_AUTHORITY_ABORTED_PRE_SEARCH"
+        ):
+            run_gate_c_checkpoint_v3(
+                operands,
+                {"ignored": True},
+                runtime_observer=lambda *_args, **_kwargs: next(calls),
+            )
+        self.assertTrue(_Ledger.instance.started)
+        self.assertIsNotNone(_Ledger.instance.abort_proof)
+        execute.assert_not_called()
+
+    def test_v3_completion_only_recovery_never_observes_or_searches(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        plan = {"observed": {"next_window_sequence": 1}}
+
+        class _Authority:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        class _Ledger:
+            completed = None
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def unfinished(self):
+                return SimpleNamespace(envelope=envelope)
+
+            def state(self, _envelope):
+                return SimpleNamespace(
+                    envelope=envelope, terminal_event_sha256=None
+                )
+
+            def complete(self, _envelope, *, checkpoint_result, **_kwargs):
+                _Ledger.completed = checkpoint_result
+
+        observer = mock.Mock(side_effect=AssertionError("runtime contacted"))
+        with mock.patch.object(
+            gate_c_scale_operator,
+            "_verify_current_checkpoint_envelope_v3",
+            return_value=(envelope, plan, tuple(range(10_000))),
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _Authority
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _Ledger
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            return_value=_checkpoint_transition_fixture(),
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute:
+            result = run_gate_c_checkpoint_v3(
+                operands, {"ignored": True}, runtime_observer=observer
+            )
+        observer.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(
+            result["checkpoint_result_payload"]["schema_version"],
+            "exp012-scale-gate-c-checkpoint-result-v3",
+        )
+
+    def test_v3_exact_envelope_file_round_trip_and_tamper_refusal(self) -> None:
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "envelope.json"
+            gate_c_scale_operator._write_checkpoint_envelope_v3(path, envelope)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            document = gate_c_scale_operator._load_checkpoint_envelope_v3(path)
+            self.assertEqual(
+                document,
+                gate_c_bounded_execution_envelope_document_v3(envelope),
+            )
+            raw = bytearray(path.read_bytes())
+            raw[-2] = ord("0") if raw[-2] != ord("0") else ord("1")
+            path.write_bytes(raw)
+            with self.assertRaises(Exception):
+                gate_c_scale_operator._load_checkpoint_envelope_v3(path)
+
+    def test_v3_preflight_is_read_only_and_preparation_is_distinct(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        *_unused, envelope = _bounded_fixture_v3(
+            target_profile=Exp012ScaleProfile.SCALE_10000
+        )
+        common = [
+            "--operands", "/tmp/operands.json",
+            "--start-window-sequence", "0",
+            "--window-count", "1",
+        ]
+        with mock.patch.object(
+            gate_c_scale_operator, "load_operands", return_value=operands
+        ), mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value={"plan": True}
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "build_gate_c_checkpoint_envelope_v3",
+            return_value=envelope,
+        ), mock.patch.object(
+            gate_c_scale_operator, "_write_checkpoint_envelope_v3"
+        ) as writer:
+            self.assertEqual(
+                gate_c_scale_operator.main(
+                    [*common, "--mode", "checkpoint-v3-preflight"]
+                ),
+                0,
+            )
+            writer.assert_not_called()
+            self.assertEqual(
+                gate_c_scale_operator.main(
+                    [
+                        *common,
+                        "--mode", "checkpoint-v3-prepare",
+                        "--execution-envelope", "/tmp/envelope.json",
+                    ]
+                ),
+                0,
+            )
+            writer.assert_called_once_with(Path("/tmp/envelope.json"), envelope)
+
+    def test_v3_execute_accepts_exact_envelope_only_and_no_range_replacement(self) -> None:
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        document = {"exact": "persisted"}
+        result = {"checkpoint": "completed"}
+        with mock.patch.object(
+            gate_c_scale_operator, "load_operands", return_value=operands
+        ), mock.patch.object(
+            gate_c_scale_operator, "build_gate_c_plan", return_value={"plan": True}
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "_load_checkpoint_envelope_v3",
+            return_value=document,
+        ) as loader, mock.patch.object(
+            gate_c_scale_operator,
+            "run_gate_c_checkpoint_v3",
+            return_value=result,
+        ) as execute:
+            args = [
+                "--operands", "/tmp/operands.json",
+                "--mode", "checkpoint-v3-execute",
+                "--execution-envelope", "/tmp/envelope.json",
+                "--confirm-bounded-physical-shadow-searches",
+            ]
+            self.assertEqual(gate_c_scale_operator.main(args), 0)
+            loader.assert_called_once_with(Path("/tmp/envelope.json"))
+            execute.assert_called_once_with(operands, document)
+            execute.reset_mock()
+            self.assertEqual(
+                gate_c_scale_operator.main(
+                    [*args, "--start-window-sequence", "0"]
+                ),
+                2,
+            )
+            execute.assert_not_called()
+
     def test_scale_operands_separate_campaign_from_gate_a_authority(self) -> None:
         self.assertIn("gate_a_campaign_root", GATE_B_FIELDS)
         self.assertIn("gate_a_campaign_root", GATE_C_FIELDS)

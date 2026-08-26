@@ -17,18 +17,27 @@ from vdbench.gate_c_bounded_execution import (
     GateCWindowExecutionBound,
     build_gate_c_bounded_execution_envelope,
     build_gate_c_bounded_execution_envelope_v2,
+    build_gate_c_bounded_execution_envelope_v3,
     build_gate_c_canonical_state,
     build_gate_c_checkpoint_result,
     build_gate_c_checkpoint_result_v2,
+    build_gate_c_checkpoint_result_v3,
     build_gate_c_window_checkpoint_effect,
     gate_c_bounded_execution_envelope_document,
     gate_c_bounded_execution_envelope_document_v2,
+    gate_c_bounded_execution_envelope_document_v3,
     gate_c_bounded_execution_envelope_payload,
     verify_gate_c_bounded_execution_envelope,
     verify_gate_c_bounded_execution_envelope_v2,
+    verify_gate_c_bounded_execution_envelope_v3,
     verify_gate_c_checkpoint_result,
     verify_gate_c_checkpoint_result_v2,
+    verify_gate_c_checkpoint_result_v3,
     verify_gate_c_window_execution_bound,
+)
+from tests.test_gate_c_execution_environment import (
+    _governed as _environment_governed,
+    environment_fixture,
 )
 from vdbench.gate_c_window_execution import GateCWindowExecutionError
 from vdbench.host_window_lineage import CommittedHostObservation, VerifiedHostSourceHead
@@ -162,6 +171,56 @@ def _fixture_v2(
     return plan, campaign, head, sources, envelope
 
 
+def _fixture_v3(
+    *, start: int = 0, count: int = 1,
+    target_profile=Exp012ScaleProfile.SCALE_2400,
+    source_revision: str = "3" * 40,
+    execution_source_revision: str = "5" * 40,
+):
+    plan, campaign, head, sources, v2 = _fixture_v2(
+        start=start,
+        count=count,
+        target_profile=target_profile,
+        source_revision=source_revision,
+        execution_source_revision=execution_source_revision,
+    )
+    governed = _environment_governed()
+    governed.update({
+        "campaign_identity": v2.campaign_identity,
+        "scale_contract_sha256": v2.scale_contract.contract_sha256,
+        "gate_a_evidence_sha256": v2.gate_a_evidence_sha256,
+        "source_revision": v2.source_revision,
+        "environment_manifest_sha256": v2.environment_manifest_sha256,
+        "data_identity": v2.data_identity,
+        "configuration_identity": v2.configuration_identity,
+        "flat_binding_id": v2.flat_binding_id,
+        "hnsw_binding_id": v2.hnsw_binding_id,
+        "metric": v2.metric,
+        "dimensions": 128,
+        "expected_entity_count": 10_000,
+        "served_ef": 400,
+        "consistency_level": "Strong",
+        "flat_collection_name": "flat_collection",
+        "hnsw_collection_name": "hnsw_collection",
+    })
+    governed["flat_gate_a_binding"]["binding_id"] = v2.flat_binding_id
+    governed["hnsw_gate_a_binding"]["binding_id"] = v2.hnsw_binding_id
+    *_unused, attestation = environment_fixture(
+        governed=governed,
+        execution_source_revision=execution_source_revision,
+    )
+    envelope = build_gate_c_bounded_execution_envelope_v3(
+        plan=plan,
+        campaign_binding=campaign,
+        source_head=head,
+        sources=sources,
+        execution_bound=GateCWindowExecutionBound(start, count),
+        execution_source_revision=execution_source_revision,
+        execution_environment_attestation=attestation,
+    )
+    return plan, campaign, head, sources, envelope
+
+
 def _forged_envelope_with_bound(envelope, bound):
     forged = object.__new__(type(envelope))
     for field in fields(type(envelope)):
@@ -171,6 +230,132 @@ def _forged_envelope_with_bound(envelope, bound):
 
 
 class GateCBoundedExecutionTests(unittest.TestCase):
+    def test_v3_envelope_golden_digest_is_frozen(self) -> None:
+        *_unused, envelope = _fixture_v3()
+        self.assertEqual(
+            envelope.envelope_sha256,
+            "626d65c39e33310580df5203d2541385eec5c9e9e8954f040826cd03155aef9a",
+        )
+
+    def test_v3_round_trip_binds_independent_runtime_and_attestation(self) -> None:
+        plan, campaign, head, sources, envelope = _fixture_v3()
+        document = gate_c_bounded_execution_envelope_document_v3(envelope)
+        verified = verify_gate_c_bounded_execution_envelope_v3(
+            document,
+            plan=plan,
+            campaign_binding=campaign,
+            source_head=head,
+            sources=sources,
+            execution_source_revision="5" * 40,
+        )
+        self.assertEqual(verified.envelope_sha256, envelope.envelope_sha256)
+        payload = document["envelope_payload"]
+        self.assertEqual(payload["source_revision"], "3" * 40)
+        self.assertEqual(payload["execution_source_revision"], "5" * 40)
+        self.assertEqual(
+            payload["execution_environment_identity_sha256"],
+            envelope.execution_environment_identity_sha256,
+        )
+        self.assertEqual(
+            payload["execution_environment_attestation_sha256"],
+            envelope.execution_environment_attestation_sha256,
+        )
+
+    def test_v3_refuses_v2_documents_and_attestation_substitution(self) -> None:
+        plan, campaign, head, sources, v3 = _fixture_v3()
+        *_unused, v2 = _fixture_v2(source_revision="3" * 40)
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_bounded_execution_envelope_v3(
+                gate_c_bounded_execution_envelope_document_v2(v2),
+                plan=plan,
+                campaign_binding=campaign,
+                source_head=head,
+                sources=sources,
+                execution_source_revision="5" * 40,
+            )
+        tampered = copy.deepcopy(
+            gate_c_bounded_execution_envelope_document_v3(v3)
+        )
+        tampered["envelope_payload"][
+            "execution_environment_attestation_sha256"
+        ] = "0" * 64
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_bounded_execution_envelope_v3(
+                tampered,
+                plan=plan,
+                campaign_binding=campaign,
+                source_head=head,
+                sources=sources,
+                execution_source_revision="5" * 40,
+            )
+
+    def test_v3_result_is_versioned_and_reconstructive(self) -> None:
+        *_unused, envelope = _fixture_v3()
+        pre = build_gate_c_canonical_state(
+            next_window_sequence=0,
+            acknowledgement_count=0,
+            acknowledgement_head_sha256=None,
+            attempt_count=0,
+            attempt_event_count=0,
+            attempt_event_head_sha256=None,
+            detector_event_count=0,
+            detector_event_head_sha256=None,
+            attestation_record_count=0,
+            attestation_record_head_sha256=None,
+            finalization_window_count=0,
+            finalization_event_count=0,
+            finalization_event_head_sha256=None,
+            telemetry_record_count=0,
+            telemetry_record_head_sha256=None,
+        )
+        effect = build_gate_c_window_checkpoint_effect(
+            window_sequence=0,
+            source_window_sha256="1" * 64,
+            attempt_sha256s=tuple(f"{index:064x}" for index in range(1, 5)),
+            attempt_event_head_sha256="5" * 64,
+            detector_event_sha256="6" * 64,
+            detector_status="REBASELINE",
+            detector_head_sha256=None,
+            attestation_disposition="NOT_REQUIRED",
+            attestation_record_sha256=None,
+            attestation_record_head_sha256=None,
+            attestation_sha256=None,
+            prepared_sha256="7" * 64,
+            acknowledgement_head_sha256="8" * 64,
+            finalization_event_head_sha256="9" * 64,
+            telemetry_record_count=400,
+            telemetry_record_head_sha256="a" * 64,
+        )
+        post = build_gate_c_canonical_state(
+            next_window_sequence=1,
+            acknowledgement_count=200,
+            acknowledgement_head_sha256="8" * 64,
+            attempt_count=4,
+            attempt_event_count=8,
+            attempt_event_head_sha256="5" * 64,
+            detector_event_count=1,
+            detector_event_head_sha256="6" * 64,
+            attestation_record_count=0,
+            attestation_record_head_sha256=None,
+            finalization_window_count=1,
+            finalization_event_count=5,
+            finalization_event_head_sha256="9" * 64,
+            telemetry_record_count=400,
+            telemetry_record_head_sha256="a" * 64,
+        )
+        result = build_gate_c_checkpoint_result_v3(
+            envelope=envelope,
+            pre_state=pre,
+            post_state=post,
+            processed_window_sequences=(0,),
+            checkpoint_effects=(effect,),
+        )
+        self.assertEqual(
+            verify_gate_c_checkpoint_result_v3(result, envelope=envelope), result
+        )
+        with self.assertRaises(GateCBoundedExecutionError):
+            verify_gate_c_checkpoint_result_v2(result, envelope=object())
+
     def test_bound_has_exact_two_field_authority_and_derived_values(self) -> None:
         bound = GateCWindowExecutionBound(3, 2)
         self.assertEqual(bound.allowed_window_sequences, (3, 4))

@@ -30,36 +30,52 @@ from .gate_c_window_execution import (
     GateCWindowExecutionError,
     verify_gate_c_window_execution_bound,
 )
+from .gate_c_execution_environment import (
+    GateCExecutionEnvironmentAttestation,
+    gate_c_execution_environment_attestation_document,
+    parse_gate_c_execution_environment_attestation_document,
+    verify_gate_c_execution_environment_eligibility,
+)
 from .shadow_window import TRACE_COUNT, WINDOW_QUERY_COUNT
 
 __all__ = [
     "BOUND_SCHEMA_VERSION",
     "CHECKPOINT_RESULT_SCHEMA_VERSION",
     "CHECKPOINT_RESULT_SCHEMA_VERSION_V2",
+    "CHECKPOINT_RESULT_SCHEMA_VERSION_V3",
     "ENVELOPE_SCHEMA_VERSION",
     "ENVELOPE_SCHEMA_VERSION_V2",
+    "ENVELOPE_SCHEMA_VERSION_V3",
     "GateCBoundedExecutionError",
     "GateCBoundedExecutionEnvelope",
     "GateCBoundedExecutionEnvelopeV2",
+    "GateCBoundedExecutionEnvelopeV3",
     "GateCWindowExecutionBound",
     "build_gate_c_bounded_execution_envelope",
     "build_gate_c_bounded_execution_envelope_v2",
+    "build_gate_c_bounded_execution_envelope_v3",
     "build_gate_c_canonical_state",
     "build_gate_c_checkpoint_result",
     "build_gate_c_checkpoint_result_v2",
+    "build_gate_c_checkpoint_result_v3",
     "build_gate_c_window_checkpoint_effect",
     "derive_gate_c_producer_run_id",
     "gate_c_bounded_execution_envelope_document",
     "gate_c_bounded_execution_envelope_document_v2",
+    "gate_c_bounded_execution_envelope_document_v3",
     "gate_c_bounded_execution_envelope_payload",
     "gate_c_bounded_execution_envelope_payload_v2",
+    "gate_c_bounded_execution_envelope_payload_v3",
     "parse_gate_c_bounded_execution_envelope_document",
     "parse_gate_c_bounded_execution_envelope_document_v2",
+    "parse_gate_c_bounded_execution_envelope_document_v3",
     "verify_gate_c_bounded_execution_envelope",
     "verify_gate_c_bounded_execution_envelope_v2",
+    "verify_gate_c_bounded_execution_envelope_v3",
     "verify_gate_c_canonical_state",
     "verify_gate_c_checkpoint_result",
     "verify_gate_c_checkpoint_result_v2",
+    "verify_gate_c_checkpoint_result_v3",
     "verify_gate_c_window_checkpoint_effect",
     "verify_gate_c_window_execution_bound",
 ]
@@ -70,12 +86,16 @@ ENVELOPE_SCHEMA_VERSION = "exp012-scale-gate-c-bounded-execution-envelope-v1"
 CHECKPOINT_RESULT_SCHEMA_VERSION = "exp012-scale-gate-c-checkpoint-result-v1"
 ENVELOPE_SCHEMA_VERSION_V2 = "exp012-scale-gate-c-bounded-execution-envelope-v2"
 CHECKPOINT_RESULT_SCHEMA_VERSION_V2 = "exp012-scale-gate-c-checkpoint-result-v2"
+ENVELOPE_SCHEMA_VERSION_V3 = "exp012-scale-gate-c-bounded-execution-envelope-v3"
+CHECKPOINT_RESULT_SCHEMA_VERSION_V3 = "exp012-scale-gate-c-checkpoint-result-v3"
 _STATE_SCHEMA_VERSION = "exp012-scale-gate-c-canonical-state-v1"
 _EFFECT_SCHEMA_VERSION = "exp012-scale-gate-c-window-effect-v1"
 _ENVELOPE_DOMAIN = b"VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V1\x00"
 _RESULT_DOMAIN = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V1\x00"
 _ENVELOPE_DOMAIN_V2 = b"VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V2\x00"
 _RESULT_DOMAIN_V2 = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V2\x00"
+_ENVELOPE_DOMAIN_V3 = b"VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V3\x00"
+_RESULT_DOMAIN_V3 = b"VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V3\x00"
 _STATE_DOMAIN = b"VD::EXP012_SCALE_GATE_C_CANONICAL_STATE::V1\x00"
 _EFFECT_DOMAIN = b"VD::EXP012_SCALE_GATE_C_WINDOW_EFFECT::V1\x00"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -170,6 +190,41 @@ class GateCBoundedExecutionEnvelopeV2:
         raise TypeError("bounded Gate-C v2 envelopes are builder-issued")
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class GateCBoundedExecutionEnvelopeV3:
+    """V3 envelope binding both executor and current runtime provenance."""
+
+    schema_version: str
+    plan_sha256: str
+    campaign_identity: str
+    campaign_binding_sha256: str
+    scale_contract: Exp012ScaleContract
+    gate_a_evidence_sha256: str
+    source_store_binding_sha256: str
+    source_head_sha256: str
+    outbox_head_sha256: str
+    source_head_snapshot_sha256: str
+    source_revision: str
+    execution_source_revision: str
+    execution_environment_identity_sha256: str
+    execution_environment_attestation_sha256: str
+    execution_environment_attestation: GateCExecutionEnvironmentAttestation
+    producer_run_id: str
+    source_count: int
+    metric: str
+    threshold_stratum: str
+    configuration_identity: str
+    data_identity: str
+    flat_binding_id: str
+    hnsw_binding_id: str
+    environment_manifest_sha256: str
+    execution_bound: GateCWindowExecutionBound
+    envelope_sha256: str
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("bounded Gate-C v3 envelopes are builder-issued")
+
+
 def _make_envelope(**values: object) -> GateCBoundedExecutionEnvelope:
     result = object.__new__(GateCBoundedExecutionEnvelope)
     for name, value in values.items():
@@ -179,6 +234,13 @@ def _make_envelope(**values: object) -> GateCBoundedExecutionEnvelope:
 
 def _make_envelope_v2(**values: object) -> GateCBoundedExecutionEnvelopeV2:
     result = object.__new__(GateCBoundedExecutionEnvelopeV2)
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _make_envelope_v3(**values: object) -> GateCBoundedExecutionEnvelopeV3:
+    result = object.__new__(GateCBoundedExecutionEnvelopeV3)
     for name, value in values.items():
         object.__setattr__(result, name, value)
     return result
@@ -839,6 +901,300 @@ def verify_gate_c_bounded_execution_envelope_v2(
     return expected
 
 
+def gate_c_bounded_execution_envelope_payload_v3(
+    envelope: GateCBoundedExecutionEnvelopeV3,
+) -> dict[str, object]:
+    if type(envelope) is not GateCBoundedExecutionEnvelopeV3:
+        raise _error("GATE_C_BOUNDED_ENVELOPE_V3_INVALID")
+    try:
+        bound = verify_gate_c_window_execution_bound(envelope.execution_bound)
+        contract = verify_exp012_scale_contract(envelope.scale_contract)
+        attestation_document = gate_c_execution_environment_attestation_document(
+            envelope.execution_environment_attestation
+        )
+        identity = verify_gate_c_execution_environment_eligibility(
+            envelope.execution_environment_attestation
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise _error("GATE_C_BOUNDED_ENVELOPE_V3_INVALID") from exc
+    if (
+        bound.expected_next_window_sequence > contract.expected_windows
+        or type(envelope.execution_source_revision) is not str
+        or _REVISION.fullmatch(envelope.execution_source_revision) is None
+        or envelope.execution_environment_identity_sha256
+        != identity.execution_environment_identity_sha256
+        or envelope.execution_environment_attestation_sha256
+        != envelope.execution_environment_attestation.execution_environment_attestation_sha256
+        or envelope.execution_source_revision
+        != envelope.execution_environment_attestation.execution_source_revision
+    ):
+        raise _error("GATE_C_BOUNDED_ENVELOPE_V3_INVALID")
+    return {
+        "schema_version": envelope.schema_version,
+        "plan_sha256": envelope.plan_sha256,
+        "campaign_identity": envelope.campaign_identity,
+        "campaign_binding_sha256": envelope.campaign_binding_sha256,
+        "scale_contract": exp012_scale_contract_payload(contract),
+        "scale_contract_sha256": contract.contract_sha256,
+        "gate_a_evidence_sha256": envelope.gate_a_evidence_sha256,
+        "source_store_binding_sha256": envelope.source_store_binding_sha256,
+        "source_head_sha256": envelope.source_head_sha256,
+        "outbox_head_sha256": envelope.outbox_head_sha256,
+        "source_head_snapshot_sha256": envelope.source_head_snapshot_sha256,
+        "source_revision": envelope.source_revision,
+        "execution_source_revision": envelope.execution_source_revision,
+        "execution_environment_identity_sha256": (
+            envelope.execution_environment_identity_sha256
+        ),
+        "execution_environment_attestation_sha256": (
+            envelope.execution_environment_attestation_sha256
+        ),
+        "execution_environment_attestation": attestation_document,
+        "producer_run_id": envelope.producer_run_id,
+        "source_count": envelope.source_count,
+        "metric": envelope.metric,
+        "threshold_stratum": envelope.threshold_stratum,
+        "configuration_identity": envelope.configuration_identity,
+        "data_identity": envelope.data_identity,
+        "flat_binding_id": envelope.flat_binding_id,
+        "hnsw_binding_id": envelope.hnsw_binding_id,
+        "environment_manifest_sha256": envelope.environment_manifest_sha256,
+        "execution_bound": {
+            "schema_version": BOUND_SCHEMA_VERSION,
+            "start_window_sequence": bound.start_window_sequence,
+            "window_count": bound.window_count,
+            "allowed_window_sequences": list(bound.allowed_window_sequences),
+            "expected_next_window_sequence": bound.expected_next_window_sequence,
+        },
+    }
+
+
+def build_gate_c_bounded_execution_envelope_v3(
+    *,
+    plan: Mapping[str, object],
+    campaign_binding: Exp012ScaleCampaignBinding,
+    source_head: VerifiedHostSourceHead,
+    sources: tuple[CommittedHostObservation, ...],
+    execution_bound: GateCWindowExecutionBound,
+    execution_source_revision: str,
+    execution_environment_attestation: GateCExecutionEnvironmentAttestation,
+) -> GateCBoundedExecutionEnvelopeV3:
+    values = _envelope_values(
+        plan=plan,
+        campaign_binding=campaign_binding,
+        source_head=source_head,
+        sources=sources,
+        execution_bound=execution_bound,
+    )
+    if (
+        type(execution_source_revision) is not str
+        or _REVISION.fullmatch(execution_source_revision) is None
+        or type(execution_environment_attestation)
+        is not GateCExecutionEnvironmentAttestation
+    ):
+        raise _error("GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_INVALID")
+    try:
+        identity = verify_gate_c_execution_environment_eligibility(
+            execution_environment_attestation
+        )
+    except ValueError as exc:
+        raise _error("GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_INVALID") from exc
+    if execution_environment_attestation.execution_source_revision != execution_source_revision:
+        raise _error("GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_MISMATCH")
+    attestation_payload = execution_environment_attestation.payload
+    governed = attestation_payload["governed_bindings"]
+    expected_bindings = {
+        "campaign_identity": values["campaign_identity"],
+        "scale_contract_sha256": campaign_binding.contract.contract_sha256,
+        "gate_a_evidence_sha256": values["gate_a_evidence_sha256"],
+        "source_revision": values["source_revision"],
+        "environment_manifest_sha256": values["environment_manifest_sha256"],
+        "data_identity": values["data_identity"],
+        "configuration_identity": values["configuration_identity"],
+        "flat_binding_id": values["flat_binding_id"],
+        "hnsw_binding_id": values["hnsw_binding_id"],
+        "metric": values["metric"],
+        "dimensions": attestation_payload["execution_environment_identity"][
+            "identity_payload"
+        ]["data_plane"][0]["dimensions"],
+        "expected_entity_count": attestation_payload[
+            "execution_environment_identity"
+        ]["identity_payload"]["data_plane"][0]["entity_count"],
+    }
+    if any(governed.get(name) != expected for name, expected in expected_bindings.items()):
+        raise _error("GATE_C_EXECUTION_ENVIRONMENT_AUTHORITY_MISMATCH")
+    values["schema_version"] = ENVELOPE_SCHEMA_VERSION_V3
+    values["execution_source_revision"] = execution_source_revision
+    values["execution_environment_identity_sha256"] = (
+        identity.execution_environment_identity_sha256
+    )
+    values["execution_environment_attestation_sha256"] = (
+        execution_environment_attestation.execution_environment_attestation_sha256
+    )
+    values["execution_environment_attestation"] = execution_environment_attestation
+    provisional = _make_envelope_v3(**values, envelope_sha256="")
+    payload = gate_c_bounded_execution_envelope_payload_v3(provisional)
+    return _make_envelope_v3(
+        **values,
+        envelope_sha256=strict_canonical_digest(_ENVELOPE_DOMAIN_V3, payload),
+    )
+
+
+def gate_c_bounded_execution_envelope_document_v3(
+    envelope: GateCBoundedExecutionEnvelopeV3,
+) -> dict[str, object]:
+    payload = gate_c_bounded_execution_envelope_payload_v3(envelope)
+    digest = strict_canonical_digest(_ENVELOPE_DOMAIN_V3, payload)
+    if envelope.envelope_sha256 != digest:
+        raise _error("GATE_C_BOUNDED_ENVELOPE_V3_INVALID")
+    return {"envelope_payload": payload, "envelope_sha256": digest}
+
+
+def _envelope_v3_from_document(
+    document: Mapping[str, object],
+) -> GateCBoundedExecutionEnvelopeV3:
+    code = "GATE_C_BOUNDED_ENVELOPE_V3_INVALID"
+    if type(document) is not dict or set(document) != {
+        "envelope_payload", "envelope_sha256"
+    }:
+        raise _error(code)
+    payload = document["envelope_payload"]
+    expected_fields = {
+        "schema_version", "plan_sha256", "campaign_identity",
+        "campaign_binding_sha256", "scale_contract", "scale_contract_sha256",
+        "gate_a_evidence_sha256", "source_store_binding_sha256",
+        "source_head_sha256", "outbox_head_sha256", "source_head_snapshot_sha256",
+        "source_revision", "execution_source_revision",
+        "execution_environment_identity_sha256",
+        "execution_environment_attestation_sha256",
+        "execution_environment_attestation", "producer_run_id", "source_count",
+        "metric", "threshold_stratum", "configuration_identity", "data_identity",
+        "flat_binding_id", "hnsw_binding_id", "environment_manifest_sha256",
+        "execution_bound",
+    }
+    if type(payload) is not dict or set(payload) != expected_fields:
+        raise _error(code)
+    try:
+        contract_payload = payload["scale_contract"]
+        if type(contract_payload) is not dict:
+            raise TypeError
+        contract = build_exp012_scale_contract(
+            Exp012ScaleProfile(contract_payload["profile"])
+        )
+        if (
+            contract_payload != exp012_scale_contract_payload(contract)
+            or payload["scale_contract_sha256"] != contract.contract_sha256
+            or payload["schema_version"] != ENVELOPE_SCHEMA_VERSION_V3
+            or type(payload["source_count"]) is not int
+            or payload["source_count"] != contract.target_source_records
+        ):
+            raise ValueError
+        bound = _bound_from_payload(
+            payload["execution_bound"],
+            maximum_expected_next_window_sequence=contract.expected_windows,
+        )
+        attestation = parse_gate_c_execution_environment_attestation_document(
+            payload["execution_environment_attestation"]
+        )
+        for name in (
+            "plan_sha256", "campaign_binding_sha256", "gate_a_evidence_sha256",
+            "source_store_binding_sha256", "source_head_sha256",
+            "outbox_head_sha256", "source_head_snapshot_sha256",
+            "environment_manifest_sha256", "execution_environment_identity_sha256",
+            "execution_environment_attestation_sha256",
+        ):
+            _sha(payload[name], code=code)
+        for name in (
+            "campaign_identity", "source_revision", "execution_source_revision",
+            "producer_run_id", "metric", "threshold_stratum",
+            "configuration_identity", "data_identity", "flat_binding_id",
+            "hnsw_binding_id",
+        ):
+            _text(payload[name], code=code)
+        if (
+            _REVISION.fullmatch(payload["execution_source_revision"]) is None
+            or payload["execution_environment_identity_sha256"]
+            != attestation.execution_environment_identity_sha256
+            or payload["execution_environment_attestation_sha256"]
+            != attestation.execution_environment_attestation_sha256
+            or payload["execution_source_revision"]
+            != attestation.execution_source_revision
+        ):
+            raise ValueError
+        envelope = _make_envelope_v3(
+            schema_version=payload["schema_version"],
+            plan_sha256=payload["plan_sha256"],
+            campaign_identity=payload["campaign_identity"],
+            campaign_binding_sha256=payload["campaign_binding_sha256"],
+            scale_contract=contract,
+            gate_a_evidence_sha256=payload["gate_a_evidence_sha256"],
+            source_store_binding_sha256=payload["source_store_binding_sha256"],
+            source_head_sha256=payload["source_head_sha256"],
+            outbox_head_sha256=payload["outbox_head_sha256"],
+            source_head_snapshot_sha256=payload["source_head_snapshot_sha256"],
+            source_revision=payload["source_revision"],
+            execution_source_revision=payload["execution_source_revision"],
+            execution_environment_identity_sha256=payload[
+                "execution_environment_identity_sha256"
+            ],
+            execution_environment_attestation_sha256=payload[
+                "execution_environment_attestation_sha256"
+            ],
+            execution_environment_attestation=attestation,
+            producer_run_id=payload["producer_run_id"],
+            source_count=payload["source_count"],
+            metric=payload["metric"],
+            threshold_stratum=payload["threshold_stratum"],
+            configuration_identity=payload["configuration_identity"],
+            data_identity=payload["data_identity"],
+            flat_binding_id=payload["flat_binding_id"],
+            hnsw_binding_id=payload["hnsw_binding_id"],
+            environment_manifest_sha256=payload["environment_manifest_sha256"],
+            execution_bound=bound,
+            envelope_sha256=document["envelope_sha256"],
+        )
+        gate_c_bounded_execution_envelope_document_v3(envelope)
+    except (KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, GateCBoundedExecutionError):
+            raise
+        raise _error(code) from exc
+    return envelope
+
+
+def parse_gate_c_bounded_execution_envelope_document_v3(
+    document: Mapping[str, object],
+) -> GateCBoundedExecutionEnvelopeV3:
+    return _envelope_v3_from_document(document)
+
+
+def verify_gate_c_bounded_execution_envelope_v3(
+    document: Mapping[str, object],
+    *,
+    plan: Mapping[str, object],
+    campaign_binding: Exp012ScaleCampaignBinding,
+    source_head: VerifiedHostSourceHead,
+    sources: tuple[CommittedHostObservation, ...],
+    execution_source_revision: str,
+) -> GateCBoundedExecutionEnvelopeV3:
+    supplied = _envelope_v3_from_document(document)
+    expected = build_gate_c_bounded_execution_envelope_v3(
+        plan=plan,
+        campaign_binding=campaign_binding,
+        source_head=source_head,
+        sources=sources,
+        execution_bound=supplied.execution_bound,
+        execution_source_revision=execution_source_revision,
+        execution_environment_attestation=supplied.execution_environment_attestation,
+    )
+    if any(
+        type(getattr(supplied, item.name)) is not type(getattr(expected, item.name))
+        or getattr(supplied, item.name) != getattr(expected, item.name)
+        for item in fields(GateCBoundedExecutionEnvelopeV3)
+    ):
+        raise _error("GATE_C_BOUNDED_ENVELOPE_V3_MISMATCH")
+    return expected
+
+
 def _count(value: object, *, code: str) -> int:
     if type(value) is not int or value < 0:
         raise _error(code)
@@ -1414,4 +1770,152 @@ def verify_gate_c_checkpoint_result_v2(
         raise _error("GATE_C_CHECKPOINT_RESULT_V2_INVALID") from exc
     if document != rebuilt:
         raise _error("GATE_C_CHECKPOINT_RESULT_V2_INVALID")
+    return rebuilt
+
+
+def build_gate_c_checkpoint_result_v3(
+    *,
+    envelope: GateCBoundedExecutionEnvelopeV3,
+    pre_state: Mapping[str, object],
+    post_state: Mapping[str, object],
+    processed_window_sequences: tuple[int, ...],
+    checkpoint_effects: tuple[Mapping[str, object], ...],
+) -> dict[str, object]:
+    gate_c_bounded_execution_envelope_document_v3(envelope)
+    bound = envelope.execution_bound
+    pre = verify_gate_c_canonical_state(pre_state)
+    post = verify_gate_c_canonical_state(post_state)
+    effects = tuple(
+        verify_gate_c_window_checkpoint_effect(item) for item in checkpoint_effects
+    )
+    pre_payload = pre["state_payload"]
+    post_payload = post["state_payload"]
+    if (
+        type(processed_window_sequences) is not tuple
+        or any(type(item) is not int for item in processed_window_sequences)
+        or processed_window_sequences != bound.allowed_window_sequences
+        or len(effects) != bound.window_count
+        or tuple(item["effect_payload"]["window_sequence"] for item in effects)
+        != bound.allowed_window_sequences
+        or pre_payload["next_window_sequence"] != bound.start_window_sequence
+        or post_payload["next_window_sequence"] != bound.expected_next_window_sequence
+    ):
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    expected = {
+        "acknowledgement_count": WINDOW_QUERY_COUNT,
+        "attempt_count": TRACE_COUNT,
+        "attempt_event_count": TRACE_COUNT * 2,
+        "detector_event_count": 1,
+        "finalization_window_count": 1,
+        "finalization_event_count": 5,
+        "telemetry_record_count": (
+            WINDOW_QUERY_COUNT * envelope.scale_contract.searches_per_source
+        ),
+    }
+    for name, per_window in expected.items():
+        if (
+            pre_payload[name] != bound.start_window_sequence * per_window
+            or post_payload[name] != bound.expected_next_window_sequence * per_window
+        ):
+            raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    if any(
+        effect["effect_payload"]["telemetry_record_count"]
+        != expected["telemetry_record_count"]
+        for effect in effects
+    ):
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    if sum(
+        effect["effect_payload"]["telemetry_record_count"] for effect in effects
+    ) != post_payload["telemetry_record_count"] - pre_payload["telemetry_record_count"]:
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    committed = sum(
+        effect["effect_payload"]["attestation_disposition"] == "COMMITTED"
+        for effect in effects
+    )
+    final_effect = effects[-1]["effect_payload"]
+    if (
+        post_payload["attestation_record_count"]
+        - pre_payload["attestation_record_count"]
+        != committed
+        or post_payload["acknowledgement_head_sha256"]
+        != final_effect["acknowledgement_head_sha256"]
+        or post_payload["attempt_event_head_sha256"]
+        != final_effect["attempt_event_head_sha256"]
+        or post_payload["detector_event_head_sha256"]
+        != final_effect["detector_event_sha256"]
+        or post_payload["attestation_record_head_sha256"]
+        != final_effect["attestation_record_head_sha256"]
+        or post_payload["finalization_event_head_sha256"]
+        != final_effect["finalization_event_head_sha256"]
+        or post_payload["telemetry_record_head_sha256"]
+        != final_effect["telemetry_record_head_sha256"]
+    ):
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    counts = {
+        name.removesuffix("_count"): {
+            "pre": pre_payload[name],
+            "post": post_payload[name],
+            "delta": post_payload[name] - pre_payload[name],
+        }
+        for name in (
+            "acknowledgement_count", "attempt_count", "telemetry_record_count"
+        )
+    }
+    payload: dict[str, object] = {
+        "schema_version": CHECKPOINT_RESULT_SCHEMA_VERSION_V3,
+        "experiment_id": "EXP-012-SCALE",
+        "envelope_sha256": envelope.envelope_sha256,
+        "source_revision": envelope.source_revision,
+        "execution_source_revision": envelope.execution_source_revision,
+        "execution_environment_identity_sha256": (
+            envelope.execution_environment_identity_sha256
+        ),
+        "execution_environment_attestation_sha256": (
+            envelope.execution_environment_attestation_sha256
+        ),
+        "pre_state": pre,
+        "post_state": post,
+        "processed_window_sequences": list(processed_window_sequences),
+        "checkpoint_effects": list(effects),
+        "checkpoint_counts": counts,
+        "full_campaign_complete": False,
+    }
+    return {
+        "checkpoint_result_payload": payload,
+        "checkpoint_result_sha256": strict_canonical_digest(
+            _RESULT_DOMAIN_V3, payload
+        ),
+    }
+
+
+def verify_gate_c_checkpoint_result_v3(
+    document: Mapping[str, object], *, envelope: GateCBoundedExecutionEnvelopeV3
+) -> dict[str, object]:
+    if type(document) is not dict or set(document) != {
+        "checkpoint_result_payload", "checkpoint_result_sha256"
+    }:
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    payload = document["checkpoint_result_payload"]
+    if type(payload) is not dict or set(payload) != {
+        "schema_version", "experiment_id", "envelope_sha256", "source_revision",
+        "execution_source_revision", "execution_environment_identity_sha256",
+        "execution_environment_attestation_sha256", "pre_state", "post_state",
+        "processed_window_sequences", "checkpoint_effects", "checkpoint_counts",
+        "full_campaign_complete",
+    }:
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
+    try:
+        rebuilt = build_gate_c_checkpoint_result_v3(
+            envelope=envelope,
+            pre_state=payload["pre_state"],
+            post_state=payload["post_state"],
+            processed_window_sequences=tuple(payload["processed_window_sequences"]),
+            checkpoint_effects=tuple(payload["checkpoint_effects"]),
+        )
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, GateCBoundedExecutionError):
+            raise
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID") from exc
+    if document != rebuilt:
+        raise _error("GATE_C_CHECKPOINT_RESULT_V3_INVALID")
     return rebuilt

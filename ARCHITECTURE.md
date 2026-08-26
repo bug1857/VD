@@ -5664,3 +5664,124 @@ Gate-C code changed. Existing unbounded Gate-C plans, historical evidence, and
 full-campaign source-revision semantics remain unchanged. Acceptance of this
 amendment authorizes only offline implementation and verification; it does not
 authorize a live envelope, physical search, C1 execution, or any later gate.
+
+#### Accepted dual-environment provenance amendment to ADR-016 / ADR-019
+
+Status: **Accepted 2026-08-26 for offline implementation and verification
+only; no live C1 execution is authorized**
+
+Prospective bounded Gate-C v3 separates four non-interchangeable identities.
+`source_revision` and `environment_manifest_sha256` retain their historical
+upstream Gate-A/Gate-B meanings unchanged. `execution_source_revision` retains
+the exact bounded-executor-code meaning accepted above. The new
+`execution_environment_identity_sha256` identifies the stable, currently
+observed execution runtime and data plane. It does not absorb either source
+revision, historical Gate-A/environment digests, observation or health time,
+transient health, load/readiness, or policy, qualification, admission, routing,
+authorization, or actuation state.
+
+The stable identity schema is
+`exp012-scale-gate-c-execution-environment-identity-v1`, detached under
+`VD::EXP012_SCALE_GATE_C_EXECUTION_ENVIRONMENT_IDENTITY::V1\0`. Its closed
+canonical payload binds the normalized effective Milvus endpoint; exact
+etcd/MinIO/Milvus container IDs, image IDs, sorted repository digests,
+`StartedAt`, restart count, OOM state, approved non-secret labels, mounts,
+network attachments, and published ports; and exact FLAT/HNSW collection,
+namespace, canonical schema, metric, dimension, integer entity count, index
+name/type/metric/parameters, and derived index identity. For ENV-001 the two
+entity counts must be exact non-boolean integers, equal each other, and equal
+the governed expected count. Approximate or noncanonical counts fail closed.
+Load/readiness is deliberately excluded from stable identity.
+
+The observation schema is
+`exp012-scale-gate-c-execution-environment-attestation-v1`, detached under
+`VD::EXP012_SCALE_GATE_C_EXECUTION_ENVIRONMENT_ATTESTATION::V1\0`. It directly
+binds the complete stable identity document/digest, executor revision,
+`observed_runtime`, `governed_bindings`, `observation_metadata`, and a
+successful compatibility result. Governed bindings include unchanged upstream
+source/environment/Gate-A, campaign/scale, dataset, configuration,
+FLAT/HNSW, serving, and collection identities. Observation metadata carries
+UTC observation time, Docker/service health, Milvus healthz, collection load,
+and index readiness. Reobserving the same stable runtime at a new time keeps
+the stable identity digest but may change the attestation digest. Eligibility
+always reevaluates the transient predicates independently.
+
+The opaque Gate-A FLAT/HNSW binding IDs are not redefined as v3-specific
+metadata digests. Each governed binding also carries the exact verified Gate-A
+`live` metadata record to which that ID was historically attested. V3
+mechanically compares the current stable Gate-A projection—collection, index
+name/type/metric, exact row count and dimension, plus HNSW `M` and
+`efConstruction`—to that preserved record before issuing an eligible
+attestation. Index/load completion remain transient readiness predicates. A
+self-consistent new execution-environment identity cannot override a mismatch,
+and execute reloads the verified Gate-A authority and repeats the comparison
+before `CHECKPOINT_STARTED`.
+
+Prospective bounded artifacts use only new schemas and domains:
+
+- `exp012-scale-gate-c-bounded-execution-envelope-v3` under
+  `VD::EXP012_SCALE_GATE_C_BOUNDED_EXECUTION_ENVELOPE::V3\0`;
+- `exp012-scale-gate-c-checkpoint-result-v3` under
+  `VD::EXP012_SCALE_GATE_C_CHECKPOINT_RESULT::V3\0`;
+- `exp012-scale-gate-c-checkpoint-event-v3` under
+  `VD::EXP012_SCALE_GATE_C_CHECKPOINT_EVENT::V3\0`.
+
+V3 retains all v2 upstream, executor, exact two-field bound, canonical
+pre/post/effect, and per-window telemetry semantics and additionally binds the
+stable execution-environment identity, complete attestation, and detached
+attestation digest. The only independent range authority remains
+`start_window_sequence` plus `window_count`; environment evidence cannot
+select or alter windows. V1/v2 documents, domains, readers, and completed
+historical chains remain unchanged. One chain is homogeneous; cross-version
+envelopes/results/events and silent downgrade fail closed.
+
+Read-only v3 preflight may reconstruct upstream authority, range eligibility,
+executor provenance, runtime metadata, compatibility, and future-suffix state,
+but writes no envelope/checkpoint/campaign evidence and issues no search. A
+separate preparation action may persist exactly one canonical v3 envelope with
+mode `0600`. The persisted bytes are the reviewed authorization handoff.
+Execute consumes those exact bytes and accepts no replacement start/count or
+regenerated envelope. It verifies upstream evidence and executor provenance,
+reobserves metadata-only runtime identity, requires exact stable-identity
+equality and current health/load/readiness, and only then may append durable
+`CHECKPOINT_STARTED`. Search-capable capture construction and physical attempt
+STARTED remain later boundaries.
+
+All prospective legacy and v3 authority creation/resumption contends on the
+same historical checkpoint sidecar lock. The shared lock remains nonblocking,
+exclusive, inode/PID/path checked, same-process registered, and fork safe.
+Under that lock, both generations are inspected. At most one unfinished
+checkpoint may exist across them. An unfinished legacy chain blocks v3 and an
+unfinished v3 chain blocks prospective legacy creation; completed historical
+evidence does not block a new v3 checkpoint merely by existing.
+
+`CHECKPOINT_STARTED` proves only that bounded checkpoint authority durably
+began. Physical ambiguity begins at canonical attempt STARTED. If runtime
+authority becomes invalid after checkpoint STARTED but before any local
+attempt/effect, v3 may append terminal
+`CHECKPOINT_ABORTED_PRE_SEARCH` with fixed reason
+`EXECUTION_AUTHORITY_INVALIDATED_PRE_SEARCH`. That event requires exact
+checkpoint-local pre/post equality, zero STARTED/COMPLETED/ORPHANED attempt
+deltas, unchanged acknowledgement/attempt/detector/attestation/finalization/
+telemetry heads and counts, unchanged next sequence, and no pending or prepared
+finalization. Missing, drifting, partial, or ambiguous proof refuses the abort.
+The old envelope becomes permanently terminal and non-reusable; a fresh
+attestation and envelope may later propose the still-unconsumed range.
+
+After any physical attempt STARTED, runtime change never authorizes blind retry
+or replacement execution authority. Existing orphan/ambiguous recovery remains
+fail closed. Conversely, if canonical durable effects already prove all
+bounded work complete but checkpoint COMPLETE is missing, v3 may reconstruct
+completion without contacting or recreating the old runtime and with zero
+physical searches. Current runtime cannot substitute for the original search
+provenance during that completion-only recovery.
+
+The observer surface is metadata-only: Docker container and image inspection,
+Milvus collection/index/count/load metadata, and healthz. It has no governed
+vector-probe or mutation operation. These digests provide local
+integrity/provenance, not hostile-host cryptographic attestation; the trust
+boundary still includes the Docker daemon/socket, local filesystem, process
+environment, same-user state, and OS metadata APIs. This acceptance authorizes
+offline implementation/tests only. It creates no full-campaign completion,
+Gate-D, qualification, admission, grant, routing, activation, actuation, or
+rollback authority and does not authorize live C1.
