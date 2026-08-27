@@ -5,7 +5,7 @@ vectors and Milvus search path use binary32.  Distinct oracle scores can
 therefore collapse to the same representable binary32 value, and legal
 binary32 L2 reduction orders can also collapse scores whose final oracle casts
 remain distinct.  This module keeps exact capped membership mandatory and
-permits only the two explicitly governed tie classes below.  It never applies
+permits only the explicitly governed precision classes below.  It never applies
 a free tolerance and never replaces ordered agreement with global set equality.
 
 The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
@@ -31,6 +31,19 @@ The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
    order; it is formula-derived, not fitted to observed evidence.
 6. No capped-membership substitution (the emphatic restatement of rule 1,
    because it is the rule most often mistaken for over-strictness).
+7. Execution order variance (ADR-016 item 10, amended).  Rule 5's second class
+   only covers a run Milvus returned as one binary32 tie -- it *collapsed* a
+   distinction the oracle drew.  The same physical event also appears with the
+   pair *resolved the other way*: adjacent, distinct returned binary32 scores
+   carrying transposed ids.  Rule 7 admits that case under the identical
+   analytical model.  The result is partitioned into maximal contiguous runs
+   whose oracle-rank set is exactly that run's index range, and a reordered run
+   is admissible only if every returned score lies inside the formula-derived
+   binary32 execution interval of the oracle score of the id placed there.
+   Membership and cardinality stay exact; a displacement can never cross a
+   position it does not belong to; nothing is fitted to observed evidence.
+   Order variance is reported as its own kind so it stays separately countable
+   as scientific evidence rather than being absorbed into EXACT_ORDERED.
 
 `NUMERIC_TOLERANCE` (1e-6) is THRESHOLD-ONLY.  It is passed to
 `oracle.threshold_violations` so a score sitting exactly on the radius is not
@@ -67,6 +80,7 @@ class FlatOracleAgreementKind(StrEnum):
     EXACT_ORDERED = "EXACT_ORDERED"
     PRECISION_TIE_EQUIVALENT = "PRECISION_TIE_EQUIVALENT"
     EXECUTION_TIE_EQUIVALENT = "EXECUTION_TIE_EQUIVALENT"
+    EXECUTION_ORDER_EQUIVALENT = "EXECUTION_ORDER_EQUIVALENT"
     MEMBERSHIP_MISMATCH = "MEMBERSHIP_MISMATCH"
     NON_TIE_ORDER_MISMATCH = "NON_TIE_ORDER_MISMATCH"
     INVALID_EVIDENCE = "INVALID_EVIDENCE"
@@ -85,6 +99,7 @@ class FlatOracleAgreementResult:
             FlatOracleAgreementKind.EXACT_ORDERED,
             FlatOracleAgreementKind.PRECISION_TIE_EQUIVALENT,
             FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT,
+            FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT,
         }
 
 
@@ -239,6 +254,68 @@ def _execution_tie_equivalent(
                     return False
                 if not lower <= returned_value <= upper:
                     return False
+        position = stop
+    return changed
+
+
+def _execution_order_equivalent(
+    *,
+    flat_ids: tuple[int, ...],
+    flat_scores: tuple[float, ...],
+    oracle_ids: tuple[int, ...],
+    oracle_score_by_id: dict[int, float],
+    metric: Metric,
+    dimensions: int | None,
+) -> bool:
+    """Return whether every inversion is one proved L2 execution order variance.
+
+    Generalizes `_execution_tie_equivalent` from the case where Milvus
+    *collapsed* a distinction the oracle drew (equal returned binary32 scores)
+    to the case where it *resolved* one in the opposite direction (adjacent but
+    distinct returned scores).  Both are the same physical event: the true
+    order is not recoverable at binary32 precision.
+
+    The result is partitioned into maximal contiguous runs whose oracle-rank
+    set is exactly that run's index range, so a displacement can never move an
+    id past a position it does not belong to.  A run whose order changed is
+    admissible only if every returned score lies inside the analytical
+    IEEE-754 execution interval of the oracle score of the id actually placed
+    there -- i.e. some legal binary32 reduction order produces exactly this
+    result.  The interval is the same formula-derived bound used for execution
+    ties; no tolerance is introduced and nothing is fitted to observed
+    evidence.  Ids and membership are already exact by the time this runs.
+    """
+
+    if metric is not Metric.L2 or dimensions != _GOVERNED_L2_DIMENSIONS:
+        return False
+    oracle_rank = {identifier: rank for rank, identifier in enumerate(oracle_ids)}
+    changed = False
+    position = 0
+    while position < len(flat_ids):
+        stop = position
+        highest = -1
+        while stop < len(flat_ids):
+            highest = max(highest, oracle_rank[flat_ids[stop]])
+            stop += 1
+            if highest == stop - 1:
+                break
+        if highest != stop - 1:
+            return False
+
+        block_ids = flat_ids[position:stop]
+        if block_ids == oracle_ids[position:stop]:
+            position = stop
+            continue
+        changed = True
+        for offset, identifier in enumerate(block_ids):
+            try:
+                lower, upper = _l2_binary32_execution_interval(
+                    oracle_score_by_id[identifier], dimensions=dimensions
+                )
+            except ValueError:
+                return False
+            if not lower <= flat_scores[position + offset] <= upper:
+                return False
         position = stop
     return changed
 
@@ -424,6 +501,15 @@ def compare_flat_oracle_hits(
         dimensions=dimensions,
     ):
         return _result(FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT)
+    if _execution_order_equivalent(
+        flat_ids=tuple(flat_ids),
+        flat_scores=tuple(flat_scores),
+        oracle_ids=tuple(oracle_ids),
+        oracle_score_by_id=oracle_score_by_id,
+        metric=metric,
+        dimensions=dimensions,
+    ):
+        return _result(FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT)
     return _result(
         FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH,
         "FLAT_ORACLE_NON_TIE_ORDER_MISMATCH",

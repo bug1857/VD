@@ -4458,6 +4458,128 @@ reclassification under this amendment is forensic analysis only and cannot
 repair, retry, complete, or reinterpret that historical run. Any scientific
 scale claim requires a fresh campaign under the amended source authority.
 
+#### 2026-08-27 accepted numerical-model amendment — L2 execution order variance
+
+**Why exact total ordering proved too strong.** The 2026-08-21 amendment admits
+a cross-oracle-group permutation only when every changed position sits in one
+contiguous returned FLAT block sharing a single canonical binary32 bit pattern,
+and states that different returned bit patterns remain fail-closed. That
+structural gate was inferred from the one event then available, source 475,
+where the NEON reduction *collapsed* two distances the binary64 oracle still
+separated. It uses "Milvus returned a single value" as the observable proxy for
+"binary32 cannot resolve this pair". The proxy is incomplete. A legal binary32
+reduction can equally *resolve* the pair in the direction opposite to the
+oracle, returning two adjacent, distinct bit patterns carrying transposed IDs.
+The analytical execution model already covers that case on the numbers; only
+the structural gate excluded it. Rule 7 removes the gate and keeps the model.
+
+**Measured evidence.** `exp012-scale10000-v1` window 18, source 3669, recorded
+2026-08-27T15:20:42.023301Z as `SHADOW_TRACE_FAILED` with the single reason
+`STAGE_FAILED:logsim-v2:c2406d0574c1d6695b5030604c2980fe:3669:FLAT`. Oracle and
+FLAT cardinality are both 75, `capped` is false, membership is exactly equal,
+and every position except one adjacent pair is identical:
+
+```
+oracle rank 17: id 3756  score 180.42217994069432  -> binary32 0x43346c14
+oracle rank 18: id  752  score 180.4221929662512   -> binary32 0x43346c15
+FLAT position 17: id  752  returned 0x43346c14
+FLAT position 18: id 3756  returned 0x43346c15
+```
+
+The two oracle scores are one ULP apart, so the pre-amendment rule 5 tie-group
+test separates them and the run is not a returned tie. Both returned values
+nonetheless lie inside `[L, U]` of the oracle score of the ID placed there.
+
+Regenerating DATASET-001 offline from `PCG64(20260801)` reproduces the operands
+independently (recomputed binary64 scores agree with the persisted oracle to
+14 significant digits; the residual is binary64 reduction order, not data).
+Emulating thirteen legal binary32 reduction orders over those operands —
+varying SIMD lane width and independent accumulator count, with exact FMA and
+pairwise `faddp` — yields: one order placing 752 first, four producing an exact
+binary32 tie, and eight placing 3756 first, with computed patterns spanning
+0x43346c11..0x43346c19. **The relative order of the two IDs inverts across
+legal reduction orders.** The oracle's binary64 answer and the returned Milvus
+answer are therefore both legal binary32 outcomes, and neither can be called
+wrong at that precision.
+
+Frequency: one order-variance event in 6600 audited queries across
+`exp012-scale2400-v1`, `exp012-scale2400-v3`, and `exp012-scale10000-v1`
+(p = 1.52e-4). Under the pre-amendment contract a 50-window scale-10000 run had
+probability `(1 - p)^10000` ~= 0.22 of completing, so exact total ordering made
+the experiment predominantly unable to finish for reasons unrelated to
+retrieval correctness.
+
+**Rule 7.** For the governed 128-dimensional L2 contract only, the comparator
+adds the distinct `EXECUTION_ORDER_EQUIVALENT` outcome, reusing `[L, U]` from
+the 2026-08-21 amendment unchanged. The returned result is partitioned into
+maximal contiguous runs whose oracle-rank set is exactly that run's index
+range. A run whose order differs from the oracle passes only when all of:
+
+1. exact capped membership, threshold validity, distinct-ID, and raw metric
+   ordering already pass;
+2. the run's IDs occupy exactly the same contiguous oracle-rank interval, so no
+   ID can cross a position it does not belong to;
+3. every returned score lies in `[L, U]` of the oracle score of the ID actually
+   placed at that position; and
+4. the metric is L2 and the reconstructively verified dimensionality is 128.
+
+No tolerance, epsilon, ULP allowance, sorting, global-set-only agreement,
+capped-member substitution, or noncontiguous movement is introduced. Nothing is
+calibrated to source 3669. Rule 7 is attempted only after every other
+classification has been rejected, and it produces its own kind so that order
+variance stays separately countable as scientific evidence.
+
+**What remains fatal.** Membership or cardinality disagreement; a returned
+score outside any member's analytical interval; noncontiguous or non-local
+movement; distinguishable inversions between separable scores; malformed,
+duplicate, or non-finite evidence; unverified or non-128 dimensionality; and
+COSINE, which retains the original ADR-015 semantics and receives no numerical
+claim here.
+
+**Not a retroactive evidence rewrite.** The window-18 `attempt_events` row, its
+attempt digest, trace-envelope digest, reason codes, and the store hash chain
+are untouched. That window remains `FAILED` under execution source revision
+`1628c9f0f0c22647c3f6f0702c116a54df4d9642`, and the campaign's recorded history
+continues to say so. As with source 475 under the 2026-08-21 amendment, offline
+reclassification of the historical trace is forensic analysis only: it cannot
+repair, retry, complete, or reinterpret that attempt. The amendment governs
+attempts issued under the new source revision and nothing earlier.
+
+**Compatibility and versioning.** The amendment is a *monotone* extension: rule
+7 is reachable only where the comparator would otherwise have returned
+`NON_TIE_ORDER_MISMATCH`, so no previously agreeing outcome can change
+classification. This was verified, not assumed — replaying all 3650 audited
+queries of the completed windows 0..17 through the amended comparator yields
+identical classifications (3644 `EXACT_ORDERED`, 4 `PRECISION_TIE_EQUIVALENT`,
+2 `EXECUTION_TIE_EQUIVALENT`) and zero newly disagreeing queries. The completed
+prefix therefore remains valid under the amended contract, and this campaign
+may continue as a suffix rather than restarting. This is the precise condition
+under which the 2026-08-21 "fresh campaign" requirement does not bind: that
+requirement addressed a run whose recorded verdicts would otherwise have to
+change, which is not the case here. No frozen serialization changes — the stage
+record still persists only a boolean, and the classification is recovered by
+re-running the pure comparator over the durably bound FLAT and oracle evidence,
+which is stronger than storing a derived label that could drift from it.
+
+**Implications for scientific claims.** Membership, cardinality, and every
+recall statistic derived from membership are unaffected and remain exact. What
+narrows is the ordering claim: for governed L2, "correct ordering" now means
+correct up to permutations that binary32 cannot resolve, and any claim about a
+strict rank position must be qualified by the measured order-variance
+frequency. This is a more honest statement of what a binary32 index can
+guarantee than the pre-amendment claim, which attributed to Milvus an ordering
+authority the arithmetic does not support.
+
+**Limitations.** The active `libknowhere` kernel was not disassembled for
+source 3669, and no single emulated order reproduced both live bit patterns
+simultaneously; the order-inversion result above does not depend on
+identifying the exact kernel, and the governed criterion is interval
+containment rather than kernel replication. `[L, U]` is a worst-case analytical
+bound (~7.75e-6 relative, ~65 ULP at score 180); in the observed data only 1 of
+74 adjacent gaps fell inside it, so discrimination stays high, but in a
+sufficiently dense cluster the rule admits correspondingly larger runs. That is
+a property of binary32 arithmetic, not of this rule.
+
 #### Store and failure hardening
 
 The store uses private owner-controlled paths, mode `0600`, regular/single-link
@@ -4649,7 +4771,12 @@ validity; raw returned FLAT metric ordering; distinguishable oracle score-group
 order; permutation legal only inside one exact IEEE-754 binary32 oracle-score
 tie group; and no capped-membership substitution. `NUMERIC_TOLERANCE` (1e-6) is
 threshold-only — it is never applied to a FLAT-score-versus-oracle-score
-comparison, and no direct score-magnitude equality contract exists.
+comparison, and no direct score-magnitude equality contract exists. **Amended:** the
+six-rule enumeration above is the original form and is no longer complete on
+its own. ADR-015's 2026-08-21 and 2026-08-27 numerical-model amendments add the
+`EXECUTION_TIE_EQUIVALENT` and `EXECUTION_ORDER_EQUIVALENT` classes for
+governed 128-dimensional L2. Both are analytical IEEE-754 execution bounds;
+neither introduces a tolerance, and `NUMERIC_TOLERANCE` remains threshold-only.
 
 **11. Canonical serialization is versioned.** `artifacts.canonical_json_bytes`
 is the **frozen v1** historical authority: every registered artifact digest and

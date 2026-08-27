@@ -1,7 +1,10 @@
 """FINDING-002: the governed FLAT/oracle comparator behaves as intended.
 
 Closed as intended behaviour, not as a defect, so these are adversarial tests
-that pin the contract rather than a fix. Each of the six governed rules gets a
+that pin the contract rather than a fix. Rule 7 (execution order variance) was
+admitted later by governed amendment; the three cases that previously pinned
+its absence now pin its exact scope, and each keeps a neighbouring case that
+must still fail. Each of the six governed rules gets a
 case that *should* agree and a neighbouring case that must not, and the last
 group proves `NUMERIC_TOLERANCE` reaches the threshold check only -- never a
 FLAT-score-versus-oracle-score magnitude comparison.
@@ -17,6 +20,7 @@ from vdbench import flat_oracle_agreement
 from vdbench.config import NUMERIC_TOLERANCE, Metric
 from vdbench.flat_oracle_agreement import (
     FlatOracleAgreementKind,
+    FlatOracleAgreementResult,
     compare_flat_oracle_hits,
 )
 from vdbench.milvus import SearchHit
@@ -289,46 +293,82 @@ class L2ExecutionTieTests(unittest.TestCase):
             result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
         )
 
-    def test_noncontiguous_oracle_ranks_cannot_form_execution_tie(self) -> None:
+    def test_noncontiguous_ranks_are_no_tie_block_but_may_be_order_variance(self) -> None:
+        """Structurally not a tie block; admissible only on the rule-7 numbers.
+
+        These three oracle scores lie within one binary32 execution interval at
+        128 dimensions, so binary32 cannot order them at all. The tie-block rule
+        still rejects them -- asserted directly, so the structural guarantee
+        cannot regress -- and rule 7 admits them on the numbers instead.
+        """
+
         oracle = _oracle(((1, 1.0), (2, 1.000001), (3, 1.000002)))
         flat = (
             SearchHit(3, 1.0),
             SearchHit(1, 1.0),
             SearchHit(2, 1.000002),
         )
+        self.assertFalse(
+            flat_oracle_agreement._execution_tie_equivalent(
+                flat_ids=tuple(hit.id for hit in flat),
+                flat_scores=tuple(hit.score for hit in flat),
+                oracle_ids=(1, 2, 3),
+                oracle_score_by_id={1: 1.0, 2: 1.000001, 3: 1.000002},
+                metric=Metric.L2,
+                dimensions=128,
+            )
+        )
+        result = _compare(flat, oracle, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
+        )
+
+    def test_noncontiguous_ranks_with_separable_scores_still_fail(self) -> None:
+        """The same shape, separable scores: rule 7 must not rescue it."""
+
+        oracle = _oracle(((1, 1.0), (2, 2.0), (3, 3.0)))
+        flat = (SearchHit(3, 1.0), SearchHit(1, 2.0), SearchHit(2, 3.0))
         result = _compare(flat, oracle, dimensions=128)
         self.assertIs(
             result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
         )
 
-    def test_different_returned_scores_do_not_create_execution_tie(self) -> None:
+    def test_different_returned_scores_are_execution_order_variance(self) -> None:
+        """Distinct adjacent returned scores are rule 7, never a returned tie."""
+
         first = 182.7277454875737
         second = 182.7277686415395
-        result = _compare(
-            (SearchHit(2, _binary32(first)), SearchHit(1, _binary32(second))),
-            _oracle(((1, first), (2, second))),
-            radius=200.0,
-            dimensions=128,
+        flat = (SearchHit(2, _binary32(first)), SearchHit(1, _binary32(second)))
+        self.assertFalse(
+            flat_oracle_agreement._execution_tie_equivalent(
+                flat_ids=(2, 1),
+                flat_scores=tuple(hit.score for hit in flat),
+                oracle_ids=(1, 2),
+                oracle_score_by_id={1: first, 2: second},
+                metric=Metric.L2,
+                dimensions=128,
+            )
         )
+        result = _compare(flat, _oracle(((1, first), (2, second))),
+                          radius=200.0, dimensions=128)
         self.assertIs(
-            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
         )
 
-    def test_binary64_values_that_only_cast_to_one_f32_are_not_returned_tie(self) -> None:
+    def test_binary64_values_casting_to_one_f32_are_order_variance_not_tie(self) -> None:
+        """One-ULP-apart returned scores: not a returned tie, but rule 7 holds."""
+
         first = 182.7277454875737
         second = 182.7277686415395
         returned = _binary32(first)
-        result = _compare(
-            (
-                SearchHit(2, returned),
-                SearchHit(1, math.nextafter(returned, math.inf)),
-            ),
-            _oracle(((1, first), (2, second))),
-            radius=200.0,
-            dimensions=128,
+        flat = (
+            SearchHit(2, returned),
+            SearchHit(1, math.nextafter(returned, math.inf)),
         )
+        result = _compare(flat, _oracle(((1, first), (2, second))),
+                          radius=200.0, dimensions=128)
         self.assertIs(
-            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
         )
 
     def test_execution_tie_is_unavailable_outside_governed_dimensions(self) -> None:
@@ -454,6 +494,190 @@ class InvalidEvidenceTests(unittest.TestCase):
             result.reason_codes, ("FLAT_ORACLE_EVIDENCE_INVALID",)
         )
 
+
+
+class Rule7ExecutionOrderVarianceTests(unittest.TestCase):
+    """Rule 7: adjacent inversions binary32 cannot resolve.
+
+    The two live cases below are the only order-variance events observed across
+    6600 audited EXP-012 queries. They are reproduced here from the persisted
+    Gate-C evidence as minimal local pairs, so the classifier stays pinned to
+    real measured numbers rather than to synthetic ones.
+    """
+
+    # exp012-scale2400-v1 q475: Milvus collapsed the pair (equal returned
+    # scores) -> rule 5's returned-tie class, unchanged by the amendment.
+    _Q475_ORACLE = ((9017, 182.7277454875737), (8745, 182.7277686415395))
+    _Q475_RETURNED = 182.72775268554688
+
+    # exp012-scale10000-v1 q3669: Milvus resolved the pair the other way
+    # (distinct returned scores, transposed ids) -> rule 7.
+    _Q3669_ORACLE = ((3756, 180.42217994069432), (752, 180.4221929662512))
+    _Q3669_FLAT = ((752, 180.42218017578125), (3756, 180.4221954345703))
+
+    def test_live_q475_remains_a_returned_tie_not_order_variance(self) -> None:
+        flat = tuple(
+            SearchHit(identifier, self._Q475_RETURNED)
+            for identifier in (8745, 9017)
+        )
+        result = _compare(flat, _oracle(self._Q475_ORACLE),
+                          radius=200.0, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT
+        )
+
+    def test_live_q3669_is_execution_order_variance(self) -> None:
+        flat = tuple(
+            SearchHit(identifier, _binary32(score))
+            for identifier, score in self._Q3669_FLAT
+        )
+        result = _compare(flat, _oracle(self._Q3669_ORACLE),
+                          radius=200.0, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
+        )
+        self.assertTrue(result.agrees)
+        self.assertEqual(result.reason_codes, ())
+
+    def test_q3669_membership_mismatch_still_fails(self) -> None:
+        """One ULP apart is irrelevant once membership moves."""
+
+        flat = (
+            SearchHit(999_999, _binary32(180.42218017578125)),
+            SearchHit(3756, _binary32(180.4221954345703)),
+        )
+        result = _compare(flat, _oracle(self._Q3669_ORACLE),
+                          radius=200.0, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.MEMBERSHIP_MISMATCH
+        )
+
+    def test_q3669_cardinality_mismatch_still_fails(self) -> None:
+        flat = (SearchHit(752, _binary32(180.42218017578125)),)
+        result = _compare(flat, _oracle(self._Q3669_ORACLE),
+                          radius=200.0, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.MEMBERSHIP_MISMATCH
+        )
+
+    def test_score_outside_execution_interval_fails(self) -> None:
+        """Ordering stays valid, so only the interval check can reject this."""
+
+        oracle = _oracle(((1, 1.0), (2, 2.0)))
+        flat = (SearchHit(2, 1.0), SearchHit(1, 2.0))
+        result = _compare(flat, oracle, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+
+    def test_multiple_independent_local_inversions_agree(self) -> None:
+        oracle = _oracle(((1, 1.0), (2, 1.000001), (3, 5.0), (4, 5.000001)))
+        flat = (
+            SearchHit(2, 1.0),
+            SearchHit(1, 1.000001),
+            SearchHit(4, 5.0),
+            SearchHit(3, 5.000001),
+        )
+        result = _compare(flat, oracle, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
+        )
+
+    def test_rule_7_does_not_widen_into_general_order_insensitivity(self) -> None:
+        """Separable scores: no permutation of them may ever be admitted."""
+
+        pairs = tuple((index, float(index)) for index in range(1, 9))
+        oracle = _oracle(pairs)
+        shuffled = (8, 3, 6, 1, 7, 2, 5, 4)
+        flat = tuple(
+            SearchHit(identifier, float(position + 1))
+            for position, identifier in enumerate(shuffled)
+        )
+        result = _compare(flat, oracle, radius=100.0, dimensions=128)
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH
+        )
+        self.assertFalse(result.agrees)
+
+    def test_rule_7_requires_governed_l2_dimensions(self) -> None:
+        """Without the governed execution model there is no interval to use."""
+
+        oracle = _oracle(self._Q3669_ORACLE)
+        flat = tuple(
+            SearchHit(identifier, _binary32(score))
+            for identifier, score in self._Q3669_FLAT
+        )
+        for dimensions in (None, 64):
+            with self.subTest(dimensions=dimensions):
+                result = _compare(flat, oracle, radius=200.0,
+                                  dimensions=dimensions)
+                self.assertIs(
+                    result.kind,
+                    FlatOracleAgreementKind.NON_TIE_ORDER_MISMATCH,
+                )
+
+    def test_non_finite_and_malformed_evidence_is_invalid_not_variance(self) -> None:
+        oracle = _oracle(self._Q3669_ORACLE)
+        for score in (math.nan, math.inf, -math.inf):
+            with self.subTest(score=score):
+                flat = (
+                    SearchHit(752, score),
+                    SearchHit(3756, _binary32(180.4221954345703)),
+                )
+                result = _compare(flat, oracle, radius=200.0, dimensions=128)
+                self.assertIs(
+                    result.kind, FlatOracleAgreementKind.INVALID_EVIDENCE
+                )
+                self.assertFalse(result.agrees)
+
+    def test_duplicate_ids_are_invalid_not_variance(self) -> None:
+        flat = (
+            SearchHit(752, _binary32(180.42218017578125)),
+            SearchHit(752, _binary32(180.4221954345703)),
+        )
+        result = _compare(flat, _oracle(self._Q3669_ORACLE),
+                          radius=200.0, dimensions=128)
+        self.assertIs(result.kind, FlatOracleAgreementKind.INVALID_EVIDENCE)
+
+    def test_classification_is_deterministic_and_stably_named(self) -> None:
+        """Replay safety: the kind is reconstructable and its wire name frozen.
+
+        The stage record persists only a boolean, so the classification is
+        recovered by re-running this pure comparator over the durably bound
+        FLAT and oracle evidence. That is only sound if repeated evaluation is
+        identical and the name never drifts.
+        """
+
+        flat = tuple(
+            SearchHit(identifier, _binary32(score))
+            for identifier, score in self._Q3669_FLAT
+        )
+        oracle = _oracle(self._Q3669_ORACLE)
+        first = _compare(flat, oracle, radius=200.0, dimensions=128)
+        second = _compare(flat, oracle, radius=200.0, dimensions=128)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT.value,
+            "EXECUTION_ORDER_EQUIVALENT",
+        )
+
+    def test_every_agreement_kind_is_explicitly_enumerated(self) -> None:
+        """A new kind must never default into agreement unnoticed."""
+
+        agreeing = {
+            kind
+            for kind in FlatOracleAgreementKind
+            if FlatOracleAgreementResult(kind=kind, reason_codes=()).agrees
+        }
+        self.assertEqual(
+            agreeing,
+            {
+                FlatOracleAgreementKind.EXACT_ORDERED,
+                FlatOracleAgreementKind.PRECISION_TIE_EQUIVALENT,
+                FlatOracleAgreementKind.EXECUTION_TIE_EQUIVALENT,
+                FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT,
+            },
+        )
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
