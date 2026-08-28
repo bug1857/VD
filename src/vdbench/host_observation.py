@@ -807,29 +807,60 @@ def _validate_trace(
     queries = tuple(trace.queries)
     if len(queries) != _TRACE_SIZE:
         return "TRACE_QUERY_COUNT_INVALID"
-    if tuple(getattr(query, "query_id", object()) for query in queries) != tuple(
-        observation.request_id for observation in observations
+    if any(
+        type(query.query_id) is not type(observation.request_id)
+        or query.query_id != observation.request_id
+        for query, observation in zip(queries, observations, strict=True)
     ):
         return "TRACE_QUERY_IDS_MISMATCH"
     for query in queries:
-        stages = tuple(getattr(query, "stages", ()))
-        stage_names = {getattr(stage, "stage", None) for stage in stages}
+        stages = tuple(query.stages)
+        stage_values = tuple(_validated_trace_stage(stage) for stage in stages)
+        stage_names = {values[0] for values in stage_values}
         if not {"ORACLE", "FLAT", "SENTINEL_HNSW"}.issubset(stage_names):
             return "TRACE_STAGE_MISSING"
         if any(
-            not bool(getattr(stage, "success", False))
-            or bool(getattr(stage, "timed_out", False))
-            or int(getattr(stage, "threshold_violation_count", 0)) != 0
-            for stage in stages
+            success is not True or timed_out is not False or violation_count != 0
+            for _name, success, timed_out, violation_count, _agreement in stage_values
         ):
             return "TRACE_STAGE_FAILED"
         if any(
-            getattr(stage, "stage", None) == "FLAT"
-            and getattr(stage, "oracle_agreement", None) is not True
-            for stage in stages
+            name == "FLAT" and agreement is not True
+            for name, _success, _timed_out, _violation_count, agreement in stage_values
         ):
             return "TRACE_STAGE_FAILED"
     return None
+
+
+def _validated_trace_stage(
+    stage: object,
+) -> tuple[str, bool, bool, int, bool | None]:
+    """Read one stage contract directly and reject absent/coercible fields.
+
+    This boundary deliberately avoids ``getattr(..., default)`` and scalar
+    coercion. A producer-side field rename or a forged equal-valued value such
+    as ``False`` for integer zero must fail loudly and be normalized by the
+    caller to ``TRACE_VALIDATION_FAILED`` rather than becoming benign evidence.
+    """
+
+    name = stage.stage
+    success = stage.success
+    timed_out = stage.timed_out
+    violation_count = stage.threshold_violation_count
+    agreement = stage.oracle_agreement
+    error_type = stage.error_type
+    if (
+        type(name) is not str
+        or not name
+        or type(success) is not bool
+        or type(timed_out) is not bool
+        or type(violation_count) is not int
+        or violation_count < 0
+        or (agreement is not None and type(agreement) is not bool)
+        or (error_type is not None and type(error_type) is not str)
+    ):
+        raise TypeError("trace stage fields violate their exact contract")
+    return name, success, timed_out, violation_count, agreement
 
 
 def _recover_state(state: HostWorkerState) -> HostWorkerState:

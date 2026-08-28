@@ -369,6 +369,40 @@ class HostObservationTests(unittest.TestCase):
         self.assertIn("TRACE_QUERY_IDS_MISMATCH", result.reason_codes)
         self.assertEqual(publisher.calls, [])
 
+    def test_equal_valued_bool_query_id_cannot_match_integer_identity(self) -> None:
+        recorder = BoundedHostObservationRecorder(max_pending_observations=50)
+        stream = _stream_key()
+        observations = tuple(
+            _observation(request_id, stream_key=stream) for request_id in range(50)
+        )
+        for observation in observations:
+            recorder.offer(observation)
+        trace = _trace(observations)
+        executor = _FakeExecutor()
+        executor.trace_override = replace(
+            trace,
+            queries=(
+                replace(trace.queries[0], query_id=False),
+                *trace.queries[1:],
+            ),
+        )
+        publisher = _FakePublisher()
+        worker = BackgroundShadowWorker(
+            recorder=recorder,
+            executor=executor,
+            publisher=publisher,
+            state_store=InMemoryHostWorkerStateStore(),
+            registered_trace_parameters=_REGISTERED_TRACE_PARAMETERS,
+            max_partial_streams=2,
+            max_observation_age_seconds=60.0,
+            clock=lambda: "2026-08-03T18:00:00Z",
+        )
+
+        result = worker.run_once(max_observations=50)
+
+        self.assertIn("TRACE_QUERY_IDS_MISMATCH", result.reason_codes)
+        self.assertEqual(publisher.calls, [])
+
     def test_known_backpressure_does_not_advance_trace_slot(self) -> None:
         recorder = BoundedHostObservationRecorder(max_pending_observations=50)
         stream = _stream_key()
@@ -465,6 +499,93 @@ class HostObservationTests(unittest.TestCase):
 
         self.assertIn("TRACE_VALIDATION_FAILED", result.reason_codes)
         self.assertEqual(publisher.calls, [])
+
+    def test_trace_stage_contract_rejects_missing_and_equal_valued_wrong_types(self) -> None:
+        stream = _stream_key()
+        observations = tuple(
+            _observation(request_id, stream_key=stream) for request_id in range(50)
+        )
+        canonical = _trace(observations)
+
+        missing_timeout = object.__new__(ShadowAuditStageEvidence)
+        object.__setattr__(missing_timeout, "stage", "ORACLE")
+        object.__setattr__(missing_timeout, "success", True)
+        object.__setattr__(missing_timeout, "threshold_violation_count", 0)
+        object.__setattr__(missing_timeout, "oracle_agreement", None)
+        object.__setattr__(missing_timeout, "error_type", None)
+
+        malformed_stages = (
+            missing_timeout,
+            ShadowAuditStageEvidence("ORACLE", success=1),
+            ShadowAuditStageEvidence("ORACLE", success=True, timed_out=0),
+            ShadowAuditStageEvidence(
+                "ORACLE", success=True, threshold_violation_count=False
+            ),
+            ShadowAuditStageEvidence("FLAT", success=True, oracle_agreement=1),
+        )
+        for case_index, malformed_stage in enumerate(malformed_stages):
+            with self.subTest(case_index=case_index):
+                recorder = BoundedHostObservationRecorder(
+                    max_pending_observations=50
+                )
+                for observation in observations:
+                    recorder.offer(observation)
+                first_query = canonical.queries[0]
+                executor = _FakeExecutor()
+                executor.trace_override = replace(
+                    canonical,
+                    queries=(
+                        replace(
+                            first_query,
+                            stages=(malformed_stage, *first_query.stages[1:]),
+                        ),
+                        *canonical.queries[1:],
+                    ),
+                )
+                publisher = _FakePublisher()
+                worker = BackgroundShadowWorker(
+                    recorder=recorder,
+                    executor=executor,
+                    publisher=publisher,
+                    state_store=InMemoryHostWorkerStateStore(),
+                    registered_trace_parameters=_REGISTERED_TRACE_PARAMETERS,
+                    max_partial_streams=2,
+                    max_observation_age_seconds=60.0,
+                    clock=lambda: "2026-08-03T18:00:00Z",
+                )
+
+                result = worker.run_once(max_observations=50)
+
+                self.assertIn("TRACE_VALIDATION_FAILED", result.reason_codes)
+                self.assertEqual(publisher.calls, [])
+
+    def test_trace_stage_boundary_uses_no_defaulted_getattr(self) -> None:
+        module_path = (
+            Path(__file__).parents[1] / "src" / "vdbench" / "host_observation.py"
+        )
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        boundaries = tuple(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"_validate_trace", "_validated_trace_stage"}
+        )
+        self.assertEqual(
+            {node.name for node in boundaries},
+            {"_validate_trace", "_validated_trace_stage"},
+        )
+        defaulted_stage_getattrs = [
+            node
+            for boundary in boundaries
+            for node in ast.walk(boundary)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 3
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "stage"
+        ]
+        self.assertEqual(defaulted_stage_getattrs, [])
 
     def test_worker_enforces_age_and_partial_stream_limits(self) -> None:
         recorder = BoundedHostObservationRecorder(max_pending_observations=3)
