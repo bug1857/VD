@@ -12,6 +12,7 @@ FLAT-score-versus-oracle-score magnitude comparison.
 
 from __future__ import annotations
 
+import itertools
 import math
 import struct
 import unittest
@@ -681,3 +682,113 @@ class Rule7ExecutionOrderVarianceTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class Rule7ForcedPrecedenceTests(unittest.TestCase):
+    """Rule 7 states a partial order, so pin exactly what it forces.
+
+    The governed interval decides precedence: id i must precede j exactly when
+    U_i < L_j. These tests hunt for an accepted ordering that breaks such a
+    relation -- including cases where every *adjacent* pair overlaps but a
+    non-adjacent pair is forced, which is where a pairwise-only reading of the
+    rule would be unsound if the relation were not transitively closed.
+    """
+
+    _DIMENSIONS = 128
+
+    @staticmethod
+    def _intervals(scores):
+        return {
+            identifier: flat_oracle_agreement._l2_binary32_execution_interval(
+                score, dimensions=128
+            )
+            for identifier, score in scores.items()
+        }
+
+    @classmethod
+    def _forced_pairs(cls, scores):
+        intervals = cls._intervals(scores)
+        return {
+            (first, second)
+            for first in scores
+            for second in scores
+            if first != second and intervals[first][1] < intervals[second][0]
+        }
+
+    # All three overlap pairwise AND transitively: order is unconstrained.
+    _OPEN = {1: 1.0, 2: 1.000005, 3: 1.00001}
+    # Adjacent pairs overlap, but 1 before 3 is forced: the transitivity trap.
+    _TRAP = {1: 1.0, 2: 1.00001, 3: 1.00002}
+    # Every pair forced: only the exact order may be admitted.
+    _SEPARATED = {1: 1.0, 2: 2.0, 3: 3.0}
+
+    def _compare_permutation(self, scores, permutation):
+        ordered = sorted(scores.items(), key=lambda item: item[1])
+        oracle = _oracle(tuple(ordered))
+        ladder = [_binary32(score) for _identifier, score in ordered]
+        flat = tuple(
+            SearchHit(identifier, ladder[index])
+            for index, identifier in enumerate(permutation)
+        )
+        return _compare(flat, oracle, radius=100.0, dimensions=self._DIMENSIONS)
+
+    def test_no_accepted_permutation_violates_a_forced_relation(self) -> None:
+        """The central property: acceptance never breaks forced precedence."""
+
+        for name, scores in (
+            ("open", self._OPEN),
+            ("trap", self._TRAP),
+            ("separated", self._SEPARATED),
+        ):
+            forced = self._forced_pairs(scores)
+            for permutation in itertools.permutations(sorted(scores)):
+                result = self._compare_permutation(scores, permutation)
+                if not result.agrees:
+                    continue
+                position = {
+                    identifier: index for index, identifier in enumerate(permutation)
+                }
+                for first, second in forced:
+                    with self.subTest(case=name, order=permutation,
+                                      forced=(first, second)):
+                        self.assertLess(position[first], position[second])
+
+    def test_transitively_forced_pair_rejects_a_locally_plausible_order(self) -> None:
+        """Every adjacent pair overlaps, yet 3 before 1 must still be refused."""
+
+        forced = self._forced_pairs(self._TRAP)
+        self.assertIn((1, 3), forced)
+        self.assertNotIn((1, 2), forced)
+        self.assertNotIn((2, 3), forced)
+        self.assertFalse(self._compare_permutation(self._TRAP, (3, 2, 1)).agrees)
+
+    def test_fully_overlapping_candidates_admit_reordering(self) -> None:
+        self.assertEqual(self._forced_pairs(self._OPEN), set())
+        result = self._compare_permutation(self._OPEN, (2, 1, 3))
+        self.assertIs(
+            result.kind, FlatOracleAgreementKind.EXECUTION_ORDER_EQUIVALENT
+        )
+
+    def test_separated_candidates_admit_only_the_exact_order(self) -> None:
+        for permutation in itertools.permutations((1, 2, 3)):
+            with self.subTest(order=permutation):
+                result = self._compare_permutation(self._SEPARATED, permutation)
+                if permutation == (1, 2, 3):
+                    self.assertIs(
+                        result.kind, FlatOracleAgreementKind.EXACT_ORDERED
+                    )
+                else:
+                    self.assertFalse(result.agrees)
+
+    def test_rule_7_never_claims_joint_reduction_attainability(self) -> None:
+        """A returned score no legal execution could produce is still refused.
+
+        Rule 7 weakens *ordering*, never value plausibility: each returned
+        score must still lie inside the interval of the id placed there.
+        """
+
+        oracle = _oracle(((1, 1.0), (2, 1.000005)))
+        outside = _binary32(1.0) * (1.0 + 1e-3)
+        flat = (SearchHit(2, _binary32(1.0)), SearchHit(1, outside))
+        result = _compare(flat, oracle, radius=100.0, dimensions=128)
+        self.assertFalse(result.agrees)

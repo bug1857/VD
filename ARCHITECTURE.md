@@ -4509,24 +4509,50 @@ probability `(1 - p)^10000` ~= 0.22 of completing, so exact total ordering made
 the experiment predominantly unable to finish for reasons unrelated to
 retrieval correctness.
 
-**Rule 7.** For the governed 128-dimensional L2 contract only, the comparator
-adds the distinct `EXECUTION_ORDER_EQUIVALENT` outcome, reusing `[L, U]` from
-the 2026-08-21 amendment unchanged. The returned result is partitioned into
-maximal contiguous runs whose oracle-rank set is exactly that run's index
-range. A run whose order differs from the oracle passes only when all of:
+**Rule 7 -- a numerical partial-order contract, not a reconstruction claim.**
+For the governed 128-dimensional L2 contract only, the comparator adds the
+distinct `EXECUTION_ORDER_EQUIVALENT` outcome, reusing `[L, U]` from the
+2026-08-21 amendment unchanged.
+
+The claim it makes is deliberately narrow. `[L, U]` is derived independently
+per candidate, so per-candidate containment does **not** establish that one
+single legal reduction schedule jointly generates the whole returned list, and
+this amendment does not assert that it does. What the interval does establish
+is which precedence relations are *forced*: for candidates `i` and `j`, `i`
+must precede `j` exactly when `U_i < L_j`, because no legal binary32 execution
+can score `j` below `i`. Where intervals overlap, execution precision does not
+determine relative order and either is admissible. The oracle's binary64 order
+never violates a forced relation, since each oracle score lies inside its own
+interval, so this weakens total ordering only and never membership.
+
+A returned result is admitted when all of:
 
 1. exact capped membership, threshold validity, distinct-ID, and raw metric
    ordering already pass;
-2. the run's IDs occupy exactly the same contiguous oracle-rank interval, so no
-   ID can cross a position it does not belong to;
-3. every returned score lies in `[L, U]` of the oracle score of the ID actually
-   placed at that position; and
-4. the metric is L2 and the reconstructively verified dimensionality is 128.
+2. every returned score lies in `[L, U]` of the oracle score of the id placed
+   at that position -- a score outside it is not an ordering question but a
+   value no legal execution produces for that id; and
+3. no pair is inverted against a forced precedence relation.
 
-No tolerance, epsilon, ULP allowance, sorting, global-set-only agreement,
-capped-member substitution, or noncontiguous movement is introduced. Nothing is
+Pairwise checking of (3) is complete, not merely pairwise-sound: the
+constraint set *is* the set of forced pairs, and the relation is transitively
+closed by construction -- `U_i < L_j` and `U_j < L_k` give `U_i < L_j <= U_j <
+L_k`, so `i` before `k` is itself an examined pair. A chain of overlapping
+intervals therefore cannot admit a violation that no single pair exhibits.
+
+Condition (3) is in fact unreachable as a rejection while (2) and the raw
+returned-score ordering check hold: for `p < q` those give `L_p <= s_p <= s_q
+<= U_q`, hence `L_p <= U_q`, the exact negation of a forced inversion. The
+partial order is therefore *proved* satisfied rather than merely tested; the
+explicit check is retained so the contract is stated where it is enforced and
+survives any future relaxation of the ordering check. An exhaustive
+permutation search over fully-overlapping, transitively-forced, and
+well-separated candidate sets finds no accepted ordering that breaks a forced
+relation.
+
+No tolerance, epsilon, or ULP allowance is introduced, and nothing is
 calibrated to source 3669. Rule 7 is attempted only after every other
-classification has been rejected, and it produces its own kind so that order
+classification has been rejected, and it produces its own kind so order
 variance stays separately countable as scientific evidence.
 
 **What remains fatal.** Membership or cardinality disagreement; a returned
@@ -4545,21 +4571,41 @@ reclassification of the historical trace is forensic analysis only: it cannot
 repair, retry, complete, or reinterpret that attempt. The amendment governs
 attempts issued under the new source revision and nothing earlier.
 
-**Compatibility and versioning.** The amendment is a *monotone* extension: rule
-7 is reachable only where the comparator would otherwise have returned
+**Compatibility and versioning.** The amendment is a *monotone* extension:
+rule 7 is reachable only where the comparator would otherwise have returned
 `NON_TIE_ORDER_MISMATCH`, so no previously agreeing outcome can change
-classification. This was verified, not assumed — replaying all 3650 audited
-queries of the completed windows 0..17 through the amended comparator yields
-identical classifications (3644 `EXACT_ORDERED`, 4 `PRECISION_TIE_EQUIVALENT`,
-2 `EXECUTION_TIE_EQUIVALENT`) and zero newly disagreeing queries. The completed
-prefix therefore remains valid under the amended contract, and this campaign
-may continue as a suffix rather than restarting. This is the precise condition
-under which the 2026-08-21 "fresh campaign" requirement does not bind: that
-requirement addressed a run whose recorded verdicts would otherwise have to
-change, which is not the case here. No frozen serialization changes — the stage
-record still persists only a boolean, and the classification is recovered by
-re-running the pure comparator over the durably bound FLAT and oracle evidence,
-which is stronger than storing a derived label that could drift from it.
+classification. This was verified, not assumed. Replaying every audited query
+of the finalized windows 0..17 of `exp012-scale10000-v1` -- **3600** queries,
+being the 72 completed attempts at 50 queries each -- yields identical
+classifications (3594 `EXACT_ORDERED`, 4 `PRECISION_TIE_EQUIVALENT`, 2
+`EXECUTION_TIE_EQUIVALENT`) with zero newly disagreeing queries. An earlier
+draft of this amendment stated 3650; that figure incorrectly included the 50
+queries of window 18's one completed trace, which belongs to an unfinalized
+window and is not part of the completed prefix. Window 18's two traces
+reclassify as 50 `EXACT_ORDERED` (completed trace) and 49 `EXACT_ORDERED` plus
+the single `EXECUTION_ORDER_EQUIVALENT` at source 3669 (failed trace).
+
+No frozen serialization changes -- the stage record still persists only a
+boolean, and the classification is recovered by re-running the pure comparator
+over the durably bound FLAT and oracle evidence, which is stronger than storing
+a derived label that could drift from it.
+
+**`exp012-scale10000-v1` is not continuable, and this amendment does not make
+it so.** An earlier draft claimed the completed prefix could be resumed as a
+suffix; that claim was wrong and is withdrawn. Monotone reclassification makes
+the prefix *valid*, not *resumable*. Window 18 holds a terminally `FAILED`
+attempt, and `attempt_events_transition` refuses any `STARTED` whose
+`attempt_sha256` already exists. The attempt identity payload binds only the
+stream key, `source_revision`, environment manifest digest, window and trace
+index, and the source/query digests -- nothing run-varying, not even
+`execution_source_revision` -- so a re-executed window 18 regenerates the
+identical identity and is refused. Independently,
+`_verified_checkpoint_transition` refuses reconstruction at `post = 18`, since
+the store holds 148 attempt events against the 144 required for eighteen
+completed windows. A scale-10000 result therefore requires a **fresh campaign**
+under the amended source authority, exactly as the 2026-08-21 amendment
+concluded for `exp012-scale2400-v1`. Nothing in the historical campaign is
+altered to record this; this ADR records it.
 
 **Implications for scientific claims.** Membership, cardinality, and every
 recall statistic derived from membership are unaffected and remain exact. What

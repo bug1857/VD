@@ -35,15 +35,18 @@ The governed contract, in full (FINDING-002 -- intended behaviour, not a bug):
    only covers a run Milvus returned as one binary32 tie -- it *collapsed* a
    distinction the oracle drew.  The same physical event also appears with the
    pair *resolved the other way*: adjacent, distinct returned binary32 scores
-   carrying transposed ids.  Rule 7 admits that case under the identical
-   analytical model.  The result is partitioned into maximal contiguous runs
-   whose oracle-rank set is exactly that run's index range, and a reordered run
-   is admissible only if every returned score lies inside the formula-derived
-   binary32 execution interval of the oracle score of the id placed there.
-   Membership and cardinality stay exact; a displacement can never cross a
-   position it does not belong to; nothing is fitted to observed evidence.
-   Order variance is reported as its own kind so it stays separately countable
-   as scientific evidence rather than being absorbed into EXACT_ORDERED.
+   carrying transposed ids.  Rule 7 admits that case as a numerical
+   partial-order contract.  The analytical interval decides which precedence
+   relations are *forced*: id `i` must precede `j` exactly when `U_i < L_j`.
+   A returned order is admissible when every returned score lies inside the
+   execution interval of the id placed there, and no pair is inverted against
+   a forced relation.  Rule 7 does NOT assert that one particular reduction
+   schedule generated the returned list -- independently derived per-candidate
+   intervals cannot support that claim -- only that the governed numerical
+   model cannot establish a stricter total order.  Membership and cardinality
+   stay exact, nothing is fitted to observed evidence, and order variance is
+   reported as its own kind so it stays separately countable as scientific
+   evidence rather than being absorbed into EXACT_ORDERED.
 
 `NUMERIC_TOLERANCE` (1e-6) is THRESHOLD-ONLY.  It is passed to
 `oracle.threshold_violations` so a score sitting exactly on the radius is not
@@ -267,57 +270,79 @@ def _execution_order_equivalent(
     metric: Metric,
     dimensions: int | None,
 ) -> bool:
-    """Return whether every inversion is one proved L2 execution order variance.
+    """Return whether the returned order violates no *forced* precedence.
 
-    Generalizes `_execution_tie_equivalent` from the case where Milvus
-    *collapsed* a distinction the oracle drew (equal returned binary32 scores)
-    to the case where it *resolved* one in the opposite direction (adjacent but
-    distinct returned scores).  Both are the same physical event: the true
-    order is not recoverable at binary32 precision.
+    This is a numerical partial-order contract, and deliberately not a claim
+    that some single reduction schedule generated the whole returned list.
+    Per-candidate interval containment would not support that stronger claim:
+    each candidate's interval is derived independently, so containment for
+    every position does not establish that one legal execution order attains
+    all of those values jointly.
 
-    The result is partitioned into maximal contiguous runs whose oracle-rank
-    set is exactly that run's index range, so a displacement can never move an
-    id past a position it does not belong to.  A run whose order changed is
-    admissible only if every returned score lies inside the analytical
-    IEEE-754 execution interval of the oracle score of the id actually placed
-    there -- i.e. some legal binary32 reduction order produces exactly this
-    result.  The interval is the same formula-derived bound used for execution
-    ties; no tolerance is introduced and nothing is fitted to observed
-    evidence.  Ids and membership are already exact by the time this runs.
+    What the analytical interval does establish is which precedence relations
+    are forced.  For candidates ``i`` and ``j`` with governed execution
+    intervals ``[L_i, U_i]`` and ``[L_j, U_j]``, ``i`` must precede ``j``
+    exactly when ``U_i < L_j``: no legal binary32 execution can score ``j``
+    below ``i``.  When the intervals overlap, execution precision does not
+    determine their relative order and either is admissible.  The oracle's own
+    binary64 order never violates a forced relation, because each oracle score
+    lies inside its own interval, so this is a strict weakening of total
+    ordering and never of membership.
+
+    Two conditions are required, and both are checked over the whole returned
+    list rather than over a locality heuristic:
+
+    1. every returned score is attainable for the id placed at that position,
+       i.e. it lies inside that id's own execution interval -- a score outside
+       it is not an ordering question but a value no legal execution produces;
+    2. no pair is inverted against a forced precedence relation.
+
+    Checking (2) pairwise is complete rather than merely pairwise-sound: the
+    constraint set *is* the set of forced pairs, and the relation is already
+    transitively closed by construction -- if ``U_i < L_j`` and ``U_j < L_k``
+    then ``U_i < L_j <= U_j < L_k``, so ``i`` before ``k`` is forced and is
+    itself one of the pairs examined.  A chain of overlapping intervals
+    therefore cannot smuggle in a violation that no single pair exhibits.
+
+    Condition (2) is in fact unreachable as a rejection while condition (1)
+    and the module's raw returned-score ordering check both hold, and that is
+    the point: for ``p < q`` those two give ``L_p <= s_p <= s_q <= U_q``, hence
+    ``L_p <= U_q``, which is exactly the negation of a forced inversion.  The
+    partial order is therefore *proved* satisfied rather than merely tested.
+    The explicit loop is retained so the contract is stated where it is
+    enforced, and so the guarantee survives any future relaxation of the
+    ordering check rather than silently depending on it.
+
+    Membership and cardinality are already exact by the time this runs, and
+    nothing here is fitted to observed evidence.
     """
 
     if metric is not Metric.L2 or dimensions != _GOVERNED_L2_DIMENSIONS:
         return False
-    oracle_rank = {identifier: rank for rank, identifier in enumerate(oracle_ids)}
-    changed = False
-    position = 0
-    while position < len(flat_ids):
-        stop = position
-        highest = -1
-        while stop < len(flat_ids):
-            highest = max(highest, oracle_rank[flat_ids[stop]])
-            stop += 1
-            if highest == stop - 1:
-                break
-        if highest != stop - 1:
+    if flat_ids == oracle_ids:
+        return False
+    intervals: dict[int, tuple[float, float]] = {}
+    for identifier in oracle_ids:
+        try:
+            intervals[identifier] = _l2_binary32_execution_interval(
+                oracle_score_by_id[identifier], dimensions=dimensions
+            )
+        except ValueError:
             return False
 
-        block_ids = flat_ids[position:stop]
-        if block_ids == oracle_ids[position:stop]:
-            position = stop
-            continue
-        changed = True
-        for offset, identifier in enumerate(block_ids):
-            try:
-                lower, upper = _l2_binary32_execution_interval(
-                    oracle_score_by_id[identifier], dimensions=dimensions
-                )
-            except ValueError:
+    for position, identifier in enumerate(flat_ids):
+        lower, upper = intervals[identifier]
+        if not lower <= flat_scores[position] <= upper:
+            return False
+
+    for earlier in range(len(flat_ids)):
+        earlier_lower = intervals[flat_ids[earlier]][0]
+        for later in range(earlier + 1, len(flat_ids)):
+            # The id placed later would have to outrank the id placed earlier
+            # under every legal execution; returning it second is impossible.
+            if intervals[flat_ids[later]][1] < earlier_lower:
                 return False
-            if not lower <= flat_scores[position + offset] <= upper:
-                return False
-        position = stop
-    return changed
+    return True
 
 
 def compare_flat_oracle_hits(
