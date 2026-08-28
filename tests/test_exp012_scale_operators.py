@@ -28,7 +28,11 @@ from vdbench.exp010_serving_configuration import (
     Exp010ServingConfiguration,
     derive_serving_configuration_identity,
 )
-from vdbench.exp012_scale_contract import Exp012ScaleProfile, build_exp012_scale_contract
+from vdbench.exp012_scale_contract import (
+    Exp012ScaleProfile,
+    build_exp012_scale_contract,
+    exp012_scale_contract_payload,
+)
 from vdbench.exp012_scale_gate_b_operator import (
     EXP012_GATE_B_PLAN_SCHEMA_VERSION,
     _FIELDS as GATE_B_FIELDS,
@@ -40,6 +44,7 @@ from vdbench.exp012_scale_gate_c_operator import (
     EXP012_GATE_C_PLAN_SCHEMA_VERSION,
     _FIELDS as GATE_C_FIELDS,
     Exp012ScaleGateCOperands,
+    Exp012ScaleGateCOperatorError,
     build_gate_c_plan,
     run_gate_c_checkpoint,
     run_gate_c_checkpoint_v3,
@@ -49,6 +54,7 @@ from vdbench.gate_c_bounded_execution import (
     GateCBoundedExecutionError,
     GateCWindowExecutionBound,
     build_gate_c_bounded_execution_envelope_v2,
+    build_gate_c_bounded_execution_envelope_v3,
     build_gate_c_canonical_state,
     build_gate_c_window_checkpoint_effect,
     gate_c_bounded_execution_envelope_document_v2,
@@ -68,6 +74,7 @@ from vdbench.shadow_search_telemetry import (
     SQLiteShadowSearchTelemetryStore,
     ShadowSearchOutcome,
     ShadowSearchRole,
+    ShadowSearchTelemetryError,
 )
 from vdbench.shadow_window import TRACE_QUERY_COUNT, WINDOW_QUERY_COUNT
 
@@ -271,11 +278,13 @@ def _governed_drift_attestation(envelope):
     )
 
 
-def _canonical_checkpoint_operands(root: Path) -> Exp012ScaleGateCOperands:
+def _canonical_checkpoint_operands(
+    root: Path, *, profile: Exp012ScaleProfile = Exp012ScaleProfile.SCALE_10000
+) -> Exp012ScaleGateCOperands:
     """Point the scale wrapper at the real offline runner stores."""
 
     return Exp012ScaleGateCOperands(
-        contract=build_exp012_scale_contract(Exp012ScaleProfile.SCALE_10000),
+        contract=build_exp012_scale_contract(profile),
         base=Exp010GateCOperands(
             stream_id="v2-live",
             metric=Metric.L2,
@@ -2505,6 +2514,777 @@ class Exp012ScaleOperatorTests(unittest.TestCase):
             run_gate_c_checkpoint(operands, {"ignored": True})
         execute.assert_not_called()
 
+
+# --------------------------------------------------------------------------
+# Bounded mid-batch recovery admission (F1 regression).
+#
+# `_plan_at_checkpoint_start` used to carry its own two-point membership guard
+# (`{start, expected_next}`) while `_verified_checkpoint_transition` had
+# already been widened to the closed interval.  Because the planning guard runs
+# first -- inside `_verify_current_checkpoint_envelope_v3`, the very first
+# statement of `run_gate_c_checkpoint_v3` -- every interior recovery position
+# was refused before the mid-batch branch could run, and the pre-existing
+# mid-batch tests could not see it because they patch that verification layer
+# out.  These tests therefore drive the REAL entry path and never patch
+# `_verify_current_checkpoint_envelope_v3` or `_plan_at_checkpoint_start`.
+# --------------------------------------------------------------------------
+
+
+_RECOVERY_PLAN_DOMAIN = b"VD::EXP012_SCALE_GATE_C_PLAN::V1\x00"
+
+
+def _recovery_plan(contract, *, next_window_sequence: int) -> dict[str, object]:
+    """One genuine-shaped `build_gate_c_plan` output at a given durable position.
+
+    The shape (and every identity field) matches the real operator plan, so
+    `_plan_at_checkpoint_start` normalization and the envelope's `plan_sha256`
+    reconstruction are exercised exactly as production does them.
+    """
+
+    windows = contract.expected_windows
+    current = next_window_sequence
+    plan: dict[str, object] = {
+        "schema_version": EXP012_GATE_C_PLAN_SCHEMA_VERSION,
+        "experiment_id": "EXP-012-SCALE",
+        "scale_contract": exp012_scale_contract_payload(contract),
+        "scale_contract_sha256": contract.contract_sha256,
+        "canonical_entrypoint": (
+            "vdbench.exp010_live_runner.Exp010LiveRunner.process_ready_windows"
+        ),
+        "canonical_composition": "vdbench.exp010_v2_host.Exp010V2HostComposition",
+        "canonical_capture_executor": (
+            "vdbench.v2_milvus_shadow_capture.V2MilvusShadowCaptureExecutor"
+        ),
+        "stream": {
+            "stream_id": "stream", "metric": "L2",
+            "threshold_stratum": "target-075",
+            "configuration_identity": "cfg", "data_identity": "data",
+            "flat_binding_id": "flat", "hnsw_binding_id": "hnsw",
+        },
+        "source_revision": "3" * 40,
+        "environment_manifest_sha256": "e" * 64,
+        "gate_a_authority": {"evidence_sha256": "a" * 64},
+        "detector_seed": 20260813,
+        "serving": {
+            "threshold_radius": 2.0, "range_filter": 0.0, "limit": 100,
+            "served_ef": 400, "dimensions": 128, "consistency_level": "Strong",
+        },
+        "milvus": {"uri": "http://milvus.invalid:19530"},
+        "stores": {"root": "/tmp/campaign/stores", "files": []},
+        "telemetry_path": "/tmp/campaign/stores/telemetry.sqlite3",
+        "dataset001_dir": "/dataset",
+        "observed": {
+            "shadow_acknowledged_count": current * WINDOW_QUERY_COUNT,
+            "complete_source_windows": windows,
+            "next_window_sequence": current,
+            "windows_pending": windows - current,
+            "source_count": contract.target_source_records,
+        },
+        "projected_physical_work": {
+            "traces_per_window": 4,
+            "sources_per_window": WINDOW_QUERY_COUNT,
+            "flat_searches": (windows - current) * WINDOW_QUERY_COUNT,
+            "hnsw_sentinel_searches": (windows - current) * WINDOW_QUERY_COUNT,
+        },
+        "physical_searches_issued_by_preflight": 0,
+        "serve_calls_issued_by_gate_c": 0,
+    }
+    plan["plan_sha256"] = strict_canonical_digest(_RECOVERY_PLAN_DOMAIN, plan)
+    return plan
+
+
+def _recovery_fixture(*, start: int, count: int, profile=Exp012ScaleProfile.SCALE_10000):
+    """One real v3 envelope built from a genuine-shaped preparation plan."""
+
+    contract = build_exp012_scale_contract(profile)
+    _plan, campaign, head, sources, reference = _bounded_fixture_v3(
+        start=start, count=count, target_profile=profile
+    )
+    bound = GateCWindowExecutionBound(start, count)
+    prepared = gate_c_scale_operator._plan_at_checkpoint_start(
+        _recovery_plan(contract, next_window_sequence=start), bound
+    )
+    envelope = build_gate_c_bounded_execution_envelope_v3(
+        plan=prepared,
+        campaign_binding=campaign,
+        source_head=head,
+        sources=sources,
+        execution_bound=bound,
+        execution_source_revision="5" * 40,
+        execution_environment_attestation=(
+            reference.execution_environment_attestation
+        ),
+    )
+    return contract, campaign, head, sources, envelope
+
+
+class _CheckpointLockStub:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+
+class _TelemetryStoreStub(_CheckpointLockStub):
+    pass
+
+
+class _StartedLedgerStub:
+    """A V3 ledger already holding STARTED for exactly this envelope."""
+
+    envelope = None
+    started = 0
+    completed = None
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def unfinished(self):
+        return SimpleNamespace(envelope=type(self).envelope)
+
+    def state(self, _envelope):
+        return SimpleNamespace(
+            envelope=type(self).envelope, terminal_event_sha256=None
+        )
+
+    def start(self, *_args, **_kwargs):
+        type(self).started += 1
+        return self.state(None)
+
+    def complete(self, _envelope, *, checkpoint_result, **_kwargs):
+        type(self).completed = checkpoint_result
+
+
+class _SuffixReached(Exception):
+    """Sentinel raised at the physical seam to capture the derived suffix."""
+
+
+class Exp012ScaleGateCBoundedRecoveryAdmissionTests(unittest.TestCase):
+    maxDiff = None
+
+    # -- A/E: the exact guard that refused every interior position ---------
+
+    def test_planning_guard_admits_exactly_the_closed_bounded_interval(self) -> None:
+        contract = build_exp012_scale_contract(Exp012ScaleProfile.SCALE_10000)
+        for start, count in ((0, 50), (5, 4), (49, 1)):
+            bound = GateCWindowExecutionBound(start, count)
+            expected_next = bound.expected_next_window_sequence
+            admitted = []
+            for current in range(-1, expected_next + 3):
+                plan = _recovery_plan(contract, next_window_sequence=current)
+                try:
+                    gate_c_scale_operator._plan_at_checkpoint_start(plan, bound)
+                except Exp012ScaleGateCOperatorError as exc:
+                    self.assertEqual(
+                        exc.code, "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID"
+                    )
+                    continue
+                admitted.append(current)
+            self.assertEqual(
+                admitted,
+                list(range(start, expected_next + 1)),
+                f"bound start={start} count={count}",
+            )
+
+    def test_planning_guard_refuses_negative_and_non_integer_progress(self) -> None:
+        contract = build_exp012_scale_contract(Exp012ScaleProfile.SCALE_10000)
+        bound = GateCWindowExecutionBound(0, 50)
+        for current in (-1, -50, 51, 100, True, False, 1.0, "1", None):
+            with self.subTest(current=current):
+                plan = _recovery_plan(contract, next_window_sequence=0)
+                plan["observed"]["next_window_sequence"] = current
+                with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                    gate_c_scale_operator._plan_at_checkpoint_start(plan, bound)
+                self.assertEqual(
+                    caught.exception.code,
+                    "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID",
+                )
+
+    def test_planning_guard_requires_acknowledgement_to_match_claimed_progress(
+        self,
+    ) -> None:
+        """Progress cannot be asserted past the durable acknowledgement prefix."""
+
+        contract = build_exp012_scale_contract(Exp012ScaleProfile.SCALE_10000)
+        bound = GateCWindowExecutionBound(0, 50)
+        for current in (1, 17, 49):
+            with self.subTest(current=current):
+                plan = _recovery_plan(contract, next_window_sequence=current)
+                plan["observed"]["shadow_acknowledged_count"] -= 1
+                with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                    gate_c_scale_operator._plan_at_checkpoint_start(plan, bound)
+                self.assertEqual(
+                    caught.exception.code,
+                    "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID",
+                )
+
+    def test_every_recovery_position_normalizes_to_one_original_plan(self) -> None:
+        """The SAME original envelope must verify at every recovery position."""
+
+        contract = build_exp012_scale_contract(Exp012ScaleProfile.SCALE_10000)
+        bound = GateCWindowExecutionBound(0, 50)
+        normalized = [
+            gate_c_scale_operator._plan_at_checkpoint_start(
+                _recovery_plan(contract, next_window_sequence=current), bound
+            )
+            for current in range(0, 51)
+        ]
+        self.assertEqual(len(normalized), 51)
+        for candidate in normalized[1:]:
+            self.assertEqual(candidate, normalized[0])
+        self.assertEqual(
+            {item["plan_sha256"] for item in normalized},
+            {normalized[0]["plan_sha256"]},
+        )
+        self.assertEqual(normalized[0]["observed"]["next_window_sequence"], 0)
+        self.assertEqual(
+            normalized[0]["projected_physical_work"]["flat_searches"],
+            50 * WINDOW_QUERY_COUNT,
+        )
+
+    # -- The REAL production entry path, never patching the verifier --------
+
+    def _leaf_io(self, contract, *, current, campaign, head, sources):
+        """Patch only store/Docker/git leaves.
+
+        `_verify_current_checkpoint_envelope_v3`, `_plan_at_checkpoint_start`
+        and `verify_gate_c_bounded_execution_envelope_v3` stay real: they are
+        the layer the previous mid-batch tests replaced, and the layer that
+        actually refused every interior recovery position.
+        """
+
+        return (
+            mock.patch.object(
+                gate_c_scale_operator,
+                "build_gate_c_plan",
+                return_value=_recovery_plan(contract, next_window_sequence=current),
+            ),
+            mock.patch.object(
+                gate_c_scale_operator, "_telemetry_binding", return_value=object()
+            ),
+            mock.patch.object(
+                gate_c_scale_operator,
+                "_verified_sources_and_head",
+                return_value=(sources, head),
+            ),
+            mock.patch.object(
+                gate_c_scale_operator, "_campaign_binding", return_value=campaign
+            ),
+            mock.patch.object(
+                gate_c_scale_operator,
+                "derive_gate_c_execution_source",
+                return_value=VerifiedGateCExecutionSource(
+                    Path("/repository"), "5" * 40
+                ),
+            ),
+            mock.patch.object(
+                gate_c_scale_operator, "_require_current_gate_a_binding_authority"
+            ),
+        )
+
+    def test_real_envelope_verification_accepts_every_bounded_position(self) -> None:
+        """B: every k=0..50 of the real 0..49 bound reaches the recovery branch."""
+
+        contract, campaign, head, sources, envelope = _recovery_fixture(
+            start=0, count=50
+        )
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        document = gate_c_bounded_execution_envelope_document_v3(envelope)
+        admitted = []
+        for current in range(0, 51):
+            patches = self._leaf_io(
+                contract,
+                current=current,
+                campaign=campaign,
+                head=head,
+                sources=sources,
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+                verified, plan, resolved = (
+                    gate_c_scale_operator._verify_current_checkpoint_envelope_v3(
+                        operands, document
+                    )
+                )
+            # The SAME original envelope, unchanged authority, at every position.
+            self.assertEqual(verified.envelope_sha256, envelope.envelope_sha256)
+            self.assertEqual(verified.plan_sha256, envelope.plan_sha256)
+            self.assertEqual(
+                verified.execution_bound.allowed_window_sequences,
+                tuple(range(0, 50)),
+            )
+            self.assertEqual(
+                verified.execution_bound.expected_next_window_sequence, 50
+            )
+            self.assertEqual(plan["observed"]["next_window_sequence"], current)
+            self.assertIs(resolved, sources)
+            admitted.append(current)
+        self.assertEqual(admitted, list(range(0, 51)))
+
+    def test_real_envelope_verification_refuses_progress_outside_the_bound(
+        self,
+    ) -> None:
+        """E: k<start and k>expected_next stay refused at the real entry."""
+
+        contract, campaign, head, sources, envelope = _recovery_fixture(
+            start=0, count=50
+        )
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        document = gate_c_bounded_execution_envelope_document_v3(envelope)
+        for current in (-1, 51, 60):
+            with self.subTest(current=current):
+                patches = self._leaf_io(
+                    contract,
+                    current=current,
+                    campaign=campaign,
+                    head=head,
+                    sources=sources,
+                )
+                with patches[0], patches[1], patches[2], patches[3], patches[4], patches[
+                    5
+                ], self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                    gate_c_scale_operator._verify_current_checkpoint_envelope_v3(
+                        operands, document
+                    )
+                self.assertEqual(
+                    caught.exception.code,
+                    "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID",
+                )
+
+    def _run_checkpoint_capturing_suffix(
+        self, operands, contract, *, current, campaign, head, sources, envelope,
+        transition,
+    ):
+        """Drive the real `run_gate_c_checkpoint_v3` up to the physical seam."""
+
+        document = gate_c_bounded_execution_envelope_document_v3(envelope)
+        _StartedLedgerStub.envelope = envelope
+        _StartedLedgerStub.started = 0
+        _StartedLedgerStub.completed = None
+        captured: list[GateCWindowExecutionBound] = []
+
+        def execute(*_args, **kwargs):
+            captured.append(kwargs["execution_bound"])
+            raise _SuffixReached
+
+        patches = self._leaf_io(
+            contract, current=current, campaign=campaign, head=head, sources=sources
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[
+            5
+        ], mock.patch.object(
+            gate_c_scale_operator,
+            "_verified_checkpoint_transition",
+            side_effect=transition,
+        ), mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _CheckpointLockStub
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "SQLiteGateCCheckpointLedgerV3",
+            _StartedLedgerStub,
+        ), mock.patch.object(
+            gate_c_scale_operator,
+            "SQLiteShadowSearchTelemetryStore",
+            _TelemetryStoreStub,
+        ), mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli", side_effect=execute
+        ):
+            raised = None
+            try:
+                run_gate_c_checkpoint_v3(
+                    operands,
+                    document,
+                    runtime_observer=lambda *_a, **_k: (
+                        envelope.execution_environment_attestation
+                    ),
+                )
+            except _SuffixReached:
+                pass
+            except Exception as exc:  # noqa: BLE001 - surfaced to the assertion
+                raised = exc
+        return captured, raised
+
+    def test_real_entry_path_derives_exact_suffix_for_every_position(self) -> None:
+        """B: k=1..49 recovers under the SAME envelope with suffix k..49."""
+
+        contract, campaign, head, sources, envelope = _recovery_fixture(
+            start=0, count=50
+        )
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+
+        for current in range(0, 50):
+            with self.subTest(current=current):
+                def transition(*_args, current_sequence, **_kwargs):
+                    # Canonical-shaped durable effects for exactly 0..current-1.
+                    effects = tuple(
+                        {"effect_payload": {"window_sequence": sequence}}
+                        for sequence in range(current_sequence)
+                    )
+                    return (
+                        {"state_payload": {"next_window_sequence": 0}},
+                        {"state_payload": {"next_window_sequence": current_sequence}},
+                        effects,
+                    )
+
+                captured, raised = self._run_checkpoint_capturing_suffix(
+                    operands,
+                    contract,
+                    current=current,
+                    campaign=campaign,
+                    head=head,
+                    sources=sources,
+                    envelope=envelope,
+                    transition=transition,
+                )
+                self.assertIsNone(raised)
+                self.assertEqual(len(captured), 1)
+                bound = captured[0]
+                # exact derived suffix, no replay of the completed prefix
+                self.assertEqual(
+                    bound.allowed_window_sequences, tuple(range(current, 50))
+                )
+                self.assertEqual(bound.start_window_sequence, current)
+                # the original authority is never widened or shortened
+                self.assertEqual(bound.expected_next_window_sequence, 50)
+                self.assertEqual(bound.window_count, 50 - current)
+                # no already-completed window may appear in the derived suffix
+                self.assertEqual(
+                    set(bound.allowed_window_sequences) & set(range(current)),
+                    set(),
+                )
+                # a fresh start is the only position that may open a checkpoint
+                self.assertEqual(_StartedLedgerStub.started, 0)
+
+    def test_real_entry_path_completion_only_issues_zero_searches(self) -> None:
+        """C: k=50 completes the original envelope without any physical search."""
+
+        contract, campaign, head, sources, envelope = _recovery_fixture(
+            start=0, count=50
+        )
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        pre, post, effect = _checkpoint_transition_fixture()
+        effects = tuple(
+            {"effect_payload": {"window_sequence": sequence}} for sequence in range(50)
+        )
+
+        def transition(*_args, current_sequence, **_kwargs):
+            self.assertEqual(current_sequence, 50)
+            return pre, post, effects
+
+        captured, raised = self._run_checkpoint_capturing_suffix(
+            operands,
+            contract,
+            current=50,
+            campaign=campaign,
+            head=head,
+            sources=sources,
+            envelope=envelope,
+            transition=transition,
+        )
+        # completion-only never reaches the physical seam; it fails later only
+        # because this stub supplies non-canonical result operands.
+        self.assertEqual(captured, [])
+        self.assertEqual(_StartedLedgerStub.started, 0)
+        self.assertIsNotNone(raised)
+
+    def test_real_entry_path_mid_batch_requires_the_original_started_checkpoint(
+        self,
+    ) -> None:
+        """A mid-batch position cannot start a fresh checkpoint for itself."""
+
+        contract, campaign, head, sources, envelope = _recovery_fixture(
+            start=0, count=50
+        )
+        operands = _base_c(Exp012ScaleProfile.SCALE_10000)
+        document = gate_c_bounded_execution_envelope_document_v3(envelope)
+
+        class _EmptyLedger(_StartedLedgerStub):
+            def unfinished(self):
+                return None
+
+            def state(self, _envelope):
+                return None
+
+        _EmptyLedger.envelope = envelope
+        patches = self._leaf_io(
+            contract, current=7, campaign=campaign, head=head, sources=sources
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[
+            5
+        ], mock.patch.object(
+            gate_c_scale_operator, "GateCCampaignCheckpointLock", _CheckpointLockStub
+        ), mock.patch.object(
+            gate_c_scale_operator, "SQLiteGateCCheckpointLedgerV3", _EmptyLedger
+        ), mock.patch.object(
+            gate_c_scale_operator, "_verified_checkpoint_transition"
+        ) as transition, mock.patch.object(
+            gate_c_scale_operator, "run_gate_c_execute_from_cli"
+        ) as execute, self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+            run_gate_c_checkpoint_v3(
+                operands,
+                document,
+                runtime_observer=lambda *_a, **_k: (
+                    envelope.execution_environment_attestation
+                ),
+            )
+        self.assertEqual(
+            caught.exception.code, "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID"
+        )
+        transition.assert_not_called()
+        execute.assert_not_called()
+
+
+class _FailingShadowCapture:
+    """Real capture for every window except one, which fails durably."""
+
+    def __init__(self, delegate, *, failing_window: int) -> None:
+        self._delegate = delegate
+        self._failing_window = failing_window
+        self.calls = 0
+
+    def capture(self, sources, *, trace_sequence_index: int):
+        self.calls += 1
+        if sources[0].window_sequence == self._failing_window:
+            raise RuntimeError("injected capture failure")
+        return self._delegate.capture(
+            sources, trace_sequence_index=trace_sequence_index
+        )
+
+
+class Exp012ScaleGateCRealDurablePrefixTests(unittest.TestCase):
+    """Recovery admission against genuine canonical durable store state."""
+
+    WINDOWS = 4
+    PROFILE = Exp012ScaleProfile.SCALE_2400
+
+    def _store(self, root: Path):
+        operands = _canonical_checkpoint_operands(root, profile=self.PROFILE)
+        harness = _Harness(root)
+        try:
+            harness.serve_many(WINDOW_QUERY_COUNT * self.WINDOWS)
+            sources = harness.runner.composition.response_store.poll(
+                consumer_id="recovery-probe",
+                limit=WINDOW_QUERY_COUNT * self.WINDOWS,
+            )
+        finally:
+            harness.close()
+        return operands, sources
+
+    def _advance_one_window(self, root: Path, operands, sources, window: int) -> None:
+        harness = _Harness(root)
+        try:
+            harness.runner.process_ready_windows(
+                execution_bound=GateCWindowExecutionBound(window, 1)
+            )
+        finally:
+            harness.close()
+        _append_checkpoint_telemetry(
+            operands, sources, start_window_sequence=window, window_count=1
+        )
+
+    def test_real_durable_prefix_admits_every_position_and_refuses_false_claims(
+        self,
+    ) -> None:
+        """B + D: every k is proved against real canonical durable effects."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            operands, sources = self._store(root)
+            *_unused, envelope = _bounded_fixture_v3(
+                start=0, count=self.WINDOWS, target_profile=self.PROFILE
+            )
+            bound = envelope.execution_bound
+            self.assertEqual(
+                bound.allowed_window_sequences, tuple(range(self.WINDOWS))
+            )
+
+            # D: at genuine zero state no mid-batch position may be asserted.
+            for current in range(1, self.WINDOWS):
+                with self.subTest(zero_state=current):
+                    with self.assertRaises(
+                        Exp012ScaleGateCOperatorError
+                    ) as caught:
+                        gate_c_scale_operator._verified_v3_recovery_suffix(
+                            operands, envelope, sources, current_sequence=current
+                        )
+                    self.assertEqual(
+                        caught.exception.code,
+                        "EXP012_GATE_C_CHECKPOINT_FINALIZATION_SUFFIX_INVALID",
+                    )
+
+            # B: one forward pass instantiating every valid position.
+            for current in range(1, self.WINDOWS):
+                self._advance_one_window(root, operands, sources, current - 1)
+                pre, remaining = (
+                    gate_c_scale_operator._verified_v3_recovery_suffix(
+                        operands, envelope, sources, current_sequence=current
+                    )
+                )
+                # exact prefix 0..current-1 reconstructed from durable effects
+                self.assertEqual(
+                    pre["state_payload"]["next_window_sequence"], 0
+                )
+                # derived suffix is exactly current..WINDOWS-1, never a replay
+                self.assertEqual(
+                    remaining.allowed_window_sequences,
+                    tuple(range(current, self.WINDOWS)),
+                )
+                self.assertEqual(
+                    remaining.expected_next_window_sequence, self.WINDOWS
+                )
+
+                # G: a position behind the durable finalization head is refused.
+                with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                    gate_c_scale_operator._verified_v3_recovery_suffix(
+                        operands, envelope, sources, current_sequence=current - 1
+                    )
+                self.assertEqual(
+                    caught.exception.code,
+                    "EXP012_GATE_C_CHECKPOINT_FINALIZATION_SUFFIX_INVALID",
+                )
+                # ...and so is a position ahead of it.
+                with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                    gate_c_scale_operator._verified_v3_recovery_suffix(
+                        operands, envelope, sources, current_sequence=current + 1
+                    )
+                self.assertEqual(
+                    caught.exception.code,
+                    "EXP012_GATE_C_CHECKPOINT_FINALIZATION_SUFFIX_INVALID",
+                )
+
+            # C: completion-only reconstruction of the whole original bound.
+            self._advance_one_window(root, operands, sources, self.WINDOWS - 1)
+            pre, post, effects = (
+                gate_c_scale_operator._verified_checkpoint_transition(
+                    operands, envelope, sources, current_sequence=self.WINDOWS
+                )
+            )
+            self.assertEqual(pre["state_payload"]["next_window_sequence"], 0)
+            self.assertEqual(
+                post["state_payload"]["next_window_sequence"], self.WINDOWS
+            )
+            self.assertEqual(len(effects), self.WINDOWS)
+            self.assertEqual(
+                tuple(
+                    item["effect_payload"]["window_sequence"] for item in effects
+                ),
+                tuple(range(self.WINDOWS)),
+            )
+            # The recovery-suffix helper refuses the terminal position: a fully
+            # completed bound has no remaining suffix to derive.
+            with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                gate_c_scale_operator._verified_v3_recovery_suffix(
+                    operands, envelope, sources, current_sequence=self.WINDOWS
+                )
+            self.assertEqual(
+                caught.exception.code,
+                "EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID",
+            )
+
+    def test_real_durable_prefix_refuses_incomplete_telemetry(self) -> None:
+        """F: a prefix whose telemetry is short is not a completed prefix."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            operands, sources = self._store(root)
+            *_unused, envelope = _bounded_fixture_v3(
+                start=0, count=self.WINDOWS, target_profile=self.PROFILE
+            )
+            harness = _Harness(root)
+            try:
+                harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 2)
+                )
+            finally:
+                harness.close()
+            # only one window's telemetry is appended for a two-window prefix
+            _append_checkpoint_telemetry(
+                operands, sources, start_window_sequence=0, window_count=1
+            )
+            # The telemetry store's own prefix verification fires first; the
+            # operator's suffix-count check is the second, independent gate.
+            with self.assertRaises(
+                (Exp012ScaleGateCOperatorError, ShadowSearchTelemetryError)
+            ) as caught:
+                gate_c_scale_operator._verified_v3_recovery_suffix(
+                    operands, envelope, sources, current_sequence=2
+                )
+            self.assertIn(
+                caught.exception.code,
+                {
+                    "TELEMETRY_PREFIX_INVALID",
+                    "EXP012_GATE_C_CHECKPOINT_TELEMETRY_SUFFIX_INVALID",
+                },
+            )
+
+    def test_real_durable_prefix_refuses_failed_attempt_in_or_beyond_prefix(
+        self,
+    ) -> None:
+        """F/H: a durable FAILED attempt is never silently retried or skipped."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            operands, sources = self._store(root)
+            *_unused, envelope = _bounded_fixture_v3(
+                start=0, count=self.WINDOWS, target_profile=self.PROFILE
+            )
+            harness = _Harness(root)
+            try:
+                harness.runner.process_ready_windows(
+                    execution_bound=GateCWindowExecutionBound(0, 1)
+                )
+            finally:
+                harness.close()
+            _append_checkpoint_telemetry(
+                operands, sources, start_window_sequence=0, window_count=1
+            )
+
+            # Window 1 fails durably: STARTED plus a terminal FAILED event.
+            harness = _Harness(root)
+            try:
+                harness.runner.composition.shadow_worker._executor = (
+                    _FailingShadowCapture(harness.shadow, failing_window=1)
+                )
+                with self.assertRaises(Exception):
+                    harness.runner.process_ready_windows(
+                        execution_bound=GateCWindowExecutionBound(1, 1)
+                    )
+            finally:
+                harness.close()
+
+            # current=1: window 1 already carries durable attempt effects, so
+            # the "no effect at or beyond the prefix" rule refuses.
+            with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                gate_c_scale_operator._verified_v3_recovery_suffix(
+                    operands, envelope, sources, current_sequence=1
+                )
+            self.assertIn(
+                caught.exception.code,
+                {
+                    "EXP012_GATE_C_CHECKPOINT_ATTEMPT_SUFFIX_INVALID",
+                    "EXP012_GATE_C_CHECKPOINT_ORPHANED_SUFFIX",
+                },
+            )
+
+            # current=2: window 1 is not a COMPLETED prefix window, so the
+            # FAILED attempt can never be replayed into the prefix either.
+            with self.assertRaises(Exp012ScaleGateCOperatorError) as caught:
+                gate_c_scale_operator._verified_v3_recovery_suffix(
+                    operands, envelope, sources, current_sequence=2
+                )
+            self.assertEqual(
+                caught.exception.code,
+                "EXP012_GATE_C_CHECKPOINT_FINALIZATION_SUFFIX_INVALID",
+            )
 
 if __name__ == "__main__":
     unittest.main()

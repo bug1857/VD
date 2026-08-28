@@ -134,6 +134,39 @@ def _error(code: str) -> Exp012ScaleGateCOperatorError:
     return Exp012ScaleGateCOperatorError(code)
 
 
+def _admissible_checkpoint_progress(
+    current: object, bound: GateCWindowExecutionBound
+) -> int:
+    """The single canonical bounded-checkpoint progress admission predicate.
+
+    ``start <= current <= expected_next`` is the whole V3 contract: ``start``
+    is a fresh checkpoint start, ``expected_next`` is completion-only
+    recovery, and every interior value is a completed-prefix recovery of the
+    same original envelope.  Anything outside that closed interval is refused.
+
+    ADR-016 item 10 widened this interval for the verified transition and
+    recovery-suffix reconstruction, but the equivalent guard inside
+    `_plan_at_checkpoint_start` kept the older two-point membership test and
+    independently refused every interior position before the recovery branch
+    could run.  The predicate now exists exactly once so the planning guard
+    and the transition guard cannot drift apart again.
+
+    Admission is deliberately *only* a range check.  It asserts nothing about
+    durable state: `_verified_checkpoint_transition` still has to reconstruct
+    and prove the exact canonical prefix, and a caller cannot use this to
+    assert progress that durable canonical state does not already carry.
+    """
+
+    if (
+        type(bound) is not GateCWindowExecutionBound
+        or type(current) is not int
+        or current < bound.start_window_sequence
+        or current > bound.expected_next_window_sequence
+    ):
+        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+    return current
+
+
 @dataclass(frozen=True, slots=True)
 class Exp012ScaleGateCOperands:
     contract: Exp012ScaleContract
@@ -357,19 +390,27 @@ def _campaign_binding(operands: Exp012ScaleGateCOperands, plan: dict[str, object
 def _plan_at_checkpoint_start(
     plan: dict[str, object], bound: GateCWindowExecutionBound
 ) -> dict[str, object]:
-    """Reconstruct the exact pre-checkpoint plan after a completed recovery."""
+    """Reconstruct the plan exactly as it stood when the envelope was prepared.
+
+    The prepared envelope binds the plan observed at ``bound.start``.  Any
+    admissible durable position -- a fresh start, a completed prefix, or a
+    fully completed bound -- must therefore normalize back to that one plan so
+    the SAME original envelope still verifies; the normalization output is
+    deliberately independent of ``current``.
+
+    ``current`` is not discarded: it is range-checked against the bound and
+    then required to agree exactly with the durable acknowledgement prefix, so
+    a plan cannot claim progress its own observed state does not carry.
+    """
 
     normalized = copy.deepcopy(plan)
     observed = normalized["observed"]
     projected = normalized["projected_physical_work"]
     if type(observed) is not dict or type(projected) is not dict:
         raise _error("EXP012_GATE_C_CHECKPOINT_PLAN_INVALID")
-    current = observed.get("next_window_sequence")
-    if current not in {
-        bound.start_window_sequence,
-        bound.expected_next_window_sequence,
-    }:
-        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
+    current = _admissible_checkpoint_progress(
+        observed.get("next_window_sequence"), bound
+    )
     expected_acknowledged = current * WINDOW_QUERY_COUNT
     if observed.get("shadow_acknowledged_count") != expected_acknowledged:
         raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
@@ -669,13 +710,7 @@ def _verified_checkpoint_transition(
 
     bound = envelope.execution_bound
     start = bound.start_window_sequence
-    if (
-        type(current_sequence) is not int
-        or current_sequence < start
-        or current_sequence > bound.expected_next_window_sequence
-    ):
-        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
-    post = current_sequence
+    post = _admissible_checkpoint_progress(current_sequence, bound)
     runner = _checkpoint_runner(operands)
     try:
         composition = runner.composition
@@ -1122,14 +1157,10 @@ def run_gate_c_checkpoint_v3(
         operands, envelope_document
     )
     bound = envelope.execution_bound
-    current_next = current_plan["observed"]["next_window_sequence"]
+    current_next = _admissible_checkpoint_progress(
+        current_plan["observed"]["next_window_sequence"], bound
+    )
     binding = _checkpoint_ledger_binding(envelope)
-    if (
-        type(current_next) is not int
-        or current_next < bound.start_window_sequence
-        or current_next > bound.expected_next_window_sequence
-    ):
-        raise _error("EXP012_GATE_C_CHECKPOINT_PROGRESS_INVALID")
 
     # Completion-only recovery is derived entirely from already-durable
     # canonical effects.  It must not recreate or substitute a live runtime.
