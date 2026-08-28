@@ -297,10 +297,10 @@ class L2ExecutionTieTests(unittest.TestCase):
     def test_noncontiguous_ranks_are_no_tie_block_but_may_be_order_variance(self) -> None:
         """Structurally not a tie block; admissible only on the rule-7 numbers.
 
-        These three oracle scores lie within one binary32 execution interval at
-        128 dimensions, so binary32 cannot order them at all. The tie-block rule
-        still rejects them -- asserted directly, so the structural guarantee
-        cannot regress -- and rule 7 admits them on the numbers instead.
+        These three oracle scores have overlapping governed execution intervals
+        at 128 dimensions, so the conservative partial-order contract forces no
+        order among them. The tie-block rule still rejects them -- asserted
+        directly -- and rule 7 admits them under the distinct envelope rule.
         """
 
         oracle = _oracle(((1, 1.0), (2, 1.000001), (3, 1.000002)))
@@ -498,7 +498,7 @@ class InvalidEvidenceTests(unittest.TestCase):
 
 
 class Rule7ExecutionOrderVarianceTests(unittest.TestCase):
-    """Rule 7: adjacent inversions binary32 cannot resolve.
+    """Rule 7: order variance admitted by the governed execution envelope.
 
     The two live cases below are the only order-variance events observed across
     6600 audited EXP-012 queries. They are reproduced here from the persisted

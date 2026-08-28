@@ -292,9 +292,10 @@ def _execution_order_equivalent(
     Two conditions are required, and both are checked over the whole returned
     list rather than over a locality heuristic:
 
-    1. every returned score is attainable for the id placed at that position,
-       i.e. it lies inside that id's own execution interval -- a score outside
-       it is not an ordering question but a value no legal execution produces;
+    1. every returned score lies inside the conservative execution interval
+       for the id placed at that position.  Containment means the analytical
+       forward-error bound does not exclude the value; it does not prove that
+       one particular reduction schedule attains it;
     2. no pair is inverted against a forced precedence relation.
 
     Checking (2) pairwise is complete rather than merely pairwise-sound: the

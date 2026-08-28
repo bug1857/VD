@@ -65,6 +65,7 @@ Embedding model: None — synthetic vectors, not model embeddings.
 Number of vectors: 10,000 base vectors; 250 query vectors split into 50 calibration and 200 measured queries; separate deterministic boundary-fixture micro-dataset.
 Metadata schema: Integer vector ID; split (`base`, `calibration_query`, `measured_query`, `boundary_fixture`); generation seed; generator/version metadata. No payload attributes are used by EXP-001.
 Ground truth method: Independent NumPy exact L2 and cosine computation with float64 accumulation over stored little-endian float32 vectors, cross-checked against Milvus FLAT using the same metric, threshold bounds, ordering, and result cap.
+Prospective numerical-contract note (2026-08-28): for governed L2 comparisons after the ADR-015 execution-envelope amendment, exact membership, threshold validity, distinct identifiers, and raw returned-score ordering remain mandatory, while oracle/FLAT rank agreement is evaluated against the conservative binary32 execution-envelope partial order. `EXECUTION_ORDER_EQUIVALENT` therefore means envelope compatibility, not exact kernel reconstruction or proof that one reduction schedule jointly attains the returned list. Historical EXP-001 evidence and COSINE semantics are unchanged.
 Version: `DATASET-001-v1`; primary seed `20260801`; generated with NumPy `2.5.1` on 2026-08-01.
 Artifact status: GENERATED AND CHECKSUM-VERIFIED — no Milvus ingestion or search was performed during generation.
 Artifact location: `artifacts/exp-001/dataset/`.

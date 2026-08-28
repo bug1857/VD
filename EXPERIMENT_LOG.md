@@ -2640,3 +2640,69 @@ result; it does **not** establish qualification, canary/actuation authority,
 production readiness, throughput/SLA, universal recall, or remote/distributed
 Milvus behavior. Scale-10000 requires a fresh campaign and independent Gate-A
 authority.
+
+#### 2026-08-27 EXP-012 scale-10000-v1 failed campaign — immutable
+
+Status: **FAILED_CLOSED — HISTORICAL EVIDENCE; NO RETRY OR SCALE-10000 CLAIM**
+
+Historical upstream source revision:
+`9021a61fd9c1f2e055396dbc24d1bd6c313d07e9`.
+
+Gate-C execution source revision:
+`1628c9f0f0c22647c3f6f0702c116a54df4d9642`.
+
+Campaign root: `~/.local/share/vd/exp012-scale10000-v1`.
+
+Gate B remains complete and immutable with exactly 10,000 source records,
+sequences `0..9999`, and fifty frozen 200-source windows. Gate C finalized
+windows `0..17`, acknowledged exactly 3,600 source positions (`0..3599`), and
+persisted eighteen detector events. It issued 3,700 FLAT-reference and 3,700
+HNSW-sentinel searches over sources `0..3699`, with exactly 7,400 matching
+telemetry records. The attempt ledger contains 74 `STARTED`, 73 `COMPLETED`,
+and one `FAILED` event. The bounded envelope
+`43d24c8131bc461625ad45ef518fbbd93f028ef62548f524a53fd54ad9e55a3a`
+remains truthfully `CHECKPOINT_STARTED` and non-terminal.
+
+The terminal failure is window 18, trace 1, source 3669
+(`logsim-v2:c2406d0574c1d6695b5030604c2980fe:3669`), attempt SHA-256
+`5b8750a59c42bdb2fae85eaed882220451ba317e2351edfe13f6ec3b865bb21d`,
+trace-envelope SHA-256
+`a03944138e403432aed0cab9675a2c82bea0c12673f91d3ca19367f0376c8ed8`,
+and terminal attempt-event SHA-256
+`01a836ad74ca5515b98d2ebc0039766e8bfd99350d7abe8ccc61f057c6eeca7f`.
+The durable reason is
+`STAGE_FAILED:logsim-v2:c2406d0574c1d6695b5030604c2980fe:3669:FLAT`.
+Oracle and FLAT membership and cardinality are exact (75/75), raw FLAT scores
+are ordered, and one adjacent pair is transposed across distinct returned
+binary32 values. The accepted ADR-015 execution-envelope partial-order
+amendment classifies that pair prospectively as
+`EXECUTION_ORDER_EQUIVALENT`; this forensic replay does not alter the historical
+failed event.
+
+An independent read-only replay of every finalized-prefix query under source
+revision `b5b6d0dbf282303f5311b2e14e17051505399d4d` reconstructed exactly
+3,600 observations: 3,594 `EXACT_ORDERED`, four
+`PRECISION_TIE_EQUIVALENT`, two `EXECUTION_TIE_EQUIVALENT`, and zero persisted
+agreement-boolean mismatches. Window 18 was kept outside that prefix: its
+completed trace contains 50 `EXACT_ORDERED`; its failed trace contains 49
+`EXACT_ORDERED` plus source 3669's one
+`EXECUTION_ORDER_EQUIVALENT`. This corrects the discarded draft count of 3,650,
+which had improperly included one trace from the unfinalized window.
+
+All seven SQLite databases reported `integrity_check = ok`. At this immutable
+audit point their sorted relative-path/per-file-SHA-256 aggregate is
+`9b6cd898d96a8aaa4a9505f90a5fb24c47eb115534f8739d935193701d603906`;
+lock files are excluded. No database was modified by the replay.
+
+The campaign cannot resume. Window 18's failed attempt identity is immutable,
+the append-only attempt transition refuses a second `STARTED` for that digest,
+and no run-varying generation exists in the v1 attempt identity. Checkpoint
+supersession cannot repair that independent identity boundary. No retry,
+supersession, historical rewrite, or partial scale-10000 completion claim is
+permitted. A completed scale-10000 result requires a fresh campaign identity,
+fresh Gate-A authority, and a full fresh Gate-B/Gate-C lifecycle under a frozen
+post-amendment source revision.
+
+This failed campaign establishes no qualification, admission, grant, routing,
+canary, actuation, production, remote-Milvus, SLA, or completed scale-10000
+authority.

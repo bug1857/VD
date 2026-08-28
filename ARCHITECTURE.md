@@ -4530,8 +4530,9 @@ A returned result is admitted when all of:
 1. exact capped membership, threshold validity, distinct-ID, and raw metric
    ordering already pass;
 2. every returned score lies in `[L, U]` of the oracle score of the id placed
-   at that position -- a score outside it is not an ordering question but a
-   value no legal execution produces for that id; and
+   at that position -- containment means the conservative analytical model
+   does not exclude the value, not that a particular schedule is proved to
+   attain it; and
 3. no pair is inverted against a forced precedence relation.
 
 Pairwise checking of (3) is complete, not merely pairwise-sound: the
@@ -4556,11 +4557,10 @@ classification has been rejected, and it produces its own kind so order
 variance stays separately countable as scientific evidence.
 
 **What remains fatal.** Membership or cardinality disagreement; a returned
-score outside any member's analytical interval; noncontiguous or non-local
-movement; distinguishable inversions between separable scores; malformed,
-duplicate, or non-finite evidence; unverified or non-128 dimensionality; and
-COSINE, which retains the original ADR-015 semantics and receives no numerical
-claim here.
+score outside any member's analytical interval; inversion of a forced
+precedence relation; malformed, duplicate, or non-finite evidence; unverified
+or non-128 dimensionality; and COSINE, which retains the original ADR-015
+semantics and receives no numerical claim here.
 
 **Not a retroactive evidence rewrite.** The window-18 `attempt_events` row, its
 attempt digest, trace-envelope digest, reason codes, and the store hash chain
@@ -4610,11 +4610,11 @@ altered to record this; this ADR records it.
 **Implications for scientific claims.** Membership, cardinality, and every
 recall statistic derived from membership are unaffected and remain exact. What
 narrows is the ordering claim: for governed L2, "correct ordering" now means
-correct up to permutations that binary32 cannot resolve, and any claim about a
-strict rank position must be qualified by the measured order-variance
-frequency. This is a more honest statement of what a binary32 index can
-guarantee than the pre-amendment claim, which attributed to Milvus an ordering
-authority the arithmetic does not support.
+compatibility with the governed conservative execution-envelope partial order,
+and any claim about a strict rank position must be qualified by the measured
+order-variance frequency. This is a more honest statement of what the governed
+numerical model verifies than the pre-amendment claim, which attributed to
+Milvus an ordering authority the arithmetic does not support.
 
 **Limitations.** The active `libknowhere` kernel was not disassembled for
 source 3669, and no single emulated order reproduced both live bit patterns
@@ -4625,6 +4625,28 @@ bound (~7.75e-6 relative, ~65 ULP at score 180); in the observed data only 1 of
 74 adjacent gaps fell inside it, so discrimination stays high, but in a
 sufficiently dense cluster the rule admits correspondingly larger runs. That is
 a property of binary32 arithmetic, not of this rule.
+
+#### 2026-08-28 claim-boundary clarification — execution-envelope compatibility
+
+Rule 7 is an **execution-envelope partial-order contract**, not an
+attainability proof. Membership of a returned score in one candidate's
+analytical `[L, U]` interval means only that the conservative forward-error
+bound does not exclude that score. It does not prove that a specific reduction
+schedule, or one common schedule across all candidates, generates the observed
+list. Accordingly, `EXECUTION_ORDER_EQUIVALENT` means *compatible with the
+governed execution envelope and its forced precedence relation*; it must not be
+reported as exact kernel reconstruction or joint schedule attainability.
+
+The locality language in the first draft is also superseded. Rule 7 does not
+impose a separate contiguous-rank or local-movement grammar. It requires exact
+capped membership, valid thresholds, distinct identifiers, raw returned-score
+ordering, per-identifier envelope containment, and preservation of every
+forced relation `U_i < L_j`. A non-local permutation is therefore rejected
+when it violates a forced relation, but is not rejected merely because it is
+non-local when the analytical intervals leave that order genuinely
+unconstrained under this conservative contract. This clarification changes no
+code path or historical classification; it narrows the scientific claim to
+what the implemented proof establishes.
 
 #### Store and failure hardening
 
