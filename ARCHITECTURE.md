@@ -5980,3 +5980,1526 @@ environment, same-user state, and OS metadata APIs. This acceptance authorizes
 offline implementation/tests only. It creates no full-campaign completion,
 Gate-D, qualification, admission, grant, routing, activation, actuation, or
 rollback authority and does not authorize live C1.
+
+### ADR-020: Production LKG window operational-readiness provider (Checkpoint B) — first-LKG bootstrap only
+
+Status: **ACCEPTED** (2026-08-30). Risk: **CRITICAL**.
+
+**1. Problem.** ADR-002's Phase-2 addendum froze the shape and chronology of
+constituent-window operational-readiness evidence and shipped
+`FakeLkgWindowOperationalReadinessProvider` as its only implementation. That
+fake stores evidence in process memory. Readiness is captured before a
+qualification run is sealed and consumed by Phase 2 after sealing, so in-memory
+evidence cannot survive that interval. VD therefore cannot produce a real
+Phase-3 D1/D2 LKG. This ADR freezes the production readiness contract.
+
+**2. Scope.** Adds one production readiness provider, its two observation
+payloads, and its durable store. Freezes first-LKG bootstrap semantics only.
+Changes no existing module, no Phase-1 or Phase-2 schema, and no Checkpoint-C
+statistical semantics.
+
+**3. Frozen existing ADR-002 readiness contract (restated, unchanged).**
+Readiness is captured at the end of each 200-position constituent window,
+strictly before the run is sealed. Exactly one logical readiness check exists per
+`(source_run_id, window_index)` for the life of the run. The idempotency key
+identifies retries of that one check, never a mechanism to create a later
+distinct check. A durably recorded failing result is permanent and invalidates
+the window irrecoverably within that run. A provider queried later, including
+after sealing, returns the historically recorded evidence unchanged byte-for-byte
+or fails explicitly, and never performs a new check at that later time.
+`checked_at_utc <= sealed_at_utc <= ingested_at_utc`, compared as parsed RFC3339
+UTC instants, never as raw strings. `READINESS_SCHEMA_VERSION = 1`. Readiness
+evidence digest domain `b"vdbench.lkg_window_operational_readiness.v1\0"`. A run
+has 12 windows, 2 epochs, 6 windows per epoch, 200 positions per window;
+`epoch_index == window_index // 6`; `first_attempt_sequence == window_index *
+200`; `last_attempt_sequence == first_attempt_sequence + 199`. `health_passed`
+implies `health_checked`; `rollback_ready` implies `rollback_tested`.
+`health_evidence_source_digest` and `rollback_evidence_source_digest` are
+mandatory lowercase 64-character hex SHA-256 values; no placeholder is permitted.
+
+**4. First-LKG-only scope.** This ADR authorizes readiness capture only when no
+verified-latest Phase-3 D1/D2 authority pair exists. If the Phase-3 authority
+reference store's verified-latest query yields a reference, the provider SHALL
+refuse with `STEADY_STATE_SEMANTICS_NOT_AUTHORIZED`. Steady-state requalification
+requires a later accepted amendment and is not designed here.
+
+**5. Run-bound environment authority.** `LkgRunBinding.environment_identity`,
+fixed before any client dispatch, is the sole stable environment authority. Every
+readiness observation, including window 0, compares against it. Window 0 SHALL
+NEVER establish a replacement baseline. An environment change occurring after
+run-binding creation but before window-0 capture SHALL fail readiness rather than
+become the new baseline.
+
+**6. Environment identity format and domain.** `environment_identity` carries
+`lkg-env-identity-v1:sha256:<64 lowercase hex>`, where the digest is
+`sha256(b"vdbench.lkg-environment-identity.v1\0" +
+canonical_json_bytes(<stable environment document>))`. `LkgRunBinding` validates
+the field as a non-empty canonical string, so no schema change is required.
+EXP-012 digest domains SHALL NOT be reused.
+
+**7. Stable environment identity fields.** Endpoint (scheme, host, port,
+transport security); per container (etcd, minio, milvus): container id, image id,
+repository digests, restart count, OOM-killed flag, started-at; per collection
+(FLAT, HNSW): collection name, collection-schema digest, index identity digest,
+index type, index parameters, metric, dimensions, entity count. A container
+restart changes the restart count and therefore changes this identity, by design.
+The collection-schema digest and the index identity digest are the LKG-specific
+identities frozen by Amendment (ADR-020a); they are never EXP-012 Gate-C digest
+values.
+
+**8. Transient health observation fields.** Per-container health booleans, the
+Milvus health-endpoint boolean, per-collection load-readiness booleans,
+per-collection index-readiness booleans, and the observation timestamp. These are
+never part of the stable identity.
+
+**9. Reused read-only health machinery.** The metadata-only Milvus reader
+protocol that exposes no search method, the read-only Docker container and image
+metadata inspector, and the health-endpoint probe are reused as mechanisms where
+semantically compatible. The Gate-C execution-environment attestation SHALL NOT
+be reused, because it binds an execution source revision and EXP-012 governed
+campaign bindings that are meaningless inside an LKG window record. The Gate-C
+container, data-plane and endpoint normalizers, and the Gate-C collection-schema
+and index-identity digest builders, are module-private and are therefore NOT
+ADR-020 dependencies: this ADR uses deterministic LKG-local normalization to
+produce the stable facts its own LKG-specific identity contracts require. EXP-012
+identity domains are not reused, and no claim is made that an LKG identity is a
+Gate-C identity.
+
+**10. Health PASS predicates.** All of: (a) every container has status `running`,
+OOM-killed false, and health absent or `healthy`; (b) the Milvus health endpoint
+reports healthy; (c) both collections report load state `Loaded`; (d) both
+indexes report state `Finished`, zero pending index rows, and indexed rows equal
+to the expected entity count; (e) the recomputed stable environment identity
+equals `LkgRunBinding.environment_identity` exactly.
+
+**11. Health FAIL semantics.** Negation of any predicate in section 10 yields
+`health_checked = true`, `health_passed = false`, with reason codes drawn from
+section 37, durably persisted, permanently invalidating the window and the run.
+
+**12. Health evidence source identity, domain, payload.**
+`health_evidence_source_identity = "vdbench.lkg-window-health-observation.v1"`.
+Digest domain `b"vdbench.lkg-window-health-observation.v1\0"`; digest is
+`sha256(domain + canonical_json_bytes(document))`. Document fields:
+`observation_schema_version`, `source_run_id`, `source_run_binding_sha256`,
+`run_bound_environment_identity`, `observed_environment_identity`,
+`environment_identity_matches`, `observed_stable_environment_document`,
+`expected_entity_count`, `container_health`, `milvus_healthz`,
+`collection_readiness`, `index_readiness`, `observed_at_utc`, `reason_codes`. A
+failing observation still produces a real document and a real digest.
+
+**13. `readiness_check_id`.**
+`sha256(b"vdbench.lkg-window-readiness-check-id.v1\0" +
+canonical_json_bytes({"source_run_id": ..., "source_run_binding_sha256": ...,
+"window_index": ...}))`, rendered as 64 lowercase hex characters. Deterministic;
+collision-free across runs and windows; stable across retries and restarts;
+recoverable without orchestration state. Distinct from
+`canonical_document_digest`.
+
+**14. `provider_run_id`.**
+`sha256(b"vdbench.lkg-window-readiness-provider-run.v1\0" +
+canonical_json_bytes({"provider_implementation_identity": ...,
+"readiness_schema_version": 1, "readiness_check_id": ..., "source_run_id": ...,
+"source_run_binding_sha256": ...}))`. It identifies one logical readiness
+capture, not a long-lived provider process. No process-start timestamp
+participates. Distinct logical windows receive distinct values. A retry of the
+same logical check yields the same provenance. A committed record retains its
+original value verbatim, and lookup never regenerates it.
+
+**15. Provider and store durability model.** One dedicated SQLite database per
+`source_run_id`, owned by the provider, distinct from the Phase-1 and Phase-2
+ledgers.
+
+**16. Immutable complete run-binding store binding.** On first open the store
+persists the complete canonical `LkgRunBinding` document in one immutable binding
+row, not merely its digest. Every subsequent open re-validates it. A mismatch
+raises `READINESS_STORE_BINDING_MISMATCH`; a different `source_run_id` raises
+`READINESS_STORE_SOURCE_RUN_MISMATCH`. Storing the complete document enables
+restart reconstruction, environment-authority and baseline configuration
+retrieval, source-revision provenance, and independent verification without a
+second store.
+
+**17. Provider path and file safety.** The database path is opened only after a
+link-status check requiring a regular file, exactly one hard link, and owner equal
+to the effective user id; symlinks and aliased paths are refused; file mode is
+enforced to `0o600`.
+
+**18. Exact SQLite settings.** `PRAGMA user_version = 1`; a busy timeout is set;
+`trusted_schema = OFF`; `foreign_keys = ON`; `journal_mode = DELETE`;
+`synchronous = FULL`. Writes use `BEGIN IMMEDIATE`.
+
+**19. Append-only protections.** `BEFORE UPDATE` and `BEFORE DELETE` triggers
+raise abort on the evidence and binding tables.
+
+**20. Uniqueness constraints.** `UNIQUE(readiness_check_id)` and
+`UNIQUE(source_run_id, window_index)`.
+
+**21. Exactly one logical observation.** The external readiness observation is
+performed while the provider holds the same exclusive `BEGIN IMMEDIATE`
+transaction that enforces first-writer uniqueness. Sequence: begin; validate store
+binding; derive and verify the canonical `readiness_check_id`; look up by check
+id; look up by `(source_run_id, window_index)`; if already committed return the
+historical evidence with zero observation; otherwise perform the metadata-only
+observation; construct evidence; insert exactly one row; commit; return.
+
+**22. Concurrency semantics.** A second concurrent caller for the same window
+blocks on the write lock, then re-reads and returns the committed historical
+evidence, performing zero observation. A previously seen check id whose context
+disagrees raises `READINESS_CHECK_ID_CONFLICTING_RESULT`. A new check id for a
+window already captured under a different id raises
+`READINESS_WINDOW_ALREADY_CHECKED`. A non-canonical caller-supplied check id is
+refused before any observation with `NONCANONICAL_READINESS_CHECK_ID`.
+
+**23. Crash before commit.** The transaction rolls back; no authoritative
+readiness exists; an uncommitted observation is non-authoritative; a retry may
+perform a fresh observation. No subsequent window may begin until durable capture
+succeeds.
+
+**24. Crash after commit.** A retry finds the committed row and returns it with
+zero re-observation. Committed evidence is immutable by commit, append-only
+triggers, uniqueness constraints, and digest self-verification.
+
+**25. Lookup semantics.** Lookup by `readiness_check_id` retrieves only
+historically committed evidence, re-verifies `canonical_document_digest` on read,
+and performs no observation of any kind. Unknown or unreadable evidence raises
+`RESULT_NOT_RECOVERABLE`.
+
+**26. Observed failure versus provider error.** An observed health or
+rollback-readiness failure sets the corresponding checked/tested flag true with
+the passed/ready flag false, persists real canonical evidence, and permanently
+invalidates the window and run. Provider inability to determine readiness --
+including an unreadable or corrupt route-state marker, an unavailable store, or a
+binding mismatch -- raises and persists nothing, leaving the window without
+readiness evidence and therefore retryable. Persisting an inability as
+`health_checked = false` or `rollback_tested = false` is forbidden, because
+Checkpoint C treats those as FAILING while absent readiness is INCOMPLETE.
+
+**27. First-LKG bootstrap rollback semantics.** `rollback_tested = true` means the
+defined zero-actuation first-LKG baseline-restorability verification was executed
+for this window and durably captured. It does not mean a live rollback, failback,
+candidate deactivation, route restoration, canary containment, or index mutation
+occurred. `rollback_ready = true` requires all of: no verified-latest Phase-3
+D1/D2 pair exists; the complete baseline `SearchConfiguration` reconstructs from
+run-bound authority; its canonical configuration digest equals the run-bound
+expected digest; the serving-configuration identity remains the canonical
+authority for that same baseline; run-bound collection, data, index and
+environment identities remain coherent; the route-state rule in section 28
+passes; and the restoration target is deterministic and unambiguous, namely the
+exact run-bound baseline `SearchConfiguration`.
+
+**28. Exact route-state rule.** The route component PASSES only when no
+verified-latest Phase-3 D1/D2 authority pair exists and the canonical route-state
+store's no-argument read returns nothing.
+
+**29. ACTIVATING fails.** A route record whose state is `ACTIVATING` yields
+observed rollback-readiness failure with reason `CANDIDATE_ROUTE_ACTIVE`.
+
+**30. LKG_ONLY without D1/D2 fails.** A route record whose state is `LKG_ONLY`
+while no verified-latest D1/D2 pair exists yields observed rollback-readiness
+failure with reason `BOOTSTRAP_LKG_ROUTE_MARKER_PRESENT`. This holds even if the
+marker's metric, threshold stratum, last-known-good ef, configuration identity,
+data identity, and FLAT/HNSW binding identifiers all appear to match the candidate
+baseline. A marker asserting last-known-good semantics is not verified Phase-3
+authority, and matching fields do not repair the circularity.
+
+**31. Unreadable or corrupt route state fails closed.** It is never interpreted as
+absence. The canonical route-state read already distinguishes these: absence
+returns nothing only on file-not-found, while I/O errors, malformed JSON,
+duplicate JSON keys, and non-canonical payloads raise a store error. Such an error
+is provider inability under section 26 -- raise, persist nothing.
+
+**32. No private serializer dependency.** The provider SHALL NOT import, call, or
+re-implement the route-state module's private document serializer, and SHALL NOT
+claim an independent route-state digest, because that module exports no public
+document or digest API.
+
+**33. Route-state failure provenance.** When a route record is present and
+invalidates bootstrap, its validated public fields -- state, metric, threshold
+stratum, last-known-good ef, configuration identity, data identity, FLAT binding
+id, HNSW binding id, grant id, plan digest, changed-at timestamp, and reason code
+-- are embedded in the ADR-020 rollback evidence document under ADR-020's own
+domain, as evidence of what the non-actuating read returned. When no record is
+present, absence is canonicalised deterministically with `route_state_present =
+false` and null route fields; no absence digest is invented.
+
+**34. Grant predicate omitted.** The canonical grant store exposes only a mutating
+reservation operation, a mutating terminal-record operation, and a load requiring
+a specific grant identifier. It offers no non-actuating scoped enumeration of
+currently active authority. Therefore no grant predicate participates in first-LKG
+readiness, no global "no unexpired grant" rule is imposed, no caller-supplied
+grant boolean is accepted, and no grant-store access occurs. An `ACTIVATING`
+marker already fails bootstrap; its grant identifier is recorded as evidence but
+never dereferenced.
+
+**35. Runtime ef claim boundary.** Request-time `ef` is a per-search parameter and
+is not recoverable from ordinary Milvus collection or index metadata, which
+exposes build parameters only. The authority establishing that the served
+configuration is `ef = 400` is the canonical serving-configuration identity. This
+is CONFIGURATION_AUTHORITY and SHALL NOT be described as
+INDEPENDENT_RUNTIME_OBSERVATION. Bootstrap readiness SHALL NOT claim that metadata
+proves every request currently executes at `ef = 400`.
+
+**36. Rollback evidence source identity, domain, payload.**
+`rollback_evidence_source_identity =
+"vdbench.lkg-window-rollback-readiness.v1:FIRST_LKG_BOOTSTRAP_BASELINE_RESTORABILITY"`.
+Digest domain `b"vdbench.lkg-window-rollback-readiness.v1\0"`; digest is
+`sha256(domain + canonical_json_bytes(document))`. Document fields:
+`rollback_schema_version`, `verification_mode`, `source_run_id`,
+`source_run_binding_sha256`, `baseline_search_configuration_document`,
+`baseline_search_configuration_sha256`, `serving_configuration_identity`,
+`verified_latest_lkg_present`, `route_state_present`, `route_state_state`,
+`route_state_metric`, `route_state_threshold_stratum`,
+`route_state_last_known_good_ef`, `route_state_configuration_identity`,
+`route_state_data_identity`, `route_state_flat_binding_id`,
+`route_state_hnsw_binding_id`, `route_state_grant_id`, `route_state_plan_sha256`,
+`route_state_changed_at_utc`, `route_state_reason_code`,
+`restoration_target_digest`, `verified_at_utc`, `reason_codes`. Fields describing
+an absent route record are null. The document contains no grant-presence field, no
+steady-state target, no live-rollback claim, and no runtime-ef claim. A failing
+observation still produces a real document and a real digest.
+
+**37. Complete reason-code set.** `BASELINE_CONFIGURATION_DIGEST_MISMATCH`,
+`BASELINE_CONFIGURATION_UNRECONSTRUCTABLE`, `BOOTSTRAP_LKG_ROUTE_MARKER_PRESENT`,
+`CANDIDATE_ROUTE_ACTIVE`, `COLLECTION_NOT_LOADED`, `CONTAINER_NOT_RUNNING`,
+`CONTAINER_OOM_KILLED`, `CONTAINER_UNHEALTHY`, `ENTITY_COUNT_MISMATCH`,
+`ENVIRONMENT_IDENTITY_MISMATCH`, `INDEX_NOT_READY`, `MILVUS_HEALTHZ_FAILED`,
+`RESTORATION_TARGET_UNRESOLVED`, `SERVING_CONFIGURATION_IDENTITY_MISMATCH`. Codes
+match `[A-Z][A-Z0-9_]{0,63}`; at most 16 per record; sorted; unique. Store,
+identifier and binding errors are provider exceptions, not evidence reason codes.
+
+**38. Early readiness-fail orchestration.** On a durable readiness failure the
+orchestrator stops dispatching further qualification positions and captures no
+further readiness. Undispatched Phase-1 positions classify as MISSING; the run may
+still seal with completion state `INCOMPLETE_NO_FAILURE`; the failing window
+evaluates FAILING; its epoch evaluates FAILING because FAILING precedes
+INCOMPLETE; the run evaluates FAILING for the same reason; `qualified` is false;
+and the terminal failing evaluation may be persisted. The run lineage is spent and
+a new `source_run_id` is required for another attempt.
+
+**39. Single readiness-store responsibility split.** The provider owns the durable
+database, the immutable complete run-binding row, binding re-validation on every
+open, append-only evidence, same-file concurrency, canonical identifier
+enforcement, path and file hardening, and refusal of mismatched reopen. The future
+LKG preparation and operator authority owns freezing exactly one authoritative
+readiness-store path per `source_run_id` before any live dispatch, which every
+process must reopen; an alternate path can never become equivalent authority.
+SQLite locking and uniqueness protect only callers opening the same file, so the
+provider alone cannot establish global single-store authority and SHALL NOT claim
+to.
+
+**40. Implementation versus execution.** Implementing and unit-testing the
+provider component is permitted before the preparation and operator authority
+exists. Real live LKG qualification execution is forbidden until that authority
+freezes the exact store path.
+
+**41. Zero-actuation boundary.** Readiness capture may perform: Milvus metadata
+reads, Docker metadata reads, a health endpoint read, collection and index metadata
+reads, configuration-registry reads, the no-argument route-state read, and the
+Phase-3 verified-latest authority read. It SHALL NOT perform: any vector, ANN, or
+hybrid search; any `ef` change; any index rebuild; any route mutation; any grant
+creation or reservation; any candidate activation; any canary; or any rollback
+actuation.
+
+**42. No vector search.** The provider SHALL be constructed with a metadata-only
+reader type that exposes no search method, so search is impossible by type rather
+than by discipline.
+
+**43. Checkpoint-C compatibility.** The provider populates only the existing
+readiness fields Checkpoint C already consumes -- `health_checked`,
+`health_passed`, `rollback_tested`, `rollback_ready` -- plus the window, epoch and
+sequence context Checkpoint C already verifies. No recall floor, latency ceiling,
+epoch sizing, DATASET-003 semantic, verdict precedence, or statistical gate is
+altered.
+
+**44. Integrity and threat model.** Local SQLite storage with append-only triggers
+and digest self-verification provides tamper evidence under a cooperative,
+non-hostile single-host model. No authenticity guarantee against a hostile host is
+claimed. No signatures, Merkle structures, or new cryptography are introduced.
+
+**45. Claim limitations.** `rollback_tested = true` is not evidence of a live
+rollback. Bootstrap readiness proves baseline restorability, not
+candidate-transition rollback. Request-time `ef` is not independently observed.
+Grant state is not verified. Steady-state semantics are not authorized.
+
+**46. Alternatives rejected.** A live rollback drill per window (circular and
+actuating during baseline qualification). Window-0 self-baselining for environment
+identity (permits a replacement baseline). A provider-process-scoped
+`provider_run_id` (contradicts the frozen provider protocol and the fake).
+Performing the observation outside the write transaction (permits two logical
+observations for one window). A global grant-absence predicate (no non-actuating
+scoped query exists). Reuse of the Gate-C execution-environment attestation (wrong
+domain, wrong chronology). Accepting an `LKG_ONLY` marker with matching context as
+bootstrap proof (circular: not verified Phase-3 authority). Depending on the
+route-state module's private serializer (no public API exists).
+
+**47. Test requirements.** Fresh pass; health fail; rollback fail; both fail;
+provider infrastructure error persisting nothing; idempotent retry with
+observer-invocation counting; restart then lookup returning exact bytes; post-seal
+lookup performing zero observation; check-id and window conflict cases;
+non-canonical check id refused before observation; concurrent duplicate capture
+invoking the observer exactly once; crash before and after commit; restart before
+the next window, before sealing, and after sealing; corrupted database; wrong
+schema version; digest and payload tamper; update and delete refusal; symlink,
+alias, mode and owner refusal; wrong run and wrong binding refusal; run-bound
+environment authority enforced at window 0; environment change before window 0
+failing rather than re-baselining; route absent passing; `ACTIVATING` failing;
+`LKG_ONLY` failing even with fully matching fields; unreadable route state failing
+closed as provider inability; no private serializer import; no grant-store access;
+deterministic canonicalisation of route absence; verified-latest D1/D2 present
+causing refusal; provider testable without operator path authority; and the
+zero-actuation guarantees.
+
+**48. Supersession and versioning.** Until the first production qualification run
+no durable evidence exists under this ADR, which may therefore be superseded by a
+later amendment with no migration. After the first run, superseding requires a new
+`readiness_schema_version` and a new qualification run; existing evidence is never
+rewritten.
+
+**49. Module ownership.** New: `src/vdbench/lkg_window_readiness_observation.py`,
+`src/vdbench/lkg_window_readiness_store.py`,
+`tests/test_lkg_window_readiness_observation.py`,
+`tests/test_lkg_window_readiness_store.py`. Unchanged: `lkg_window_readiness.py`,
+`lkg_phase2_readiness_ledger.py`, `canary_route_state.py`,
+`canary_grant_store.py`, all Checkpoint-C modules, all Phase-3 modules. The LKG
+qualification operator and its store-path authority are a separate later task.
+
+#### Amendment (ADR-020a): LKG-specific collection-schema and index-identity sub-digests
+
+Status: **ACCEPTED** (2026-08-31). Risk: **CRITICAL**. Amends ADR-020 sections 6,
+7 and 9 only.
+
+**Why.** ADR-020 section 7 requires each governed collection in the stable LKG
+environment identity to bind a *collection-schema digest* and an *index identity
+digest*. ADR-020 section 6 forbids reusing EXP-012 digest domains. The only
+collection-schema and index-identity digests that exist in current source are
+Gate-C's, computed privately under
+`b"VD::EXP012_GATE_C_COLLECTION_SCHEMA::V1\x00"` and
+`b"VD::EXP012_GATE_C_INDEX_IDENTITY::V1\x00"`. Section 7 was therefore not
+literally implementable without new LKG-scoped digest identities that the base
+ADR never enumerated. This amendment resolves that ambiguity by defining them,
+and preserves the section 7 digest-based abstraction rather than replacing it
+with an expanded raw-normalized model.
+
+**LKG collection-schema identity.** Domain
+`b"vdbench.lkg-collection-schema.v1\0"`. Canonical payload fields, exactly:
+`schema_version`, `collection_name`, `database_name`, `fields`, where
+`schema_version` is exactly `"lkg-collection-schema-v1"` and `fields` is the
+deterministic normalized collection-field representation. The digest is
+`sha256(domain + canonical_json_bytes(payload))`, lowercase hex. The payload
+SHALL NOT contain entity count, load state, index readiness, health-endpoint
+state, container health, timestamps, or any transient readiness fact.
+
+**LKG index identity.** Domain `b"vdbench.lkg-index-identity.v1\0"`. Canonical
+payload fields, exactly: `schema_version`, `collection_name`, `database_name`,
+`collection_schema_sha256`, `index_name`, `index_type`, `index_metric`,
+`index_parameters`, where `schema_version` is exactly `"lkg-index-identity-v1"`.
+`collection_schema_sha256` SHALL be the LKG collection-schema digest defined
+immediately above, never a Gate-C digest and never a caller-supplied unrelated
+hash. The digest is `sha256(domain + canonical_json_bytes(payload))`, lowercase
+hex. The payload SHALL NOT contain transient readiness state.
+
+**Top-level section 7 collection entry.** Each governed collection entry in the
+stable LKG environment document binds exactly: `collection_name`,
+`collection_schema_sha256`, `index_identity_sha256`, `index_type`,
+`index_parameters`, `metric`, `dimensions`, `entity_count`. `database_name`,
+the raw normalized `fields`, `index_name` and `index_metric` are governed
+transitively through the two sub-digests and SHALL NOT be elevated into the
+top-level entry. The redundancy that section 7 requires -- `index_type`,
+`index_parameters`, `metric`, `dimensions`, `entity_count` appearing at top level
+even though the sub-digests already bind some of them -- is deliberate and SHALL
+NOT be optimised away.
+
+**Deterministic ordering.** So that a future operator can independently
+reproduce `LkgRunBinding.environment_identity` before dispatch, the stable
+environment document fixes ordering: containers appear in the order
+`("etcd", "minio", "milvus")`; governed collections appear in the order
+`(FLAT, HNSW)`; normalized collection fields are sorted by field name; index
+parameters are sorted by parameter name.
+
+**Prohibitions.** The implementation SHALL NOT reuse the EXP-012 collection-
+schema or index-identity digest domains, SHALL NOT import or re-implement the
+private Gate-C schema/index digest builders, SHALL NOT expose those private
+helpers merely to serve LKG, and SHALL NOT treat a Gate-C digest value as
+interchangeable with an LKG digest value. A Gate-C identity and an LKG identity
+over the same observed collection are, by construction, different values.
+
+**Unchanged.** The outer stable environment identity domain remains
+`b"vdbench.lkg-environment-identity.v1\0"` with the `lkg-env-identity-v1:sha256:`
+prefix. This amendment introduces no other identity domain and alters no health
+predicate, rollback semantic, first-LKG bootstrap rule, route-state rule, grant
+omission, runtime-`ef` claim boundary, `readiness_check_id`, `provider_run_id`,
+provider or store durability contract, concurrency contract, observed-failure
+versus provider-inability distinction, reason-code set, or Checkpoint-C
+semantic.
+
+#### Amendment (ADR-020b): Retained canonical evidence consistency and readiness-store v2
+
+Status: **ACCEPTED** (2026-09-04, explicit human acceptance including the
+Finding-A reconstruction clarification). Scope: **Core**. Risk: **CRITICAL**.
+Amends the observation boundary and sections 15–25 and 44 of ADR-020; historical
+source documents, their domains, and predicate semantics remain unchanged.
+
+**Retained evidence, not unavailable history.** The trusted canonical production
+builders produce digest-bound recorded evidence. Before aggregate construction,
+the readiness boundary validates exact result types, source-document shapes and
+canonical representation, fixed source identities, capture run/binding identity,
+retained environment/configuration predicates, and allowed sorted unique reason
+codes. It recomputes the existing source digests and requires the returned reason
+codes to equal the document's recorded codes. Both existing builders define
+success exactly as an empty reason set; returned `passed`/`ready` must satisfy
+that rule. Any inconsistency raises and persists no capture. Validation performs
+no observation and adds no omitted fields. Recorded Docker/runtime causes and
+original expected baseline/serving comparison operands that are absent from the
+document are not independently regenerated or reconstructed.
+
+**Exact durable preimages.** Health and rollback canonical source-document bytes
+are durable first-LKG qualification evidence. Schema-v2
+`lkg_window_readiness_evidence` adds `health_source_document_bytes BLOB NOT NULL`
+and `rollback_source_document_bytes BLOB NOT NULL`. Both exact UTF-8 canonical
+JSON preimages and their aggregate are one row in the existing `BEGIN IMMEDIATE`
+transaction: all commit or none do. Existing source digests transitively bind
+these bytes. Reopen and lookup require byte-identical parse/canonical-serialize
+round trips, source-document validation, matching source digests and verdicts,
+and the aggregate's existing sorted union of source reasons and digest check.
+No read repairs persisted bytes or re-observes. Recovery means recovery of the
+exact canonical evidence document, not omitted transient runtime inputs.
+
+**Schema and integrity.** Readiness-store `PRAGMA user_version` is now **2**;
+aggregate `READINESS_SCHEMA_VERSION` remains 1. Construction/reopen verifies exact
+application object inventory, both table definitions and PRAGMA column/STRICT/
+key structure, constraint indexes, and exactly four correctly named/targeted
+`BEFORE UPDATE`/`BEFORE DELETE` append-only refusal triggers. DDL comparison
+normalizes only formatting whitespace outside quoted literals and an optional
+trailing semicolon; literal case and content are preserved. Full
+`PRAGMA integrity_check` must return exactly one `ok` on construction/reopen,
+not per capture. There are no foreign keys requiring a foreign-key check.
+Invalid schemas, missing triggers or binding rows are refused, never repaired.
+Connection setup does not change a refused database's persistent journal mode.
+Version 1 is deterministically refused, not upgraded or migrated. No real
+canonical first-LKG state exists at acceptance, so no production migration is
+needed; future qualification starts in a fresh v2 store.
+
+**Design review, verification and rollback.** Retaining two preimages in the
+existing row is selected over separate tables/files: it needs no cross-store
+coordination, new authority, or partial-state recovery and preserves existing
+locking/idempotency. Omitting preimages would not provide durable forensic
+evidence; expanding source payloads to recover omitted causes is unauthorized.
+Local reuse of established DDL/PRAGMA checks avoids a shared schema framework.
+Focused tests cover canonical/failing observations, malformed and inconsistent
+results, tampered preimages, restart/idempotency, all 24 documents, pre-commit
+failure, schema/trigger variants, integrity refusal, and unchanged Finding-C
+behavior. Adjacent readiness, Phase-2, Checkpoint-C and Phase-3 tests check
+compatibility; no live benchmark or empirical performance claim is made.
+Manual verification uses those fake-only tests and inspection of their temporary
+SQLite rows. Rollback before live use is a reviewed source reversal and a fresh
+store, never an in-place evidence rewrite or v1 fallback. Full-suite execution,
+source freeze, commit/push and live authority remain separate later gates.
+
+**Unchanged boundaries.** Raw preimages are not added to readiness aggregate,
+Phase-2 ingestion, Checkpoint-C, D1 or D2 payloads. Their digest/authority semantics,
+run-binding shape/domain, source domains, source-document shapes and Finding-C
+source verification remain unchanged. No new digest domain is introduced.
+Cooperative-host structural integrity and forensic recovery do not establish
+cryptographic authenticity against a hostile same-account rewrite or complete
+raw-observation replay. All other ADR-020 claim limitations remain in force.
+
+### ADR-021: Production LKG qualification operator, prepared run authority, and the D1 review boundary
+
+Status: **ACCEPTED** (2026-09-01). Risk: **CRITICAL**.
+
+**1. Problem.** ADR-020 section 39 deliberately left one seam open: the readiness
+provider protects same-file identity and concurrency, but SQLite locking cannot
+establish that exactly one authoritative readiness store exists for a
+`source_run_id`. ADR-020 section 40 named the owner -- "the LKG preparation and
+operator authority" -- and forbade real execution until it exists. No committed
+code constructed the production composition around `LkgQualificationRunner`,
+`LkgQualificationProducer`, the Phase-1 ledger and seal, `Phase2ReadinessLedger`,
+`LkgQualificationEvaluationLedger`, and the Phase-3 modules. This ADR freezes
+that operator.
+
+**2. Scope.** Adds one production operator module and its focused tests. Changes
+no existing module, no schema, no readiness contract, no Phase-1/Phase-2 semantic,
+and no Checkpoint-C statistical semantic. It composes; it does not redefine.
+
+**3. Four modes, never fewer.** `preflight` (read-only), `prepare` (freeze and
+print the authority a human authorizes), `execute` (live qualification, terminal
+at Checkpoint C), and `phase3` (separate, no-search D1/D2 persistence). The
+operator SHALL NOT collapse these, and `execute` SHALL NOT fall through into
+`phase3` under any outcome.
+
+**4. Prepared authority is derived, never stored.** `build_lkg_qualification_plan`
+is a pure function of one exact-keyed operand file, mirroring
+`exp010_gate_c_operator.build_gate_c_plan`. Its digest is
+`sha256(b"VD::LKG_QUALIFICATION_PREPARED_AUTHORITY::V1\0" +
+strict_canonical_json_bytes(<plan without the digest field>))`, rendered as 64
+lowercase hex under key `prepared_authority_sha256`, schema version
+`lkg-qualification-prepared-authority-v1`. This domain is disjoint from every
+EXP-012 domain and from every ADR-020/ADR-020a identity domain. A rejected
+alternative was a persisted preparation manifest: it would add an artifact
+lifecycle, an immutability enforcement surface, and a migration story, and could
+drift from the operands that produced it, while a derived authority cannot.
+
+**5. `source_run_id` is an operand, never generated; and it identifies exactly
+one governed history.** So are `execution_source_revision` and every identity
+the run binds. The operator contains no id-minting facility of any kind, so a
+restart, a retry, a failed attempt, or a durably spent run cannot acquire a new
+run identity. A new run identity requires a new operand file, hence a different
+authority digest, hence a new preparation, review, and human authorization
+cycle.
+
+Non-minting alone is insufficient, and an earlier revision of this operator
+proved it: with `run_root` supplied as an operand, one `source_run_id` could be
+pointed at two roots and produce two complete governed histories -- two Phase-1
+lineages, two readiness lineages, two terminal Checkpoint-C digests, and two D2
+references in one shared authority store -- with identical
+`run_binding_sha256`, and nothing detected the collision. Binding `run_root`
+into the prepared-authority digest did not prevent it, because two different
+digests are exactly what two separate authorizations produce. The uniqueness
+scope is therefore defined explicitly in section 6.
+
+**6. One canonical store layout, and one run root per `source_run_id`.** The
+canonical LKG authority scope is the directory holding the governed
+verified-latest LKG (D2) authority store. Within one such scope the run root is
+DERIVED, never supplied:
+
+    run_root = <lkg_authority_store_path>/../runs/<source_run_id>
+
+`source_run_id` becomes one path component and is therefore constrained to
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a leading alphanumeric excludes `.` and
+`..` and the charset excludes separators, so no `source_run_id` can escape its
+scope root. Because `run_root` is not an operand, the operand set "same
+`source_run_id`, same scope, different root" cannot be expressed at all: the
+one-history-per-run-id invariant holds by construction rather than by check,
+with no registry, no reservation, no allocation, and therefore no concurrency
+race. Two different authority store paths are two different scopes -- two
+independent deployments -- which this invariant deliberately does not join.
+
+Exactly four run-scoped paths are then derived from that run root, none
+separately supplied: `phase1_qualification.sqlite3`,
+`window_readiness.sqlite3`, `phase2_readiness.sqlite3`, and
+`checkpoint_c.sqlite3`. This is what closes ADR-020 section 39's seam as that
+section actually words it -- exactly one authoritative readiness-store path per
+`source_run_id`, not merely per run root. A conflicting second history under
+the same `source_run_id` lands on the same run root and is refused by the
+canonical Phase-1 ledger's own stored-binding check, before the producer
+dispatches anything. Restart of the identical history re-derives the identical
+paths. The run root is created private (`0o700`) and a non-private existing
+root is refused with `LKG_RUN_ROOT_NOT_PRIVATE`.
+
+Two further paths are governed *operands*, not derivations, and are frozen in
+the prepared authority: the canonical route-state marker and the
+verified-latest LKG (D2) authority store. Both are global serving state. A
+run-scoped copy of either would be permanently empty for a fresh run, which
+would silently make ADR-020 section 4's first-LKG-only refusal and sections
+28-31's route-state rules unreachable -- a validation that cannot fail is not a
+validation. Both must be absolute.
+
+**7. Human authorization binds one exact prepared authority.** A physical-search
+confirmation alone SHALL NOT authorize live execution. `--mode execute` requires
+both `--confirm-live-lkg-qualification-searches` and
+`--expect-prepared-authority-sha256 <digest>`, and the operator re-derives the
+authority from the operands and refuses on any difference. A stale, changed,
+tampered, or different preparation -- including a different `source_run_id`, run
+root, readiness path, DATASET-003 binding, `SearchConfiguration`, environment
+identity, or execution source revision -- therefore refuses before any physical
+search and before any durable store is opened.
+
+**8. Execution source revision.** The operand `execution_source_revision` is
+verified against the actual runtime checkout by the generic verifier in
+`gate_c_execution_source.py`, which proves HEAD, that the committed `src/vdbench`
+tree matches the filesystem byte-for-byte, that no untracked executable file
+exists inside the package, and that imported modules originate there. A live run
+therefore cannot claim a clean execution revision while governed source remains
+untracked or modified. That verifier carries no Gate-C campaign semantics; only
+its module name is historical. The future live LKG execution revision is the
+eventual frozen revision containing the converged readiness provider, this
+operator, and any source-convergence repairs -- never a revision predating them.
+
+**9. Environment continuity.** Preparation freezes the stable LKG environment
+identity as an operand. Immediately before the first dispatch, and after the run
+binding exists, the operator re-observes it through ADR-020's canonical public
+read-only observation entry point and requires exact equality; a mismatch refuses
+before any search. Thereafter every 200-position window compares against the same
+run-bound authority, and window 0 can never establish a replacement baseline.
+
+**10. Readiness integration.** For each window `w` in `[0, 12)`, the operator
+requires the canonical Phase-1 completion of positions `200w .. 200w+199` -- each
+exactly one durable `SUCCESS` and no durable failure -- before deriving the
+canonical `readiness_check_id` and calling the converged production provider's
+`capture_or_return`. It creates no second readiness model, serializes no readiness
+evidence itself, and never uses the fake provider in production. A durably
+observed readiness failure stops further dispatch and further capture, exactly as
+ADR-020 section 38 requires; provider inability propagates and persists nothing.
+
+A run whose Phase-1 evidence already contains a durable position failure is
+spent: the seal classifies such a position FAILED regardless of any later
+success, so no further dispatch can change the outcome. The operator detects
+that state before re-entering the producer and halts with
+`LKG_RUN_LINEAGE_SPENT`, issuing zero further searches. It never repairs the
+failed evidence, never erases the failure, and never mints a replacement run
+identity; recovery requires a new prepared, reviewed, and authorized run.
+
+**11. Terminal Checkpoint C, then STOP.** `execute` seals Phase 1 with a
+re-derived expected completion state, ingests exactly the captured windows through
+`Phase2ReadinessLedger` (whose `provider.lookup` performs zero re-observation),
+finalizes terminal Checkpoint C, and reports status, `qualified`, and the
+canonical evaluation digest. It creates no D1 and no D2 under any outcome,
+including a PASSING one.
+
+**12. The D1 independent-review boundary.** `phase3` requires an externally
+supplied `--expected-checkpoint-c-digest`. The operator SHALL NOT read back the
+digest its own execution just produced and treat it as reviewed authority. A
+missing, malformed, or non-matching digest refuses; a non-PASSING or
+non-`qualified` evaluation refuses, even when handed its own genuine digest.
+
+**13. Zero actuation.** The operator imports no admission, approval, grant,
+activation, live-runner, rollback, routing, policy, or Milvus-actuation module.
+It performs no `ef` change, no index rebuild, no route mutation, no grant
+reservation, no candidate activation, no canary, and no rollback. Its only
+live-client construction lives in `production_dependencies`, reached solely from
+`main`, and the readiness reader remains metadata-only by type.
+
+**14. Preflight and preparation mutation boundary.** Both contact nothing and
+create no file of any kind -- not a run root, not a ledger, not a readiness store.
+Preflight reports prospective paths and whether they already exist without opening
+them, because the ledger constructors create durable state on construction.
+Neither mode issues a search.
+
+**15. Module ownership.** New: `src/vdbench/lkg_qualification_operator.py`,
+`tests/test_lkg_qualification_operator.py`. Unchanged: every ADR-020 module, every
+Phase-1/Phase-2/Checkpoint-C/Phase-3 module, and every canary module.
+
+**16. Claim limitations.** Implementing and unit-testing this operator does not
+authorize a live LKG qualification run, a DATASET-003 campaign, real D1/D2 use,
+candidate generation, a grant, a canary, or a rollback. Each remains gated on its
+own separate authorization, and on a source freeze this ADR does not grant.
+
+
+### ADR-022: Canonical deployment governance scope -- one logical deployment, one route-state authority, one LKG authority store, one run namespace
+
+Status: **ACCEPTED** (2026-09-01) by explicit human authorization of the
+canonical-deployment-governance contract. Risk: **CRITICAL**. Supersedes
+ADR-021 sections 6 and 7 and corrects ADR-021 section 6's concurrency claim;
+restates ADR-021's `run_root` derivation unchanged. Amends no accepted ADR and
+rewrites no historical text.
+
+**1. Problem.** ADR-021 closed one uniqueness defect and left another. It
+derived `run_root` from `Path(lkg_authority_store_path).parent`, which
+guarantees one run root per `source_run_id` *within one caller-selected
+authority-store path*, and it declared that two different authority-store paths
+are two independent deployments. That declaration had no support in accepted
+architecture and is contradicted by ADR-020 section 7, which already defines an
+identity over physical deployment facts. Independent review mechanically
+reproduced two P1 defects from that single root cause.
+
+**2. P1-A, reproduced.** Holding constant `source_run_id`, `environment_identity`,
+`serving_configuration_identity`, `SearchConfiguration`, DATASET-003 identity,
+base-data identity, HNSW index identity, Milvus endpoint semantics and
+`execution_source_revision`, and varying only `lkg_authority_store_path`, both
+operand sets prepared, were separately human-authorizable, executed 2,400
+qualification searches each, reached distinct terminal PASSING Checkpoint-C
+digests, resolved D1, and appended their own D2 store -- two independent
+verified-latest LKG authority universes for one logical deployment. Binding the
+path into `prepared_authority_sha256` did not prevent it, for exactly the reason
+ADR-021 section 5 gives about `run_root`: two different digests are what two
+separate authorizations produce.
+
+**3. P1-B, reproduced.** Driving the real `LkgProductionWindowReadinessObserver`
+and the real canonical route-state read, one deployment whose route state was
+`ACTIVATING` observed `rollback_ready = false` with reason
+`CANDIDATE_ROUTE_ACTIVE` at its actual marker, and `rollback_ready = true` with
+no reason codes at a second, empty, caller-selected `route_state_path`. ADR-020
+sections 28-30 are written about "the canonical route-state store"; no such
+store existed.
+
+**4. Root cause.** Deployment-global governance state was addressed by
+caller-supplied filesystem path, so path selection *defined* deployment
+identity. The two global paths were independent operands, so one authorization
+could even name two different deployments -- route state at one, D2 at another
+-- and nothing detected it.
+
+**5. Identity model: three identities, never collapsed.**
+*Observed environment identity* (ADR-020 sections 5-7, unchanged) is a
+RUNTIME-INSTANCE identity. Measurement confirms it changes on container id,
+restart count, started-at, image, collection schema, index identity, entity
+count, endpoint, container names, database name and collection names, and is
+stable only for the transient predicates section 8 already excludes. Section 7
+says so outright: "A container restart changes the restart count and therefore
+changes this identity, by design." Keying persistent governance on it would fork
+the namespace on the first Milvus restart and orphan both the route-state
+authority and the entire D2 lineage. It SHALL NOT be the governance key and is
+not redefined here.
+*Logical deployment identity* is `deployment_identity` (ADR-017 item 3): a
+governed identity, never defaulted, never inferred, stable across every event
+above.
+*Deployment governance namespace* is the filesystem namespace derived from the
+logical deployment identity under the canonical governance root.
+
+**6. Canonical governance root.** `CANONICAL_VD_GOVERNANCE_ROOT =
+Path.home() / ".local" / "share" / "vd"`, a source constant in
+`src/vdbench/deployment_governance.py`. It is SOURCE authority: not a CLI flag,
+not an operand, not an environment variable, not an XDG override, not a config
+file, not `campaign_root`, not `run_root`, not the Milvus URI, not the working
+directory, and not a mutable module global production can rebind. No
+workstation-specific absolute literal is committed. Changing it is a governed
+source change requiring normal review, tests and source freeze.
+
+**7. Canonical ENV-001 logical deployment identity.**
+`CANONICAL_ENV001_DEPLOYMENT_IDENTITY = "ENV-001-exp010-l2-v1"`, human-assigned
+source authority. At every production call site it is a DERIVED/SOURCE FACT, not
+an operand. It is deliberately NOT exposed as a production CLI or operand field:
+replacing a caller-chosen path with a caller-chosen identity string would
+preserve the defect in a new spelling. No alias -- `env-001`, `ENV-001`,
+`deployment`, `offline-deployment`, `offline-v2-engine`, `ENV-001-alt` -- is
+selectable by a qualification invocation. A future ENV-002 requires its own
+explicit source and architecture addition and is not implemented here.
+
+**8. Namespace derivation.** `deployment_identity` is validated against
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}` -- the charset already proven path-safe for
+`source_run_id`. The namespace document is exactly
+`{"schema_version": "vd-deployment-governance-namespace-v1",
+"deployment_identity": <value>}` and the digest is
+`sha256(b"VD::DEPLOYMENT_GOVERNANCE_NAMESPACE::V1\0" +
+strict_canonical_json_bytes(document))`, rendered as 64 lowercase hex,
+untruncated. The domain is disjoint from every EXP-012 domain, every
+ADR-020/ADR-020a identity domain, and the prepared-authority domain. The
+preimage binds the logical deployment identity and nothing else: no
+`environment_identity`, no Milvus URI, no container identity, no configuration
+identity, no data identity, no `source_run_id`. A digest rather than the raw
+identity becomes the path component because a raw-identity directory would
+collide under case folding on a case-insensitive filesystem and would admit
+unicode spelling variance.
+
+**9. Canonical deployment governance scope.**
+
+    canonical_root = realpath(expanduser(CANONICAL_VD_GOVERNANCE_ROOT))
+    G              = canonical_root / "deployments" / <namespace_digest>
+
+`G` is DERIVED. It SHALL NOT be supplied by an operand, a CLI flag, an
+environment variable, a config override, a campaign root, or a mutable global.
+`realpath` anchoring before any child path is composed is what removes the
+lexical-alias variance ADR-021's `Path(store_path).parent` derivation carried.
+One immutable `DeploymentGovernanceScope` carries `deployment_identity`,
+`namespace_digest`, `canonical_root`, `scope_root`, `route_state_path`,
+`lkg_authority_store_path` and `runs_root`; production code receives that object
+and never recomputes an equivalent path of its own.
+
+**10. Canonical route-state path.** `G/route_state.json`. `route_state_path` is
+REMOVED from the production operand set and is not replaced by any other
+caller-selectable route, state, governance or deployment root. An operand
+document still carrying it is refused as `LKG_OPERANDS_UNEXPECTED` by the closed
+schema, before workload load, environment observation, governance-store
+construction, Phase-1 ledger construction, readiness observation and any search.
+Refusal rather than silent ignoring is required: an ignored field would let the
+operator read one marker while the human reviewed a document naming another. The
+production readiness observer reads only `G/route_state.json`. The low-level
+`FileCanaryRouteStateStore(path)` constructor remains valid as an injected
+mechanism and test seam, and the route-state record schema is unchanged.
+
+**11. Canonical LKG (D2) authority path.** `G/lkg_authority.sqlite3`.
+`lkg_authority_store_path` is REMOVED from the production operand set, with the
+same refusal semantics. Every operator action touching verified-latest LKG
+authority -- the presence check, the D2 append, the D2 load, and the D1/D2 pair
+binding the operator performs -- uses this exact derived path. The low-level
+`LkgPhase3AuthorityReferenceStore(path)` constructor remains valid as an
+injected mechanism and test seam. D2 schema is unchanged: no deployment column,
+no new `source_run_id` conflict rule. P1 closure comes from canonical scope
+selection, never from a late D2 rule that would already have permitted a full
+conflicting 2,400-query history.
+
+**12. Canonical run root.** `run_root = G/runs/<source_run_id>`, derived, never
+an operand; `source_run_id` validation is unchanged; the four run-scoped stores
+`phase1_qualification.sqlite3`, `window_readiness.sqlite3`,
+`phase2_readiness.sqlite3` and `checkpoint_c.sqlite3` derive from it with
+unchanged schemas. ADR-021's `run_root` repair is preserved in full; only its
+anchor moves from caller-selected to derived.
+
+**13. Production operand set.** 34 minus `route_state_path` and
+`lkg_authority_store_path` equals **32**. `deployment_identity` is deliberately
+not added: this repair removes caller degrees of freedom rather than trading a
+path choice for a string choice. The canonical deployment identity appears in the
+prepared authority as a derived source fact.
+
+**14. Cross-component convergence.** Every production reader and writer of a
+deployment's route state SHALL resolve `G/route_state.json`, and every production
+reader and writer of its verified-latest LKG authority SHALL resolve
+`G/lkg_authority.sqlite3`. Today the LKG qualification operator is the only wired
+production route-state construction root; candidate activation, rollback and
+expiry reconciliation consume injected route-state stores through protocols and
+have no production composition root, so this ADR fabricates none, rewrites none
+of their business logic, and replaces none of their injected constructors. When
+any of them acquires a production composition root it SHALL resolve route state
+through the same canonical deployment governance scope. A repair that
+canonicalizes only LKG readiness while another writer may still choose a second
+route store does not satisfy this ADR.
+
+**15. Production path authority versus test path injection.** Production path
+authority derives only from `(CANONICAL_VD_GOVERNANCE_ROOT,
+CANONICAL_ENV001_DEPLOYMENT_IDENTITY)`. Tests obtain isolation through one
+in-process seam: an explicit `governance_scope` keyword on
+`build_lkg_qualification_plan`, `run_preflight`, `execute_lkg_qualification`,
+`resolve_and_persist_phase3_authority` and `production_dependencies`, defaulting
+to the canonical derivation. A `--governance-root` flag, a `VD_GOVERNANCE_ROOT`
+environment variable, an XDG override, a governance operand, or a mutable
+module-level root SHALL NOT be introduced; each would reopen P1-A through a new
+door. Tests SHALL NOT write the real canonical root.
+
+**16. Prepared authority V2.** Schema `lkg-qualification-prepared-authority-v2`,
+domain `b"VD::LKG_QUALIFICATION_PREPARED_AUTHORITY::V2\0"`. No real prepared
+authority and no real LKG execution ever existed under V1, so no compatibility
+path is owed and none is invented; the bump exists because the V2 document is
+materially different and two different documents must not share one schema
+identity. The document separates CALLER AUTHORITY INPUTS from DERIVED /
+SOURCE-GOVERNED AUTHORITY FACTS. Derived facts include `deployment_identity`,
+`deployment_namespace_digest`, `deployment_governance_root`,
+`deployment_governance_scope_root`, `run_root`, the four run-scoped
+`store_paths`, the `canonical_global_paths` for route state and LKG authority,
+the `SearchConfiguration` document and digest, and the re-derived DATASET-003
+ordered-population identity. The V1 section name `governed_global_paths` is
+retired in favour of `canonical_global_paths`, because the paths are no longer
+caller-governed and a misleading name is a governance hazard.
+
+**17. Path authority versus mutable global content.** The prepared authority
+freezes WHERE canonical deployment-global authority lives. It SHALL NOT freeze
+the current content of `route_state.json` or the current latest record of
+`lkg_authority.sqlite3`. Both are live global serving state; freezing either
+would turn every legitimate live transition into a re-authorization event and
+would degrade live fail-closed revalidation into a stale snapshot comparison.
+Preflight MAY report read-only existence facts about them separately; those
+facts are not part of the immutable digest.
+
+**18. Preflight and prepare.** Both contact nothing, issue zero searches, and
+create no file of any kind -- not a deployment scope, not a run root, not a
+ledger, not a readiness store. Scope derivation is pure apart from `realpath`,
+which is a read, so the complete canonical scope can be resolved and printed
+without bringing deployment state into being. The deployment scope directory is
+created only by `execute`, only after every identity and continuity check, at
+mode `0o700`; an existing scope that is a symlink, a non-directory, or
+group/world-accessible is REFUSED (`DEPLOYMENT_SCOPE_NOT_A_DIRECTORY`,
+`DEPLOYMENT_SCOPE_UNUSABLE`, `DEPLOYMENT_SCOPE_NOT_PRIVATE`) rather than
+repaired: silently chmodding pre-existing state would be a data-loss hazard.
+
+**19. Execute re-derivation and the human gate.** `execute` INDEPENDENTLY
+re-derives the canonical deployment scope from source authority and rebuilds the
+plan from it; the path strings a V2 document happens to contain are never
+trusted as inputs. It then requires the externally supplied
+`--expect-prepared-authority-sha256` to equal that freshly derived authority, and
+separately requires `--confirm-live-lkg-qualification-searches`. Neither alone
+may search, and no digest the operator itself just produced is ever treated as
+approved.
+
+**20. Live global-state revalidation.** Unchanged from ADR-020. The production
+readiness observer re-reads `G/route_state.json` and `G/lkg_authority.sqlite3` at
+every readiness window under the existing cadence. `ACTIVATING` yields
+`CANDIDATE_ROUTE_ACTIVE`; `LKG_ONLY` without verified authority yields
+`BOOTSTRAP_LKG_ROUTE_MARKER_PRESENT`; an appearing verified-latest D2 yields
+`STEADY_STATE_SEMANTICS_NOT_AUTHORIZED`; a corrupt or unreadable route or D2
+store is provider inability -- raise, persist nothing. None of these semantics is
+redesigned.
+
+**21. First-LKG timing is not promoted.** The contract resolution classified a
+global route/D2 content check before the first 200 searches as OPTIONAL
+HARDENING / deferred P3. This repair therefore introduces no new pre-dispatch
+route/D2 content gate. P1-A and P1-B concern WHICH canonical state is consulted,
+not WHEN ADR-020 first consults it. The pre-dispatch checks that already exist --
+execution source, prepared authority, environment continuity, operand and
+workload validation -- are unchanged.
+
+**22. Multi-deployment semantics.** Distinct logical deployment identities yield
+distinct namespace digests, hence disjoint scopes and fully independent route
+state, LKG authority and run histories. No global singleton across VD deployments
+is introduced.
+
+**23. Restart and redeployment namespace continuity.** The governance namespace
+is stable across Milvus process restart, container restart, container-id change,
+restart-count change, started-at change, same-image restart, new-image
+deployment, same endpoint with a new container, collection reload, index rebuild
+or replacement, data replacement and entity-count change -- every event that
+changes the observed environment identity by design. Milvus hostname and port
+spelling (`localhost`, `127.0.0.1`, `::1`) does not mint a deployment identity
+and cannot create separate governance universes. A deliberate relocation that
+retains `ENV-001-exp010-l2-v1` retains the same namespace. Unexpected endpoint or
+environment drift during a run may still fail the existing runtime continuity
+contract; that is separate from persistent namespace selection.
+
+**24. No deployment registry.** No mutable `deployment_identity` to path mapping
+is created. Deterministic source derivation makes one unnecessary, and a registry
+would need its own crash safety, concurrency protocol and bootstrapping, and
+would be circular because it would itself need a canonical location. No
+sibling-scope scanning is implemented as a hidden uniqueness mechanism.
+
+**25. Concurrency claim correction.** ADR-021 section 6's "and therefore no
+concurrency race" is WITHDRAWN. Deterministic scope and run-root derivation
+removes ALLOCATION ambiguity: no registry, no reservation, no allocation, hence
+no allocation race. It does NOT serialize execution. Two concurrent authorized
+executions of the same history can duplicate physical dispatch and can seal the
+run at an incomplete completion state, spending the run identity. Durable
+evidence remains canonical and fails closed: the Phase-1 position-uniqueness
+constraint refuses the losing writer, an `INCOMPLETE` evaluation without Phase-2
+closure is not persisted, `qualified` is false, and no D1 or D2 is created. **No
+physical exactly-once search guarantee is claimed by this or any other ADR.** No
+execution lock is added here; this remains a deferred P2.
+
+**26. Metadata-reader disposition.** ADR-020 section 42's intent that the
+readiness reader be metadata-only *by type* is not satisfied by the current
+production wiring, which supplies a search-capable client through a weakly typed
+seam. DEFERRED_TO_SOURCE_CONVERGENCE. Adjacency to the edited
+`production_dependencies` is not sufficient reason to widen a CRITICAL P1 patch.
+
+**27. D2 and route-record decisions.** D2: NO SCHEMA CHANGE, no deployment field,
+no new `source_run_id` conflict rule. Route record: NO SCHEMA CHANGE, no
+deployment field. Canonical path authority closes both P1s.
+
+**28. Fail-closed rules.** An invalid deployment identity refuses before any path
+is built (`DEPLOYMENT_IDENTITY_INVALID`). An unsafe run-id path component refuses
+(`DEPLOYMENT_RUN_ID_INVALID`). A non-private, non-directory or aliased scope
+refuses. A legacy global-path operand refuses (`LKG_OPERANDS_UNEXPECTED`). A
+non-`DeploymentGovernanceScope` value at the injection seam refuses
+(`LKG_GOVERNANCE_SCOPE_INVALID`). An unreadable or corrupt route or D2 store is
+provider inability. Every refusal carries one stable reason code and precedes the
+boundary it protects.
+
+**29. Migration and pre-first-LKG supersession.** A read-only check of the
+inspected current host and runtime state found no real LKG D1/D2 authority and no
+canonical route-state artifact, and no real DATASET-003 qualification has run.
+MIGRATION REQUIREMENT: NONE_PRE_FIRST_LKG. No migration action was performed and
+no state was moved, copied, merged, renamed, rewritten or deleted. ADR-020
+section 48's pre-first-run supersession licence covers the prepared-authority
+schema, the operand set and the run-root anchor.
+
+**30. Alternatives rejected.** *Caller-supplied path bound into the
+prepared-authority digest* -- already in force when both P1s were reproduced;
+two valid digests are what two authorizations produce. *Validating a supplied
+path against the derived one* -- leaves the operand in the surface, and any
+validation that can be satisfied once can be satisfied twice. *Late D2 conflict
+detection* -- permits a full conflicting 2,400-query history first. *Environment
+identity as the governance key* -- forks on every container restart, orphaning
+route state and the D2 lineage. *Endpoint identity as the key* -- `localhost`,
+`127.0.0.1` and `::1` normalize to different identities and no canonicalization
+authority exists. *Serving configuration identity as the key* -- identifies
+serving semantics, collides across deployments, and its own module excludes
+deployment identity as a separate domain. *A mutable global deployment registry*
+-- unnecessary, circular, and heavier than the problem. *Sibling-scope collision
+scanning* -- defense-in-depth, not required once path selection is removed.
+*Raw `deployment_identity` as the directory name* -- collides under case folding
+and admits unicode spelling variance. *A `deployment_identity` operand with
+equality validation* -- an unnecessary degree of freedom; the field itself is
+removed rather than checked.
+
+**31. Module ownership.** New: `src/vdbench/deployment_governance.py`,
+`tests/test_deployment_governance.py`. Changed:
+`src/vdbench/lkg_qualification_operator.py`,
+`tests/test_lkg_qualification_operator.py`. Unchanged: every ADR-020 module,
+`canary_route_state.py`, `lkg_phase3_persistence.py`, `lkg_phase3_authority.py`,
+`lkg_phase3_binding.py`, every Phase-1/Phase-2/Checkpoint-C module, every canary
+module, and all EXP-010/011/012 source.
+
+**32. Rollback of this repair.** No durable evidence exists under it until the
+first real qualification, so it may be superseded or reverted with no migration:
+remove the new module, restore the two operands, and revert the prepared-authority
+version. After the first real run, superseding requires a new prepared-authority
+version and a new qualification run; existing evidence is never rewritten.
+
+**33. Claim limitations.** Implementing and unit-testing this repair does not
+constitute an independent review of it, and does not authorize a live LKG
+qualification run, a DATASET-003 campaign, real D1/D2 use, candidate generation,
+a grant, a canary, a rollback, an `ef` change, an index rebuild, a route
+activation, a full-suite run, or a source freeze. Each remains gated on its own
+separate authorization. This ADR repairs P1-A and P1-B only; the concurrency P2,
+the metadata-reader P2, the readiness-provider `container_name` P2 and the
+first-LKG pre-dispatch P3 remain explicitly deferred.
+
+### ADR-023: Pin canonical deployment governance root to OS-account home identity
+
+Status: **ACCEPTED** (2026-09-02) by explicit human authorization of the
+home-identity canonical-root contract, recorded before the canonical full
+repository suite. Risk: **CRITICAL**. Supersedes ADR-022
+section 6's canonical-root RESOLUTION semantics and withdraws its claim that
+that root was "not an environment variable". It supersedes nothing else in
+ADR-022, amends no other accepted ADR, and rewrites no historical text.
+
+**1. Context.** ADR-022 established the invariant that one logical deployment
+maps to exactly one governance scope, and closed P1-A and P1-B by deriving both
+deployment-global paths instead of accepting them. Its implementation anchored
+that derivation on `CANONICAL_VD_GOVERNANCE_ROOT = Path.home() / ".local" /
+"share" / "vd"`, an import-time constant, and `resolve_deployment_governance_
+scope` additionally applied `os.path.expanduser` to the root. On POSIX both
+`Path.home()` and `expanduser` resolve `$HOME`. Independent review therefore
+demonstrated that the process ENVIRONMENT still selected which governance
+universe was authoritative.
+
+**2. P1, reproduced.** Holding constant the repository bytes, the worktree, the
+real uid (501), the account record, `deployment_identity`, the namespace
+schema, domain and preimage, and the logical deployment, and varying only
+`HOME` across four isolated subprocesses, the derivation produced:
+
+    HOME = <login home>   -> root <login home>/.local/share/vd
+    HOME = <temp dir A>   -> root <temp dir A>/.local/share/vd
+    HOME = <temp dir B>   -> root <temp dir B>/.local/share/vd
+    HOME unset            -> root <login home>/.local/share/vd
+
+with the deployment namespace digest identical
+(`a86207fcb53abefdfa4ea7ecda65c323e0e313dce5738b00e39f0686dd302173`) in every
+case. One logical deployment, one uid, one source revision, three distinct
+route-state markers and three distinct D2 lineages. Classification:
+**`P1_HOME_SELECTABLE_GOVERNANCE_ROOT`**.
+
+**3. Why exposure in the prepared authority does not close it.** V2 does carry
+`deployment_governance_root`, so a spoofed root is legible to a human reviewing
+`--mode prepare`. That is not sufficient, and ADR-022 section 2 already says
+why: binding an arbitrary authority choice into a reviewed digest proves WHAT
+was authorized, never that only ONE authority universe is legitimate. Two
+distinct prepared-authority digests can be separately authorized — which is
+exactly how P1-A was reproduced while path binding was already in force. This
+is a defect in the authority derivation, not in its documentation.
+
+**4. Root cause.** Process environment participated in persistent deployment
+authority selection.
+
+**5. Corrected contract.** The canonical account home derives from the OS
+account database and nothing else:
+
+    canonical_account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    canonical_vd_governance_root = canonical_account_home / ".local" / "share" / "vd"
+
+The conceptual location accepted by ADR-022 (`~/.local/share/vd`) is unchanged;
+what changes is that `~` is no longer resolved through caller or process HOME
+authority. The account database answers a uid, and a uid is not something an
+environment variable can spoof.
+
+**6. Root API shape.** The root is a FUNCTION, `canonical_vd_governance_root()`,
+not an import-time constant. The source-governed POLICY is constant and remains
+a constant — `CANONICAL_VD_GOVERNANCE_ROOT_SUFFIX = (".local", "share", "vd")`,
+with no workstation-specific absolute literal committed — but the account
+database RESULT is a runtime OS fact. An import-time snapshot could neither
+fail closed on a malformed account record nor be exercised without reimporting
+the module, and the previous import-time shape is precisely what froze an
+environment-derived value into module state. `CANONICAL_VD_GOVERNANCE_ROOT` is
+removed rather than retained for superficial API continuity.
+
+**7. UID semantics, deliberately narrow.** `os.getuid()` — the REAL uid. Real
+versus effective uid, setuid-service semantics, multi-user daemon semantics and
+system-wide deployment registries are explicitly NOT designed here. The current
+contract is the ordinary local POSIX account model. A future service-user or
+setuid deployment requires its own authority contract.
+
+**8. No process-environment authority.** `HOME` is not authority. `XDG_DATA_HOME`
+is not authority. The working directory is not authority. There is no
+governance-root CLI flag, no governance-root operand, no `campaign_root`
+substitution, no config-file override, and no mutable module-global override.
+`os.path.expanduser` is removed entirely, including from the injected test root:
+a `~` reaching the resolver would resolve `$HOME` and reintroduce exactly the
+authority this ADR removes, so `~/anything` is refused as
+`DEPLOYMENT_ROOT_INVALID`.
+
+**9. Fail closed.** If account-home resolution fails or yields invalid data, the
+derivation REFUSES. `pwd.getpwuid` raising yields
+`DEPLOYMENT_ACCOUNT_HOME_UNRESOLVED`; a `pw_dir` that is absent, not a `str`,
+empty, or relative yields `DEPLOYMENT_ACCOUNT_HOME_INVALID`. There is NO
+fallback to `HOME`, `Path.home()`, `expanduser`, the working directory, `/tmp`,
+or XDG. A root invented after a failed lookup would be precisely the second
+authority universe this module exists to prevent, so refusing is the only safe
+outcome.
+
+**10. Preserved contracts.** `deployment_identity` unchanged;
+`ENV-001-exp010-l2-v1` unchanged; namespace schema
+`vd-deployment-governance-namespace-v1` unchanged; namespace domain
+`b"VD::DEPLOYMENT_GOVERNANCE_NAMESPACE::V1\0"` unchanged; two-key preimage
+unchanged; namespace digest unchanged and independently re-derived; canonical
+route path `G/route_state.json` unchanged; canonical D2 path
+`G/lkg_authority.sqlite3` unchanged; `G = realpath(root)/deployments/<digest>`
+unchanged; `run_root = G/runs/<source_run_id>` unchanged; the four run-scoped
+store filenames unchanged; scope and run-root 0700 hardening unchanged; the
+32-field operand set unchanged; Prepared Authority V2 schema
+`lkg-qualification-prepared-authority-v2` and domain
+`b"VD::LKG_QUALIFICATION_PREPARED_AUTHORITY::V2\0"` unchanged, with the same
+fields and the same exclusion of mutable route/D2 CONTENT; D2 schema unchanged;
+route-record schema unchanged; first-LKG timing unchanged; test-only
+`governance_scope` injection semantics unchanged; no global registry.
+
+**11. Prepared-authority invariance.** For otherwise identical authority inputs,
+changing `HOME` alone now leaves the V2 document and
+`prepared_authority_sha256` byte-identical. The version is deliberately NOT
+bumped: V2's schema, domain, fields and meaning are unchanged, and only HOW the
+canonical root is resolved has changed. For the ordinary account, where the
+account record's `pw_dir` equals the login `HOME`, the user-visible canonical
+pathname is unchanged.
+
+**12. Account boundary.** Changing process `HOME` does not change the governance
+root. Changing the actual POSIX account/uid is a different local-account
+authority boundary and legitimately yields that account's own governance root;
+that is account separation, not a fork of one account's governance state.
+
+**13. Migration.** A read-only check of the inspected host found
+`~/.local/share/vd/deployments` ABSENT, no `route_state.json`, no
+`lkg_authority.sqlite3`, no `runs/`, and no real D1/D2. The repaired root
+resolves to the same ordinary account directory previously expected, so the
+canonical path is unchanged. MIGRATION REQUIREMENT: **NONE_PRE_FIRST_LKG**. No
+state was moved, copied, merged, renamed, rewritten or deleted. Should genuine
+governed authority ever be discovered under a conflicting HOME-derived
+universe, the correct response is to STOP and resolve it under explicit human
+authority — never to migrate automatically.
+
+**14. Claim limitations.** This establishes deterministic ACCOUNT-LOCAL
+authority for the currently supported local POSIX deployment model. It is not
+hostile-host security: a process already running as this account can still write
+the scope directly, which remains ADR-020 section 44's cooperative,
+non-hostile single-host threat model. It is not a system-wide multi-user
+deployment registry. It does not address the concurrency P2, the
+metadata-reader P2, the readiness-provider `container_name` P2, or the
+first-LKG pre-dispatch P3, all of which remain explicitly deferred.
+
+**15. Programmatic scope-injection regression coverage.** Independent review
+attacked the in-process `governance_scope` keyword seam by hand and found it
+safe, but observed that the suite itself attacked only the operand and CLI
+surfaces, leaving the seam without regression protection. That gap is closed
+here with direct tests — prepare under scope A then execute under scope B with
+A's approved digest must refuse `LKG_PREPARED_AUTHORITY_MISMATCH` before any
+dispatch, and a terminal Checkpoint C under scope A must not append D2 under
+scope B — while the seam itself is deliberately NOT redesigned. Runtime
+test-only markers, `__all__` changes for the seam, and a DI framework remain
+deferred P3 hardening under ADR-022 section 15.
+
+**16. Alternatives rejected.** *Amending ADR-022 section 6's wording only* —
+the reviewer's classification is correct that this is an authority-derivation
+defect, and prose cannot remove a degree of freedom. *An import-time constant
+computed from `pwd`* — cannot fail closed cleanly, cannot be exercised without
+reimporting the module, and preserves the frozen-snapshot shape that caused the
+defect. *`os.geteuid()`* — a different local-account authority contract,
+explicitly out of scope. *A VD-specific governance-root environment variable
+with validation* — reopens P1-A through a new door; any validation satisfiable
+once is satisfiable twice. *Refusing when `HOME` disagrees with `pw_dir`* —
+makes a legitimate `HOME` value a failure condition and still consults the
+environment. *Falling back to `Path.home()` when the account lookup fails* —
+converts a refusal into the second authority universe.
+
+**17. Test requirements.** Subprocess HOME-spoof invariance across the real
+login home, two arbitrary temporary homes, and `HOME` unset, asserting identity
+of account home, governance root, deployment identity, namespace digest, scope
+root, route path, D2 path, runs root and run root, with the expected value
+computed by an independent test-side account lookup and no absolute pathname
+committed; a spoofed HOME creating no state under the spoofed root; account
+lookup raising; `pw_dir` empty, relative, wrongly typed, or absent; explicit
+proof that failure never falls back to `HOME`, `expanduser`, XDG or the working
+directory even when all are set to writable decoys; injected test roots still
+bypassing the account lookup so isolation survives a broken account database;
+`~` in an injected root refused; executable-code (not prose) scanning for
+`Path.home`, `expanduser`, `environ`, `getenv` and `XDG`; P1-A and P1-B
+non-regression; programmatic prepare-A/execute-B and phase3 scope-mismatch
+regression; and real-canonical-root test isolation.
+
+**18. Module ownership.** Changed: `src/vdbench/deployment_governance.py`,
+`tests/test_deployment_governance.py`, `tests/test_lkg_qualification_operator.py`.
+Unchanged: `src/vdbench/lkg_qualification_operator.py` — it imports
+`canonical_deployment_governance_scope` and never the removed constant, so the
+root API change reaches it without an edit. Unchanged: every ADR-020 module,
+`canary_route_state.py`, all Phase-1/Phase-2/Checkpoint-C/Phase-3 modules,
+every canary module, and all EXP-010/011/012 source.
+
+**19. No new authorization.** This ADR does not authorize a full-suite run, a
+source freeze, a live LKG preflight, a real DATASET-003 qualification, real
+D1/D2, candidate generation, a grant, a canary, a rollback, an `ef` change, an
+index rebuild, or a route activation. Each remains gated on its own separate
+authorization. ADR-022's `LKG_OPERATOR_CONVERGED` remains SUSPENDED until this
+repair receives its own fresh independent review.
+
+**20. Supersession precision for ADR-022's dependent root wording.** ADR-023's
+opening states that it supersedes ADR-022 section 6's canonical-root RESOLUTION
+semantics. Independent review observed that two further passages of ADR-022
+depend on that same superseded resolver and would otherwise read as current
+truth. This section makes the boundary exact WITHOUT rewriting ADR-022, whose
+text is deliberately preserved byte-for-byte as accepted history.
+
+ADR-022 section 9's `canonical_root = realpath(expanduser(CANONICAL_VD_
+GOVERNANCE_ROOT))` and ADR-022 section 15's `(CANONICAL_VD_GOVERNANCE_ROOT,
+CANONICAL_ENV001_DEPLOYMENT_IDENTITY)` are HISTORICAL. Both name the removed
+import-time constant and the removed `expanduser` step. The current authority is
+section 5 above: `canonical_root = realpath(canonical_vd_governance_root())`,
+where `canonical_vd_governance_root()` is `Path(pwd.getpwuid(os.getuid())
+.pw_dir) / ".local" / "share" / "vd"`, and production path authority derives
+from `(canonical_vd_governance_root(), CANONICAL_ENV001_DEPLOYMENT_IDENTITY)`.
+`realpath` anchoring before any child path is composed is retained unchanged;
+only the value it anchors on is re-derived.
+
+This clarification reaches ONLY ADR-022's root-resolution dependencies. It
+supersedes nothing else in ADR-022. Its deployment namespace schema, domain and
+two-key preimage; its path layout `G = canonical_root/deployments/<digest>`,
+`G/route_state.json`, `G/lkg_authority.sqlite3`, `G/runs/<source_run_id>` and
+the four run-scoped store filenames; its 32-operand set; its prepared-authority
+V2 contract; its route-record and D2 schema decisions; its readiness,
+qualification, D1 and D2 semantics; and every other section remain in force
+exactly as accepted. No ADR-024 is created, because this is wording precision
+about an already-decided supersession, not a new architectural decision.
+
+**21. Account-local trust boundary, stated exactly.** Independent review
+established that when an OS account's `pw_dir` is itself a symlink, `realpath`
+collapses it to one target, and an actor able to RETARGET that symlink could
+relocate the governance root while the account database's textual record is
+unchanged. The current host's `pw_dir` is not a symlink. The finding is
+NON-BLOCKING, and this section records why rather than redesigning root
+authority for it.
+
+VD's protection model is ACCOUNT-LOCAL and COOPERATIVE, per ADR-020 section 44.
+Trusted: the OS account database and the account-local filesystem. An actor with
+authority to retarget this account's home symlink already has authority to write
+the governance scope, the route-state marker and the D2 store directly; the
+symlink is not the weakest path, and defending it would not raise the floor.
+
+Therefore, and stated as limitations rather than as guarantees: VD does NOT
+claim protection against a hostile administrator, against a hostile process
+already running as this account, or against an actor who can rewrite the account
+database or the account-local filesystem. `realpath` provides CANONICAL ALIAS
+COLLAPSE -- one pathname for one directory, so lexical variants cannot mint a
+second authority universe -- and NOT hostile-filesystem immutability. Symlink
+retargeting of `pw_dir` is outside the protection model. What section 5 does
+establish, and all it establishes, is that no ordinary PROCESS ENVIRONMENT input
+-- `HOME`, `XDG_DATA_HOME`, the working directory, a `VD_*` variable, a CLI
+flag, an operand, a config file, or a mutable module global -- can select the
+governance root. A hostile-host authenticity contract would require signatures
+or an external root of trust and is not designed here.
+
+**22. Deployment scope directory mode -- exact contract.** ADR-022 section 18
+records that the scope directory is created at mode `0o700`. Independent review
+observed that `ensure_deployment_scope_directory` uses `Path.mkdir(parents=True,
+mode=0o700)`, and that CPython applies the explicit mode to the LEAF only:
+missing intermediate directories are created by a recursive `parent.mkdir()`
+call that passes no mode, so they take `0o777 & ~umask`. Measured under umask
+`0o022` against a temporary `0o700` root, the result is `deployments/` at
+`0o755` and the scope leaf at `0o700`.
+
+The contract is therefore stated precisely: the SCOPE LEAF's mode is enforced
+and verified -- created `0o700`, then re-checked by `lstat`, with any group- or
+world-accessible bit refused as `DEPLOYMENT_SCOPE_NOT_PRIVATE` and any symlink
+or non-directory refused -- while the intermediate `deployments/` directory and
+any absent ancestor of the canonical root are created under the process umask
+and are NOT mode-enforced by VD.
+
+Classification for the current deployment: **SAFE_CURRENT_DEPLOYMENT**. Three
+facts, each verified read-only, carry it. The canonical root
+`~/.local/share/vd` already exists at mode `0o700`, so everything beneath it --
+`deployments/` included -- is unreachable by any other local account regardless
+of its own mode. `deployments/` is a pure container: it holds no file, only
+namespace-digest subdirectories whose names are deterministically derivable from
+published source constants and therefore secret-bearing in no sense. Every
+route-state marker, D2 authority store and run-scoped ledger lives inside the
+mode-enforced `0o700` leaf, whose own privacy is checked after creation and
+fails closed.
+
+No hardening is applied, and the reason is a rule rather than convenience:
+tightening intermediates would mean chmodding or mode-creating `~/.local` and
+`~/.local/share`, which are user-owned directories VD does not own and shares
+with unrelated applications. ADR-022 section 18's refusal to repair pre-existing
+state applies with equal force to ancestors. Should VD ever need to create the
+canonical root itself on a host where it is absent, mode-hardening the
+VD-OWNED portion of that chain is available as deferred hardening; it is not
+required for the first real LKG, whose root already exists at `0o700`.
+
+**23. Metadata-reader P2 -- closed by type, not deferred.** ADR-020 section 42
+requires that the readiness provider "SHALL be constructed with a metadata-only
+reader type that exposes no search method, so search is impossible by type
+rather than by discipline." ADR-022 section 26 found that the production wiring
+did not satisfy it -- `production_dependencies` passed the
+`pymilvus.MilvusClient` returned by `build_readonly_milvus_client` directly into
+`LkgProductionWindowReadinessObserver` through a `metadata_reader: object`
+parameter and a `# type: ignore[arg-type]` -- and marked it
+DEFERRED_TO_SOURCE_CONVERGENCE. This is that convergence, and the gap is CLOSED
+by implementation. This section supersedes section 14's listing of the
+metadata-reader P2 as deferred; the other items section 14 lists remain deferred
+as stated there.
+
+The behaviour was never unsafe: no readiness or preflight code path called any
+method other than `describe_collection`, `describe_index`,
+`get_collection_stats` and `get_load_state`, and the suite establishes
+PHYSICAL_SEARCHES = 0. What was false was the STRENGTH of the claim. Section 42
+promises a type-level guarantee, and the object actually handed across the seam
+exposed `search`, `insert`, `delete` and index mutation. A guarantee that holds
+only because no call site reached for another method is discipline, which is
+precisely what section 42 was written to replace.
+
+The repair is the smallest one that makes the claim true rather than the
+smallest one that makes it defensible. `MetadataOnlyMilvusReader` forwards
+exactly the four `LkgMetadataReader` methods and defines nothing else; it
+declares `__slots__ = ("_client",)` and no `__getattr__`, so no further client
+surface can be reached through it and none can be injected onto it. It is a pure
+forwarding view -- no caching, no normalization, no re-derivation -- so it can
+never become a second source of metadata truth alongside the client it wraps.
+No new Milvus abstraction, protocol, registry or capability framework is
+introduced, and no metadata semantics change.
+
+**24. Metadata-reader production wiring, and what remains unclaimed.**
+`production_dependencies` now builds every readiness-facing Milvus surface
+through one internal `_metadata_only_reader()` factory, used by both the
+observer factory and the pre-dispatch environment-identity re-observation, so
+`build_readonly_milvus_client` has exactly one caller and a raw client cannot
+reach the observer through a future edit that forgets to wrap one. The
+`LkgProductionWindowReadinessObserver.metadata_reader` parameter is typed
+`LkgMetadataReader` and the `# type: ignore[arg-type]` is removed, so the seam
+itself now carries the contract. Regression tests pin that the reader forwards
+exactly the four protocol methods, that `search`, `insert`, `upsert`, `delete`,
+`query`, `hybrid_search`, `load_collection`, `release_collection`,
+`create_index` and `drop_index` do not exist on it, that attribute injection
+raises, that its public surface is exactly the protocol, and that the complete
+production `observe()` path reaches a first-LKG bootstrap PASS through the
+wrapper while a deliberately search-capable wrapped client records zero search
+calls.
+
+Unchanged and deliberately so: exactly one search-capable client still exists in
+this module, built by `_runner_factory` for the authorized qualification
+searches themselves. That is the qualification dispatch path, not the readiness
+path, and it remains gated on `--expect-prepared-authority-sha256` and
+`--confirm-live-lkg-qualification-searches`. VD claims a type-enforced
+metadata-only surface for READINESS OBSERVATION only. It does not claim, and
+must not be read as claiming, that the process as a whole is incapable of
+search, nor that PyMilvus is prevented from being constructed elsewhere by
+future source, nor any sandbox, capability or privilege-separation guarantee.
+The guarantee is exactly this: the object the readiness provider receives has no
+search method, and that is a property of its type.
+
+**25. Readiness-provider `container_name` -- final contract.** ADR-020 section 7
+enumerates the per-container stable identity fields as container id, image id,
+repository digests, restart count, OOM-killed flag and started-at. The
+implemented stable environment document additionally carries `role` and
+`container_name` per container. ADR-022 section 5 separately asserts that the
+observed environment identity changes on "container names". The enumeration and
+the implementation therefore disagreed about the field set, and the exact role
+of `container_name` was never stated. It is stated here; no schema, digest,
+observation or evaluation behaviour changes.
+
+`container_name` is **GOVERNED OBSERVATION-REQUEST METADATA that participates in
+the environment identity digest, and is NOT an independently observed container
+fact.** Its value is `spec.etcd_container`, `spec.minio_container` or
+`spec.milvus_container` -- the operand-supplied lookup key passed to the Docker
+inspector -- echoed verbatim into the document alongside genuinely observed
+facts. VD does not read the container's own reported `Name` and does not
+reconcile the two. `role` is likewise source-governed: it is the fixed
+`("etcd", "minio", "milvus")` position, not an observed value. ADR-020 section
+7's enumeration is hereby completed to include both, matching what the
+implementation has always produced; no ADR-020 text is rewritten and no
+`readiness_schema_version` bump is owed, because the document shape is unchanged.
+
+The reason this is safe, and the reason no repair is made: `container_name` is
+not what BINDS a container. `container_id` is, and it is genuinely observed. A
+name that resolves to a different container yields a different `container_id`
+and fails as `ENVIRONMENT_IDENTITY_MISMATCH`; a renamed container fails the
+inspector lookup first, which is provider inability under ADR-020 section 26 --
+raise, persist nothing, window retryable. Within one run the spec is fixed
+before any dispatch and every window compares against
+`LkgRunBinding.environment_identity`, so the identity is self-consistent by
+construction. Across runs a differing environment identity is expected anyway,
+by ADR-020 section 7's design. Two aliases for one container -- a name and a
+container id, both accepted by `docker inspect` -- would yield two different
+environment identities for one physical deployment; that is a RUNTIME-INSTANCE
+identity, it is never the governance key (ADR-022 section 5), and the deployment
+namespace preimage excludes it entirely, so no alias can fork governance state,
+route-state authority or the D2 lineage. Binding a wrong container, accepting an
+invalid ENV-001, or silently rejecting a correct one are each ruled out;
+rejection, where it occurs, is fail-closed and retryable.
+
+**26. Same-run concurrency and physical exactly-once -- final disposition.**
+ADR-022 section 25 is restated as CURRENT AND ACCURATE, and nothing is added to
+it. Deterministic scope and run-root derivation removes ALLOCATION ambiguity;
+it does not serialize execution. Two concurrent authorized executions of the
+same history can duplicate physical dispatch and can seal the run at an
+incomplete completion state, spending the run identity. **No physical
+exactly-once search guarantee is claimed by this or any other ADR.**
+
+Durable evidence nevertheless stays mechanically unambiguous and fail-closed,
+which is why no execution lock is added at source convergence. Phase-1's
+`UNIQUE (run_id, query_id)` and `UNIQUE (run_id, attempt_sequence, query_id)`
+constraints refuse the losing writer rather than interleaving two histories; a
+terminal `PASSING` or `INCOMPLETE` evaluation requires exact 12-slot Phase-2
+closure; the evaluation ledger's `CHECK` constraint forces `qualified = 0` for
+any `FAILING` or `INCOMPLETE` status; and no D1 and no D2 come into being. The
+worst accidental-concurrency outcome is therefore WASTED PHYSICAL WORK AND A
+SPENT `source_run_id` requiring a new one -- not ambiguous durable lineage, not
+unsafe duplicate evidence, not an unresolvable completion state, and not
+authorization ambiguity. A local per-run execution lock remains available as
+deferred P2 hardening; it would reduce wasted work and would NOT upgrade the
+exactly-once claim, and inventing one now would add a failure mode to the very
+run it is meant to protect. Reaching this state at all requires a human to
+issue `--confirm-live-lkg-qualification-searches` twice concurrently against one
+approved digest.
+
+**27. Future activation, rollback and expiry composition -- final disposition.**
+ADR-022 section 14 is restated as CURRENT AND ACCURATE. The LKG qualification
+operator is the only wired production route-state composition root that exists.
+Candidate activation, rollback and expiry reconciliation consume injected
+route-state stores through protocols and have NO production composition root;
+this convergence fabricates none, and building one now would be speculative
+architecture for an unauthorized capability.
+
+What is claimed: the LKG QUALIFICATION canonical governance scope is implemented,
+tested and independently reviewed. What is NOT claimed, and must not be inferred:
+cross-component convergence for activation, rollback, expiry, candidate routing
+or scope reconciliation. Those remain UNPROVEN for the plain reason that the
+production compositions they would converge do not exist. When any of them
+acquires a production composition root, it SHALL resolve route state and LKG
+authority through the same canonical deployment governance scope, and that is a
+requirement on future work rather than a description of present evidence. The
+first real LKG process terminates at a verified Checkpoint C followed by
+separately reviewed D1 and D2; it activates no candidate, runs no canary and
+performs no rollback.
+
+**28. Final P2 and P3 disposition register.** Every known P2 entering source
+convergence exits it in exactly one state.
+
+| Item | Final state |
+|---|---|
+| P2-1 same-history concurrency / duplicate physical work | HARDENING_DEFERRED_AND_LIMITATION_EXPLICITLY_DOCUMENTED (section 26) |
+| P2-2 no physical exactly-once guarantee | IMPLEMENTATION_ALREADY_CORRECT_AND_DOCUMENTATION_RECONCILED (section 26; ADR-022 section 25 already accurate, no claim was overstated) |
+| P2-3 readiness metadata reader search-capable by runtime/type authority | IMPLEMENTATION_FIXED_BEFORE_LIVE (sections 23-24) |
+| P2-4 readiness-provider `container_name` contract mismatch | IMPLEMENTATION_ALREADY_CORRECT_AND_DOCUMENTATION_RECONCILED (section 25) |
+| P2-5 future activation/rollback/expiry production-composition convergence | HARDENING_DEFERRED_AND_LIMITATION_EXPLICITLY_DOCUMENTED (section 27) |
+| `pw_dir` symlink retargeting | HARDENING_DEFERRED_AND_LIMITATION_EXPLICITLY_DOCUMENTED (section 21) |
+| Intermediate `deployments/` directory mode | SAFE_CURRENT_DEPLOYMENT; deferred hardening documented (section 22) |
+
+P3 items remain deferred and are independently confirmed non-blocking for the
+first real LKG: public `governance_scope` DI runtime hardening (ADR-022 section
+15); the first-LKG pre-window-0 route/D2 content gate, which ADR-022 section 21
+already classifies as OPTIONAL HARDENING and which must NOT be promoted, because
+requiring an existing D2 to authorize the first D2 would be circular and would
+make the first LKG unbootstrappable; Phase-2 rebuild-digest hardening; and CLI
+ergonomics. ENV-002 remains deferred under ADR-022 section 22.
+
+**29. Module ownership for this convergence.** Changed:
+`src/vdbench/lkg_qualification_operator.py` (adds `MetadataOnlyMilvusReader`,
+routes both readiness-facing client constructions through one factory, types the
+`metadata_reader` seam, removes the `type: ignore`, and corrects four docstring
+claims that asserted a type-level guarantee the wiring did not provide);
+`tests/test_lkg_qualification_operator.py` (adds
+`MetadataOnlyMilvusReaderTests`); `ARCHITECTURE.md` (this append-only
+clarification). Unchanged and byte-identical:
+`src/vdbench/deployment_governance.py` -- root resolution is untouched, so the
+independently reviewed HOME-invariance evidence stands without repetition --
+`src/vdbench/lkg_window_readiness_observation.py`,
+`src/vdbench/lkg_window_readiness_store.py`,
+`tests/test_deployment_governance.py`,
+`tests/test_lkg_window_readiness_observation.py`,
+`tests/test_lkg_window_readiness_store.py`, every ADR-020 module, every
+Phase-1/Phase-2/Checkpoint-C/Phase-3 module, every canary module, and all
+EXP-010/011/012 source. ADR-022 is byte-identical.
+
+**30. Non-normative reporting digest.** A `document SHA256` value of
+`8ea7eec4c10bb4cd121f8ed50fd08d6cee78ef26351e965b3b1089b7fe422c47` was reported
+alongside the normative `prepared_authority_sha256` during review and did not
+reproduce under the tested serializations. It appears in no source file, no
+test, no ADR and no operator output, and it is bound to nothing. It is therefore
+recorded as a REPORTING PROVENANCE DISCREPANCY only, with no governed status:
+almost certainly a differently rooted fixture or an ad hoc wrapper hash, since
+the prepared-authority document binds absolute paths and is root-dependent by
+construction. No source change is made, no digest domain is invented, no
+duplicate evidence is bound, and Prepared Authority V2 is NOT bumped to
+accommodate it. The single normative value remains
+`prepared_authority_sha256 = strict_canonical_digest(b"VD::LKG_QUALIFICATION_
+PREPARED_AUTHORITY::V2\0", <document>)`, reproduced exactly by independent
+review for the fixed review fixture.
+
+**31. No new authorization.** This convergence does not authorize a full-suite
+run, a source freeze, a commit, a push, a live LKG preflight, a real DATASET-003
+qualification, real D1/D2, candidate generation, a grant, a canary, a rollback,
+an `ef` change, an index rebuild, or a route activation. Each remains gated on
+its own separate authorization. ADR-023 acceptance was recorded by explicit
+human act on 2026-09-02, BEFORE the canonical full repository suite, so that
+no ADR acceptance edit remains after that suite passes; it was a human
+decision, not a consequence of tests passing or of this convergence
+completing. That acceptance authorizes none of the gates listed above, and no
+staging, commit or push.
