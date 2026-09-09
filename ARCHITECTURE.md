@@ -7503,3 +7503,152 @@ no ADR acceptance edit remains after that suite passes; it was a human
 decision, not a consequence of tests passing or of this convergence
 completing. That acceptance authorizes none of the gates listed above, and no
 staging, commit or push.
+
+### ADR-024: First-LKG bootstrap environment-observation boundary
+
+Status: **ACCEPTED** (2026-09-04, explicit human implementation authorization
+following `LKG_BOOTSTRAP_OBSERVER_CONTRACT_REPAIR_PASS`). Scope: **Core**.
+Risk: **CRITICAL**. This append-only decision adds a bootstrap observation
+boundary; it does not rewrite ADR-020/020a/020b/021 or historical evidence.
+
+**Problem and decision.** A first `LkgRunBinding` needs `environment_identity`,
+but the existing public runtime observer needs that binding's environment
+identity, run ID and binding SHA. A fabricated binding or window-zero rebaseline
+cannot supply the missing authority. Add
+`observe_lkg_bootstrap_environment(...) -> LkgBootstrapEnvironmentObservation`
+in `lkg_window_readiness_observation.py`. It obtains current metadata and derives
+the existing stable LKG environment document and identity before any run exists.
+
+**Inputs and capabilities.** Inputs are exactly `LkgEnvironmentObservationSpec`,
+an injected `LkgMetadataReader`, container and image inspectors, a health probe,
+and a validated canonical RFC3339 UTC observation time. The reader exposes only
+`describe_collection`, `describe_index`, `get_collection_stats`, and
+`get_load_state`. No run ID, producer identity, expected environment identity,
+binding, binding SHA, window/epoch, provider ID, store, ledger, route, grant,
+Checkpoint-C, D1 or D2 is accepted. Ports perform metadata reads only. No search,
+query, client construction, filesystem write, store access, runtime repair, or
+actuation is performed by the observer. Production composition must supply the
+existing metadata-only reader adapter and read-only inspection ports.
+
+**Single observation core.** Option A is selected: extract one private
+`_observe_lkg_environment_facts` core owning endpoint/container/image/data-plane
+observation, LKG-local normalization, readiness evaluation, stable-document
+construction, and identity derivation. Both public observers use it. Copied
+bootstrap normalization (Option B) would allow divergent identities; Gate-C
+reuse (Option C) would violate ADR-020's ownership and domain separation. No
+Gate-C helper, attestation or digest domain is reused. This adds no package dependency,
+generic runtime context or CLI mode. Work remains linear in returned metadata
+apart from existing canonical sorting; no polling, caching or retry loop is
+introduced.
+
+**Stable identity and window compatibility.** Continue to call
+`build_lkg_stable_environment_document` and `lkg_environment_identity` unchanged.
+The stable schema, fields, normalization, ordering, canonical serialization,
+LKG schema/index sub-digests and environment digest domain are unchanged.
+Equivalent raw facts produce byte-identical stable documents and identities in
+both paths. Container identity/restart/image/start time, schema/index identity,
+metric/dimension and entity count keep their existing meanings. Health/load/
+index-readiness booleans, timestamp, verdict and reasons remain outside that
+identity. The window observer adds its existing run/binding lineage, exact
+environment comparison, source document and source digest. Its frozen reason
+vocabulary, PASS predicates and retained-evidence validator remain unchanged.
+
+**Initial-environment refusal checks.** Before a binding exists, identity
+comparison alone cannot reject an unsuitable initial baseline. The shared core
+also evaluates bootstrap eligibility against the existing observation spec and
+source construction contract (`PRIMARY_FIELD`, `VECTOR_FIELD`, FLAT/HNSW tracks,
+metric/dimension/entity count, `HNSW_M=16`, `HNSW_EF_CONSTRUCTION=200`). Expected
+normalized fields are one INT64 primary `id` and one FLOAT_VECTOR `vector` of the
+specified dimension; the current Milvus metadata enum encodings are `5` and
+`101`. Missing/duplicate/extra fields, an incorrect primary flag/type or dimension,
+wrong returned collection, wrong index name/type/field/metric, missing or wrong
+HNSW build values, ambiguous parameter representation, and invalid readiness
+metadata cannot yield bootstrap PASS. No alternative metadata representation is
+silently normalized into a new stable-identity contract.
+
+The core keeps bootstrap eligibility reasons separate from legacy window-health
+reasons. This is a new admission check on the initial observation, not an
+extension of the frozen window-evidence vocabulary. The bootstrap result merges
+existing observed health failures with these additional reasons:
+`COLLECTION_IDENTITY_MISMATCH`, `COLLECTION_SCHEMA_MISMATCH`,
+`CONTAINER_IDENTITY_AMBIGUOUS`, `DIMENSION_MISMATCH`,
+`DUPLICATE_CONTAINER_IDENTITY`, `HNSW_EF_CONSTRUCTION_MISMATCH`,
+`HNSW_M_MISMATCH`, `INDEX_CONFIGURATION_MISMATCH`,
+`INDEX_METADATA_INVALID`, and `METRIC_MISMATCH`.
+Distinct roles resolving to one container ID always include
+`DUPLICATE_CONTAINER_IDENTITY`. An observed refusal remains a result with
+`passed=False`; missing, malformed or unavailable facts that already prevent a
+trustworthy observation retain existing exception behavior. Input or canonical
+output violations raise rather than returning PASS. There is no fallback value.
+
+**Output and persistence.** The immutable result exposes exactly these logical
+document fields: `observation_schema_version` (1),
+`observation_source_identity` (`vdbench.lkg-bootstrap-environment-observation.v1`),
+`observed_at_utc`, `observed_stable_environment_document`,
+`observed_environment_identity`, `container_health`, `milvus_healthz`,
+`collection_readiness`, `index_readiness`, `reason_codes` (sorted, unique), and
+`passed` (exactly an empty reason set). Container roles are etcd/minio/milvus;
+collection and index roles are flat/hnsw. Mutable document views are detached
+copies so callers cannot alter the captured result. No observation digest domain,
+receipt, governed store or persistence mechanism is added. A caller may retain
+external evidence, but the observer itself persists nothing.
+
+**Authority and freshness.** A passing bootstrap result is observation evidence
+only. It does not approve a run, prepare authority, construct a binding or create
+Phase-1/readiness/Phase-2/C/D1/D2, routes, canaries or grants. The human/external
+caller remains responsible for selecting the intended deployment and later
+supplying `source_run_id` and `producer_identity`; neither is generated here.
+The timestamp describes the observation, not a lease or freshness guarantee.
+There is no cache or implicit rebaseline. Execution still requires confirmation,
+rebuilds and compares exact V2 authority, verifies source, loads/verifies
+DATASET-003, forms the binding and freshly re-observes the run-bound environment.
+An exact identity mismatch refuses before stores/search. Window zero cannot
+establish an identity. Preflight/prepare remain pure/offline and never call the
+bootstrap observer. All 32 operand fields, prepared-authority V2 schema/domain/
+bytes, execution ordering and downstream authority semantics are unchanged.
+
+**Design review, verification and rollback.** Verify with fake-only focused
+tests: binding-free API and four-method reader; immutable output; side-effect
+traps; direct and independently derived identity checks; adversarial bootstrap/
+window equivalence; pre-change golden window digests; strict malformed-input,
+duplicate-container, schema/dimension/metric/build and readiness failures;
+existing retained evidence; preflight/prepare purity and pre-store/pre-search
+execution refusal. Inspect the complete diff and run `git diff --check`.
+No live experiment, performance claim or full-suite result is inferred from
+these tests. Manual verification is the same offline test command plus review
+of the returned fake document and exact candidate diff. Rollback before live
+use is a reviewed source reversal; no data migration or state repair is needed.
+Fresh independent review and source convergence precede a separately authorized
+canonical full-suite run. Commit/push, source guard/freeze, real observation,
+operand creation, prepared authority and qualification remain later gates.
+
+#### Amendment (ADR-024a): Strict duplicate-container retained-health boundary
+
+Status: **ACCEPTED** (2026-09-06, explicit human implementation authorization
+following `LKG_DUPLICATE_CONTAINER_LEGACY_CONTRACT_RESOLUTION_PASS`). Scope:
+**Core**. Risk: **CRITICAL**. This append-only amendment clarifies current
+retained-health validation only; no historical ADR text or evidence changes.
+
+**Current retained-health authority.**
+`DUPLICATE_CONTAINER_IDENTITY` is a Class-A retained-health semantic
+contradiction. At the current retained-health validation boundary it MUST
+refuse with `ContractViolation`, including when the document is canonical, its
+environment and run-bound identities are recomputed, and its health digest is
+recomputed. `ENTITY_COUNT_MISMATCH` is the sole member of this stable semantic
+reason family representable as a canonical failed retained-health observation;
+it has `passed=False` and records that reason only when no separately refusing
+semantic contradiction exists. Any unclassified authoritative stable reason
+also refuses.
+
+**Historical duplicate evidence.** Existing exact duplicate-container golden
+and fixture bytes, including frozen digests, remain unchanged and are
+**HISTORICAL_AUDIT_ONLY**. Historical preservation never authorizes current
+retained-health validation or readiness-store reopen. No caller flag,
+schema-v1 inference, digest allowlist, legacy identity or provenance claim,
+legacy mode, or separate current-authority bypass is authorized. No migration,
+normalization, insertion repair, or historical evidence rewrite is required.
+
+**Unchanged contracts.** `lkg-environment-identity-v1`, the exactly 32-field
+operand schema, Prepared Authority V2, and the readiness-store schema remain
+unchanged. A future machine-authorizing use of duplicate-container historical
+evidence requires a separately accepted authority contract.

@@ -106,12 +106,14 @@ from .lkg_qualification_runner import LkgQualificationRunner
 from .lkg_qualification_seal import LkgSealCompletionState, derive_completion_state
 from .lkg_run_binding import LkgRunBinding, lkg_ordered_query_ids_sha256
 from .lkg_window_readiness_observation import (
+    LkgBootstrapEnvironmentObservation,
     LkgEnvironmentObservationSpec,
     LkgMetadataReader,
     LkgWindowHealthObservation,
     LkgWindowReadinessObservationError,
     LkgWindowRollbackReadiness,
     derive_lkg_window_readiness_check_id,
+    observe_lkg_bootstrap_environment,
     observe_lkg_window_health,
     verify_lkg_window_rollback_readiness,
 )
@@ -821,7 +823,9 @@ class LkgOperatorDependencies:
     workload_loader: Callable[[], LkgDataset003Workload]
     runner_factory: Callable[[SearchConfiguration], LkgQualificationRunner]
     observer_factory: Callable[[LkgRunBinding], object]
-    environment_identity_observer: Callable[[LkgRunBinding], str]
+    environment_identity_observer: Callable[
+        [LkgRunBinding], LkgBootstrapEnvironmentObservation
+    ]
     execution_source_verifier: Callable[[str], None]
     clock: Callable[[], str]
     monotonic_ns: Callable[[], int]
@@ -1022,10 +1026,17 @@ def execute_lkg_qualification(
     # before dispatch and BEFORE any durable store is opened. A mismatch
     # refuses; window 0 can never become a replacement baseline because the
     # run-bound identity is the one frozen in the prepared authority.
-    observed_identity = dependencies.environment_identity_observer(run_binding)
-    if not isinstance(observed_identity, str) or (
-        observed_identity != operands.environment_identity
-    ):
+    observation = dependencies.environment_identity_observer(run_binding)
+    try:
+        observation_passed = observation.passed
+        observed_identity = observation.observed_environment_identity
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise _error("LKG_ENVIRONMENT_OBSERVATION_INVALID") from exc
+    if type(observation_passed) is not bool or type(observed_identity) is not str:
+        raise _error("LKG_ENVIRONMENT_OBSERVATION_INVALID")
+    if not observation_passed:
+        raise _error("LKG_ENVIRONMENT_OBSERVATION_FAILED")
+    if observed_identity != operands.environment_identity:
         raise _error(
             "LKG_ENVIRONMENT_IDENTITY_MISMATCH",
             f"observed {observed_identity!r}",
@@ -1450,30 +1461,27 @@ def production_dependencies(
     def _verified_latest_lkg_reader() -> bool:
         return verified_latest_lkg_present(scope.lkg_authority_store_path)
 
-    def _observe_environment_identity(run_binding: LkgRunBinding) -> str:
-        """Re-observe the stable LKG environment identity before dispatch.
+    def _observe_environment_identity(
+        _run_binding: LkgRunBinding,
+    ) -> LkgBootstrapEnvironmentObservation:
+        """Re-observe bootstrap eligibility and stable identity before dispatch.
 
-        Uses the canonical public ADR-020 observation entry point, so the
-        identity compared here is produced by exactly the machinery that
-        will produce it again at every window boundary. Metadata reads
-        only: the reader is a ``MetadataOnlyMilvusReader`` exposing no search
-        method, so no search is possible by type (ADR-020 sections 41-42).
+        Uses ADR-024's canonical observation entry point once, retaining both
+        its verdict and identity. The execute boundary compares that identity
+        with the run binding. Metadata reads only: the reader is a
+        ``MetadataOnlyMilvusReader`` exposing no search method.
         """
 
         client = _metadata_only_reader()
         inspector = DockerExecutionMetadataInspector()
-        observation = observe_lkg_window_health(
+        return observe_lkg_bootstrap_environment(
             spec=operands.environment_observation_spec,
-            run_bound_environment_identity=run_binding.environment_identity,
-            source_run_id=run_binding.run_id,
-            source_run_binding_sha256=run_binding.sha256,
             metadata_reader=client,
             container_inspector=inspector.inspect_container,
             image_inspector=inspector.inspect_image,
             healthz_probe=_healthz_probe,
             observed_at_utc=_utc_now(),
         )
-        return str(observation.document["observed_environment_identity"])
 
     def _observer_factory(run_binding: LkgRunBinding) -> object:
         client = _metadata_only_reader()

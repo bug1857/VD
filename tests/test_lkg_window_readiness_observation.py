@@ -8,24 +8,32 @@ actuation, and no LKG/Phase-1/Phase-2/Checkpoint-C/D1/D2 state.
 from __future__ import annotations
 
 import hashlib
+import ast
+import inspect
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
+from contextlib import ExitStack
 import unittest
+from unittest.mock import Mock, patch
 
 from vdbench.canary_route_state import RouteState, RouteStateBinding, RouteStateRecord
 from vdbench.config import ContractViolation, IndexTrack, Metric, SearchConfiguration
 from vdbench.artifacts import canonical_json_bytes
 from vdbench.lkg_window_readiness_observation import (
+    LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION,
+    LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY,
     LKG_COLLECTION_SCHEMA_DOMAIN,
     LKG_COLLECTION_SCHEMA_SCHEMA_VERSION,
     LKG_ENVIRONMENT_IDENTITY_DOMAIN,
     LKG_ENVIRONMENT_IDENTITY_PREFIX,
+    LKG_HEALTH_OBSERVATION_DOMAIN,
     LKG_INDEX_IDENTITY_DOMAIN,
     LKG_INDEX_IDENTITY_SCHEMA_VERSION,
     LKG_HEALTH_OBSERVATION_SOURCE_IDENTITY,
     LKG_ROLLBACK_READINESS_SOURCE_IDENTITY,
     LKG_ROLLBACK_VERIFICATION_MODE,
     READINESS_REASON_CODES,
+    LkgBootstrapEnvironmentObservation,
     LkgEnvironmentObservationSpec,
     LkgWindowReadinessObservationError,
     derive_lkg_window_provider_run_id,
@@ -35,6 +43,7 @@ from vdbench.lkg_window_readiness_observation import (
     lkg_environment_identity,
     lkg_index_identity_document,
     lkg_index_identity_sha256,
+    observe_lkg_bootstrap_environment,
     observe_lkg_window_health,
     verify_lkg_window_rollback_readiness,
     validate_lkg_window_health_observation,
@@ -121,25 +130,56 @@ class _Reader:
         return {"state": "Loaded" if self._loaded else "NotLoad"}
 
 
+class _PinnedPyMilvusReader(_Reader):
+    """PyMilvus 3.0.1 ``describe_*`` shapes, with only metadata methods."""
+
+    def describe_collection(self, *, collection_name):
+        return {
+            **super().describe_collection(collection_name=collection_name),
+            "auto_id": False,
+            "enable_dynamic_field": False,
+        }
+
+    def describe_index(self, *, collection_name, index_name):
+        document = super().describe_index(
+            collection_name=collection_name, index_name=index_name
+        )
+        m = document.pop("M")
+        ef_construction = document.pop("efConstruction")
+        document.update({"field_name": "vector", "total_rows": self._rows})
+        if document["index_type"] == "HNSW":
+            document["params"] = {"M": int(m), "efConstruction": int(ef_construction)}
+        return document
+
+
+class _LoadStateReader(_PinnedPyMilvusReader):
+    def __init__(self, state):
+        super().__init__()
+        self.state = state
+
+    def get_load_state(self, *, collection_name):
+        super().get_load_state(collection_name=collection_name)
+        return {"state": self.state}
+
+
 def _observe(reader=None, *, identity=None, healthz=True, container=None, container_inspector=None,
              source_run_id=_RUN_ID, source_run_binding_sha256=_BINDING_SHA):
     reader = reader or _Reader()
     inspect_container = container_inspector or (lambda name: container() if container else _container())
     probe_identity = identity
     if probe_identity is None:
-        # First derive the identity this exact fake environment produces.
-        first = observe_lkg_window_health(
+        # Derive the fixture hash without fabricating run/binding authority.
+        # Legacy repeated container IDs are retained for golden window bytes;
+        # this helper consumes only their hash, never bootstrap admission.
+        first = observe_lkg_bootstrap_environment(
             spec=_SPEC,
-            run_bound_environment_identity=f"{LKG_ENVIRONMENT_IDENTITY_PREFIX}:sha256:{'0' * 64}",
-            source_run_id=_RUN_ID,
-            source_run_binding_sha256=_BINDING_SHA,
             metadata_reader=_Reader(),
             container_inspector=inspect_container,
             image_inspector=lambda image_id: _image(),
             healthz_probe=lambda: True,
             observed_at_utc=_NOW,
         )
-        probe_identity = first.document["observed_environment_identity"]
+        probe_identity = first.observed_environment_identity
     return observe_lkg_window_health(
         spec=_SPEC,
         run_bound_environment_identity=probe_identity,
@@ -151,6 +191,598 @@ def _observe(reader=None, *, identity=None, healthz=True, container=None, contai
         healthz_probe=lambda: healthz,
         observed_at_utc=_NOW,
     )
+
+
+def _distinct_container(name, **overrides):
+    document = _container(**overrides)
+    document["Id"] = hashlib.sha256(name.encode()).hexdigest()
+    return document
+
+
+def _bootstrap_inputs(**overrides):
+    values = {
+        "spec": _SPEC,
+        "metadata_reader": _PinnedPyMilvusReader(),
+        "container_inspector": _distinct_container,
+        "image_inspector": lambda image_id: _image(),
+        "healthz_probe": lambda: True,
+        "observed_at_utc": _NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+class _ChangedReader(_PinnedPyMilvusReader):
+    """Only the existing four metadata methods; changes are local fake data."""
+
+    def __init__(self, *, collection=None, index=None, **kwargs):
+        super().__init__(**kwargs)
+        self._collection_change = collection or (lambda document: document)
+        self._index_change = index or (lambda document: document)
+
+    def describe_collection(self, *, collection_name):
+        return self._collection_change(super().describe_collection(collection_name=collection_name))
+
+    def describe_index(self, *, collection_name, index_name):
+        return self._index_change(super().describe_index(collection_name=collection_name, index_name=index_name))
+
+
+class BootstrapEnvironmentObservationTests(unittest.TestCase):
+    def test_canonical_metadata_passes_with_exact_output_contract(self):
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        self.assertIsInstance(result, LkgBootstrapEnvironmentObservation)
+        self.assertEqual(result.observation_schema_version, LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION)
+        self.assertEqual(result.observation_source_identity, "vdbench.lkg-bootstrap-environment-observation.v1")
+        self.assertEqual(result.observation_source_identity, LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY)
+        self.assertEqual(result.observed_at_utc, _NOW)
+        self.assertEqual(result.document.keys(), {
+            "observation_schema_version", "observation_source_identity", "observed_at_utc",
+            "observed_stable_environment_document", "observed_environment_identity",
+            "container_health", "milvus_healthz", "collection_readiness", "index_readiness",
+            "reason_codes", "passed",
+        })
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason_codes, ())
+        self.assertEqual(result.container_health, {"etcd": True, "minio": True, "milvus": True})
+        self.assertTrue(result.milvus_healthz)
+        self.assertEqual(result.collection_readiness, {"flat": True, "hnsw": True})
+        self.assertEqual(result.index_readiness, {"flat": True, "hnsw": True})
+        self.assertEqual(result.observed_environment_identity,
+                         lkg_environment_identity(result.observed_stable_environment_document))
+        self.assertRegex(result.observed_environment_identity, r"\Alkg-env-identity-v1:sha256:[0-9a-f]{64}\Z")
+
+    def test_api_accepts_only_binding_free_observation_ports(self):
+        inputs = _bootstrap_inputs()
+        self.assertEqual(set(inspect.signature(observe_lkg_bootstrap_environment).parameters), set(inputs))
+        for forbidden in (
+            "source_run_id", "producer_identity", "environment_identity", "run_binding",
+            "source_run_binding_sha256", "window_index", "epoch_index", "provider_run_id",
+            "readiness_store", "phase1_ledger", "phase2_ledger", "checkpoint_c", "d1", "d2",
+        ):
+            with self.subTest(forbidden=forbidden), self.assertRaises(TypeError):
+                observe_lkg_bootstrap_environment(**inputs, **{forbidden: object()})
+
+    def test_four_method_fake_and_exact_metadata_call_inventory(self):
+        inputs = _bootstrap_inputs()
+        reader = inputs["metadata_reader"]
+        self.assertEqual(
+            {name for name in dir(reader) if not name.startswith("_") and callable(getattr(reader, name))},
+            {"describe_collection", "describe_index", "get_collection_stats", "get_load_state"},
+        )
+        for name in ("container_inspector", "image_inspector", "healthz_probe"):
+            inputs[name] = Mock(wraps=inputs[name])
+        result = observe_lkg_bootstrap_environment(**inputs)
+        self.assertTrue(result.passed)
+        self.assertEqual(reader.calls, [
+            f"{method}:{collection}"
+            for collection in ("vd_flat", "vd_hnsw")
+            for method in ("describe_collection", "describe_index", "get_collection_stats", "get_load_state")
+        ])
+        self.assertEqual(inputs["container_inspector"].call_count, 3)
+        self.assertEqual(inputs["image_inspector"].call_count, 3)
+        inputs["healthz_probe"].assert_called_once_with()
+
+    def test_no_network_filesystem_process_or_state_access(self):
+        inputs = _bootstrap_inputs()
+        with ExitStack() as stack:
+            guards = [stack.enter_context(patch(name, side_effect=AssertionError(name))) for name in (
+                "builtins.open", "os.open", "sqlite3.connect", "socket.socket", "subprocess.Popen",
+                "pathlib.Path.open", "pathlib.Path.mkdir", "pathlib.Path.write_text", "pathlib.Path.write_bytes",
+            )]
+            result = observe_lkg_bootstrap_environment(**inputs)
+            self.assertTrue(result.passed)
+            for guard in guards:
+                guard.assert_not_called()
+
+    def test_observer_source_has_no_search_write_or_gate_c_dependency(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+        prohibited = {
+            "search", "query", "hybrid_search", "create_collection", "create_index", "load_collection",
+            "insert", "upsert", "delete", "write", "write_bytes", "write_text", "mkdir", "connect",
+        }
+        self.assertFalse({node.func.attr for node in ast.walk(tree)
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)} & prohibited)
+        self.assertNotIn("gate_c_execution_environment", source)
+        self.assertNotIn("EXP012_GATE_C", source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                self.assertNotIn(node.module, {"sqlite3", "socket", "pymilvus", "subprocess"})
+
+    def test_result_is_immutable_including_nested_views(self):
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        original = canonical_json_bytes(result.document)
+        with self.assertRaises(FrozenInstanceError):
+            result._document_bytes = b"{}"
+        with self.assertRaises(ContractViolation):
+            LkgBootstrapEnvironmentObservation(bytearray(original))
+        document = result.document
+        document["observed_stable_environment_document"]["containers"][0]["container_id"] = "changed"
+        document["reason_codes"].append("FORGED")
+        result.observed_stable_environment_document["data_plane"].clear()
+        result.container_health["etcd"] = False
+        result.collection_readiness.clear()
+        result.index_readiness.clear()
+        self.assertEqual(original, canonical_json_bytes(result.document))
+        self.assertTrue(result.passed)
+
+    def test_manual_construction_refuses_malformed_or_noncanonical_bytes(self):
+        original = canonical_json_bytes(
+            observe_lkg_bootstrap_environment(**_bootstrap_inputs()).document
+        )
+        duplicate = b'{"passed":true,' + original[1:]
+        for value in (b"{", b"{}\n", b" " + original, original.rstrip(b"\n"), duplicate):
+            with self.subTest(value=value[:40]), self.assertRaises(ContractViolation):
+                LkgBootstrapEnvironmentObservation(value)
+
+    def test_manual_construction_enforces_output_document_invariants(self):
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs()).document
+
+        def stable(document):
+            return document["observed_stable_environment_document"]
+
+        changes = (
+            lambda doc: doc.update(observation_schema_version=2),
+            lambda doc: doc.update(observation_source_identity="wrong"),
+            lambda doc: doc.update(observed_at_utc="2026-09-04T00:00:00+00:00"),
+            lambda doc: doc.update(observed_environment_identity="lkg-env-identity-v1:sha256:" + "0" * 64),
+            lambda doc: stable(doc).pop("containers"),
+            lambda doc: stable(doc).update(extra=True),
+            lambda doc: stable(doc).update(schema_version="wrong"),
+            lambda doc: stable(doc)["endpoint"].update(transport_security="TLS"),
+            lambda doc: stable(doc)["data_plane"][0].update(extra=True),
+            lambda doc: stable(doc).update(dimensions=float("nan")),
+            lambda doc: doc.update(container_health={"etcd": True, "minio": True}),
+            lambda doc: doc.update(container_health={"etcd": 1, "minio": True, "milvus": True}),
+            lambda doc: doc.update(collection_readiness={"flat": True}),
+            lambda doc: doc.update(collection_readiness={"flat": True, "hnsw": 1}),
+            lambda doc: doc.update(index_readiness={"flat": True}),
+            lambda doc: doc.update(index_readiness={"flat": True, "hnsw": "true"}),
+            lambda doc: doc.update(reason_codes=["UNKNOWN"], passed=False),
+            lambda doc: doc.update(reason_codes=[1], passed=False),
+            lambda doc: doc.update(reason_codes=["METRIC_MISMATCH", "METRIC_MISMATCH"], passed=False),
+            lambda doc: doc.update(reason_codes=["MILVUS_HEALTHZ_FAILED", "COLLECTION_NOT_LOADED"], passed=False),
+            lambda doc: doc.update(passed=False),
+        )
+        for change in changes:
+            document = deepcopy(baseline)
+            change(document)
+            with self.subTest(change=change), self.assertRaises(ContractViolation):
+                LkgBootstrapEnvironmentObservation(canonical_json_bytes(document))
+
+    def test_rehashed_semantically_invalid_stable_documents_refuse(self):
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs()).document
+
+        def stable(document):
+            return document["observed_stable_environment_document"]
+
+        mutations = (
+            ("unsupported metric", lambda doc: (
+                stable(doc).update(metric="IP"),
+                [entry.update(metric="IP") for entry in stable(doc)["data_plane"]],
+            )),
+            ("empty container identity", lambda doc: stable(doc)["containers"][0].update(container_id="")),
+            ("negative restart count", lambda doc: stable(doc)["containers"][0].update(restart_count=-1)),
+            ("bool restart count", lambda doc: stable(doc)["containers"][0].update(restart_count=True)),
+            ("invalid start time", lambda doc: stable(doc)["containers"][0].update(started_at="not-a-time")),
+            ("unsupported index type", lambda doc: stable(doc)["data_plane"][1].update(index_type="IVF_FLAT")),
+            ("wrong dimension", lambda doc: stable(doc)["data_plane"][0].update(dimensions=64)),
+            ("entity-count mismatch", lambda doc: stable(doc)["data_plane"][0].update(entity_count=9999)),
+            ("malformed schema digest", lambda doc: stable(doc)["data_plane"][0].update(collection_schema_sha256="bad")),
+        )
+        for name, mutate in mutations:
+            document = deepcopy(baseline)
+            mutate(document)
+            document["observed_environment_identity"] = lkg_environment_identity(
+                stable(document)
+            )
+            with self.subTest(name=name), self.assertRaises(ContractViolation):
+                LkgBootstrapEnvironmentObservation(canonical_json_bytes(document))
+
+    def test_factory_and_constructor_share_stable_semantic_validation(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        with patch.object(
+            module,
+            "_validate_lkg_stable_environment_document",
+            wraps=module._validate_lkg_stable_environment_document,
+        ) as validator:
+            result = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        self.assertTrue(result.passed)
+        self.assertEqual(validator.call_count, 2)
+
+    def test_constructor_represents_every_stable_admission_reason(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs()).document
+        cases = (
+            ("COLLECTION_IDENTITY_MISMATCH", lambda stable: stable["data_plane"][1].update(
+                collection_name=stable["data_plane"][0]["collection_name"]
+            )),
+            ("CONTAINER_IDENTITY_AMBIGUOUS", lambda stable: stable["containers"][0].update(
+                container_id=""
+            )),
+            ("DIMENSION_MISMATCH", lambda stable: stable.update(dimensions=64)),
+            ("DUPLICATE_CONTAINER_IDENTITY", lambda stable: stable["containers"][1].update(
+                container_id=stable["containers"][0]["container_id"]
+            )),
+            ("ENTITY_COUNT_MISMATCH", lambda stable: stable["data_plane"][0].update(
+                entity_count=9999
+            )),
+            ("INDEX_CONFIGURATION_MISMATCH", lambda stable: stable["data_plane"][0].update(
+                index_type="HNSW"
+            )),
+            ("METRIC_MISMATCH", lambda stable: stable.update(metric="COSINE")),
+        )
+        for expected_reason, mutate in cases:
+            document = deepcopy(baseline)
+            stable = document["observed_stable_environment_document"]
+            mutate(stable)
+            _, stable_reasons = module._validate_lkg_stable_environment_document(stable)
+            self.assertEqual(stable_reasons, (expected_reason,))
+            document.update(
+                observed_environment_identity=lkg_environment_identity(stable),
+                reason_codes=list(stable_reasons),
+                passed=False,
+            )
+            with self.subTest(reason=expected_reason):
+                result = LkgBootstrapEnvironmentObservation(canonical_json_bytes(document))
+                self.assertEqual(result.reason_codes, (expected_reason,))
+                self.assertFalse(result.passed)
+
+    def test_manual_construction_is_detached_from_caller_and_returned_views(self):
+        document = observe_lkg_bootstrap_environment(**_bootstrap_inputs()).document
+        original = canonical_json_bytes(document)
+        result = LkgBootstrapEnvironmentObservation(original)
+        document["container_health"]["etcd"] = False
+        document["reason_codes"].append("FORGED")
+        result.document["observed_stable_environment_document"]["containers"].clear()
+        result.container_health.clear()
+        result.collection_readiness.clear()
+        result.index_readiness.clear()
+        self.assertEqual(canonical_json_bytes(result.document), original)
+        self.assertEqual(result.reason_codes, ())
+        self.assertTrue(result.passed)
+
+    def test_invalid_spec_and_utc_refuse_before_observation(self):
+        for change in ({"spec": None}, {"observed_at_utc": "2026-02-30T00:00:00Z"},
+                       {"observed_at_utc": "2026-09-04T00:00:00+00:00"},
+                       {"observed_at_utc": True}):
+            inputs = _bootstrap_inputs(**change)
+            inspector = inputs["container_inspector"] = Mock(side_effect=AssertionError("unexpected read"))
+            with self.subTest(change=change), self.assertRaises(ContractViolation):
+                observe_lkg_bootstrap_environment(**inputs)
+            inspector.assert_not_called()
+
+    def test_transport_and_malformed_metadata_refuse(self):
+        def broken(*args, **kwargs):
+            raise OSError("offline failure fixture")
+
+        cases = (
+            ({"container_inspector": broken}, "LKG_READINESS_CONTAINER_UNAVAILABLE"),
+            ({"container_inspector": lambda name: {}}, "LKG_READINESS_CONTAINER_INVALID"),
+            ({"image_inspector": broken}, "LKG_READINESS_IMAGE_UNAVAILABLE"),
+            ({"image_inspector": lambda name: []}, "LKG_READINESS_IMAGE_INVALID"),
+            ({"healthz_probe": broken}, "LKG_READINESS_HEALTHZ_UNAVAILABLE"),
+            ({"healthz_probe": lambda: 1}, "LKG_READINESS_HEALTHZ_INVALID"),
+            ({"metadata_reader": _ChangedReader(collection=broken)}, "LKG_READINESS_COLLECTION_METADATA_UNAVAILABLE"),
+            ({"metadata_reader": _ChangedReader(collection=lambda doc: None)}, "LKG_READINESS_COLLECTION_METADATA_INVALID"),
+            ({"metadata_reader": _ChangedReader(collection=lambda doc: {**doc, "fields": None})}, "LKG_READINESS_COLLECTION_METADATA_INVALID"),
+            ({"metadata_reader": _ChangedReader(index=lambda doc: None)}, "LKG_READINESS_COLLECTION_METADATA_INVALID"),
+        )
+        for change, code in cases:
+            with self.subTest(code=code, change=change), self.assertRaises(LkgWindowReadinessObservationError) as caught:
+                observe_lkg_bootstrap_environment(**_bootstrap_inputs(**change))
+            self.assertEqual(caught.exception.code, code)
+
+        for method in ("describe_collection", "describe_index", "get_collection_stats", "get_load_state"):
+            reader = _Reader()
+            setattr(reader, method, broken)
+            with self.subTest(method=method), self.assertRaises(LkgWindowReadinessObservationError) as caught:
+                observe_lkg_bootstrap_environment(**_bootstrap_inputs(metadata_reader=reader))
+            self.assertEqual(caught.exception.code, "LKG_READINESS_COLLECTION_METADATA_UNAVAILABLE")
+
+    def test_collection_and_schema_refusals(self):
+        cases = (
+            (lambda doc: {**doc, "collection_name": "wrong"}, "COLLECTION_IDENTITY_MISMATCH"),
+            (lambda doc: {**doc, "fields": doc["fields"][:1]}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "fields": doc["fields"] + doc["fields"][1:]}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "fields": [doc["fields"][0], {**doc["fields"][1], "data_type": "102"}]}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "fields": [{**doc["fields"][0], "is_primary": "true"}, doc["fields"][1]]}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "fields": [doc["fields"][0], {**doc["fields"][1], "params": {"dim": 64}}]}, "DIMENSION_MISMATCH"),
+            (lambda doc: {**doc, "auto_id": True}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "enable_dynamic_field": True}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {**doc, "auto_id": True, "enable_dynamic_field": True}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {name: value for name, value in doc.items() if name != "auto_id"}, "COLLECTION_SCHEMA_MISMATCH"),
+            (lambda doc: {name: value for name, value in doc.items() if name != "enable_dynamic_field"}, "COLLECTION_SCHEMA_MISMATCH"),
+        )
+        for change, code in cases:
+            with self.subTest(code=code):
+                result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(metadata_reader=_ChangedReader(collection=change)))
+                self.assertFalse(result.passed)
+                self.assertIn(code, result.reason_codes)
+
+        for name in ("auto_id", "enable_dynamic_field"):
+            for value in ("false", 0, None):
+                with self.subTest(name=name, value=value):
+                    reader = _ChangedReader(
+                        collection=lambda doc, name=name, value=value: {
+                            **doc, name: value
+                        }
+                    )
+                    result = observe_lkg_bootstrap_environment(
+                        **_bootstrap_inputs(metadata_reader=reader)
+                    )
+                    self.assertFalse(result.passed)
+                    self.assertIn("COLLECTION_SCHEMA_MISMATCH", result.reason_codes)
+
+    def test_source_schema_flags_are_eligibility_not_identity_fields(self):
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        for name in ("auto_id", "enable_dynamic_field"):
+            reader = _ChangedReader(
+                collection=lambda doc, name=name: {**doc, name: True}
+            )
+            result = observe_lkg_bootstrap_environment(
+                **_bootstrap_inputs(metadata_reader=reader)
+            )
+            with self.subTest(name=name):
+                self.assertFalse(result.passed)
+                self.assertIn("COLLECTION_SCHEMA_MISMATCH", result.reason_codes)
+                self.assertEqual(
+                    result.observed_stable_environment_document,
+                    baseline.observed_stable_environment_document,
+                )
+                self.assertEqual(
+                    result.observed_environment_identity,
+                    baseline.observed_environment_identity,
+                )
+
+    def test_index_configuration_and_readiness_refusals(self):
+        def hnsw_params(document, params):
+            return {**document, "params": params} if document["index_type"] == "HNSW" else document
+
+        def hnsw_outer(document, **changes):
+            return {**document, **changes} if document["index_type"] == "HNSW" else document
+
+        cases = (
+            (lambda doc: hnsw_params(doc, {"M": 32, "efConstruction": 200}), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 100}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: {name: value for name, value in doc.items() if name != "params"} if doc["index_type"] == "HNSW" else doc, "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, []), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"efConstruction": 200}), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": True, "efConstruction": 200}), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": True}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": "16", "efConstruction": 200}), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": "200"}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16.0, "efConstruction": 200}), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 200.0}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=32), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, efConstruction=100), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=16, efConstruction=200), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: {**{name: value for name, value in doc.items() if name != "params"}, "M": 16, "efConstruction": 200} if doc["index_type"] == "HNSW" else doc, "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 200, "unknown": 1}), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, unknown=1), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, index_type="IVF_FLAT"), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, metric_type="COSINE"), "METRIC_MISMATCH"),
+            (lambda doc: {**doc, "index_name": "wrong"}, "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: {**doc, "field_name": "wrong"}, "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: {**doc, "indexed_rows": True}, "INDEX_METADATA_INVALID"),
+            (lambda doc: {**doc, "pending_index_rows": False}, "INDEX_METADATA_INVALID"),
+            (lambda doc: {**doc, "total_rows": -1}, "INDEX_METADATA_INVALID"),
+            (lambda doc: {**doc, "state": None}, "INDEX_METADATA_INVALID"),
+            (lambda doc: {**doc, "state": "InProgress"}, "INDEX_NOT_READY"),
+        )
+        for change, code in cases:
+            with self.subTest(code=code):
+                reader = _ChangedReader(index=change)
+                result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(metadata_reader=reader))
+                self.assertFalse(result.passed)
+                self.assertIn(code, result.reason_codes)
+
+    def test_real_pymilvus_load_state_members_follow_pinned_contract(self):
+        from pymilvus.client.types import LoadState
+
+        self.assertEqual(
+            {member.name: member.value for member in LoadState},
+            {"NotExist": 0, "NotLoad": 1, "Loading": 2, "Loaded": 3},
+        )
+
+        loaded = observe_lkg_bootstrap_environment(
+            **_bootstrap_inputs(metadata_reader=_LoadStateReader(LoadState.Loaded))
+        )
+        self.assertTrue(loaded.passed)
+        self.assertNotIn("INDEX_METADATA_INVALID", loaded.reason_codes)
+        self.assertEqual(
+            loaded.observed_stable_environment_document["data_plane"][1][
+                "index_parameters"
+            ],
+            [{"name": "params", "value": "{'M': 16, 'efConstruction': 200}"}],
+        )
+
+        not_loaded = observe_lkg_bootstrap_environment(
+            **_bootstrap_inputs(metadata_reader=_LoadStateReader(LoadState.NotLoad))
+        )
+        self.assertFalse(not_loaded.passed)
+        self.assertEqual(not_loaded.collection_readiness, {"flat": False, "hnsw": False})
+        self.assertIn("COLLECTION_NOT_LOADED", not_loaded.reason_codes)
+        self.assertNotIn("INDEX_METADATA_INVALID", not_loaded.reason_codes)
+
+    def test_load_state_lookalikes_and_malformed_scalars_fail_closed(self):
+        from enum import IntEnum
+
+        class LoadedLookalike:
+            name = "Loaded"
+            value = 3
+
+            def __str__(self):
+                return "Loaded"
+
+        SpoofedLoadState = IntEnum(
+            "LoadState",
+            {"NotExist": 0, "NotLoad": 1, "Loading": 2, "Loaded": 3},
+            module="pymilvus.client.types",
+        )
+
+        for state in (
+            "LoadState.Loaded",
+            LoadedLookalike(),
+            SpoofedLoadState.Loaded,
+            True,
+            3,
+            3.0,
+        ):
+            with self.subTest(state=state):
+                result = observe_lkg_bootstrap_environment(
+                    **_bootstrap_inputs(metadata_reader=_LoadStateReader(state))
+                )
+                self.assertFalse(result.passed)
+                self.assertEqual(
+                    result.collection_readiness, {"flat": False, "hnsw": False}
+                )
+                self.assertIn("COLLECTION_NOT_LOADED", result.reason_codes)
+                if type(state) is not str:
+                    self.assertIn("INDEX_METADATA_INVALID", result.reason_codes)
+
+    def test_missing_index_and_build_values_refuse(self):
+        with self.assertRaises(ContractViolation):
+            observe_lkg_bootstrap_environment(**_bootstrap_inputs(metadata_reader=_ChangedReader(index=lambda doc: {})))
+
+    def test_duplicate_and_ambiguous_container_identities_refuse(self):
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(container_inspector=lambda name: _container()))
+        self.assertEqual(result.reason_codes, ("DUPLICATE_CONTAINER_IDENTITY",))
+        self.assertFalse(result.passed)
+        for change in ({"Id": ""}, {"RestartCount": -1}, {"Name": "/wrong"},
+                       {"State": {**_container()["State"], "Health": {}}},
+                       {"State": {**_container()["State"], "StartedAt": "not-a-time"}},
+                       {"State": {**_container()["State"], "StartedAt": "2026-02-30T00:00:00Z"}}):
+            result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(
+                container_inspector=lambda name: {**_distinct_container(name), **change}))
+            self.assertFalse(result.passed)
+            self.assertIn("CONTAINER_IDENTITY_AMBIGUOUS", result.reason_codes)
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(image_inspector=lambda name: {**_image(), "Id": "wrong"}))
+        self.assertFalse(result.passed)
+        self.assertIn("CONTAINER_IDENTITY_AMBIGUOUS", result.reason_codes)
+
+    def test_docker_nanosecond_time_is_validated_without_renormalization(self):
+        started_at = "2026-08-26T03:51:13.123456789Z"
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(container_inspector=lambda name: {
+            **_distinct_container(name), "State": {**_container()["State"], "StartedAt": started_at},
+        }))
+        self.assertTrue(result.passed)
+        self.assertEqual(result.observed_stable_environment_document["containers"][0]["started_at"], started_at)
+
+    def test_noncanonical_output_text_is_refused(self):
+        from vdbench.canonical_serialization import CanonicalSerializationError
+
+        with self.assertRaises(CanonicalSerializationError):
+            observe_lkg_bootstrap_environment(**_bootstrap_inputs(image_inspector=lambda name: {"RepoDigests": ["e\u0301"]}))
+
+    def test_entity_count_and_unloaded_collection_refuse(self):
+        for reader, code in ((_PinnedPyMilvusReader(rows=9999), "ENTITY_COUNT_MISMATCH"), (_PinnedPyMilvusReader(loaded=False), "COLLECTION_NOT_LOADED")):
+            result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(metadata_reader=reader))
+            self.assertFalse(result.passed)
+            self.assertIn(code, result.reason_codes)
+
+    def test_identity_bearing_container_changes_change_identity(self):
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs()).observed_environment_identity
+        for change in ({"Id": "f" * 64}, {"RestartCount": 1}, {"Image": "sha256:" + "a" * 64},
+                       {"State": {**_container()["State"], "StartedAt": "2026-08-30T00:00:00Z"}},
+                       {"State": {**_container()["State"], "OOMKilled": True}}):
+            result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(
+                container_inspector=lambda name: {**_distinct_container(name), **(change if name == _SPEC.etcd_container else {})}))
+            self.assertNotEqual(baseline, result.observed_environment_identity)
+
+    def test_health_only_changes_preserve_identity(self):
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        for changes in (
+            {"healthz_probe": lambda: False},
+            {"metadata_reader": _PinnedPyMilvusReader(loaded=False)},
+            {"metadata_reader": _PinnedPyMilvusReader(index_state="InProgress", pending=1)},
+            {"container_inspector": lambda name: {**_distinct_container(name), "State": _container(health="unhealthy")["State"]}},
+            {"container_inspector": lambda name: {**_distinct_container(name), "State": _container(status="exited")["State"]}},
+        ):
+            result = observe_lkg_bootstrap_environment(**_bootstrap_inputs(**changes))
+            self.assertFalse(result.passed)
+            self.assertEqual(result.observed_environment_identity, baseline.observed_environment_identity)
+            self.assertEqual(result.observed_stable_environment_document, baseline.observed_stable_environment_document)
+        later = observe_lkg_bootstrap_environment(**_bootstrap_inputs(observed_at_utc="2026-09-04T00:00:00Z"))
+        self.assertTrue(later.passed)
+        self.assertEqual(later.observed_environment_identity, baseline.observed_environment_identity)
+
+    def test_adversarial_shared_core_equivalence_and_frozen_window_semantics(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        cases = (
+            ({}, True),
+            ({"healthz_probe": lambda: False}, True),
+            ({"metadata_reader": _PinnedPyMilvusReader(loaded=False)}, True),
+            ({"metadata_reader": _PinnedPyMilvusReader(rows=9999)}, True),
+            ({"container_inspector": lambda name: _container()}, False),
+            ({"metadata_reader": _ChangedReader(collection=lambda doc: {**doc, "fields": list(reversed(doc["fields"]))})}, True),
+            ({"metadata_reader": _ChangedReader(collection=lambda doc: {**doc, "fields": [doc["fields"][0], {**doc["fields"][1], "params": {"dim": 64}}]})}, False),
+            ({"metadata_reader": _ChangedReader(index=lambda doc: {**doc, "params": {"M": 32, "efConstruction": 200}} if doc["index_type"] == "HNSW" else doc)}, True),
+            ({"metadata_reader": _ChangedReader(index=lambda doc: {**doc, "metric_type": "COSINE"})}, True),
+            ({"metadata_reader": _ChangedReader(index=lambda doc: {**doc, "pending_index_rows": False})}, True),
+            ({"metadata_reader": _ChangedReader(collection=lambda doc: {**doc, "collection_name": "wrong"})}, True),
+        )
+        for changes, retained_valid in cases:
+            inputs = _bootstrap_inputs(**changes)
+            with self.subTest(changes=changes), patch.object(module, "_observe_lkg_environment_facts", wraps=module._observe_lkg_environment_facts) as core:
+                bootstrap = observe_lkg_bootstrap_environment(**inputs)
+                core.assert_called_once()
+                core.reset_mock()
+                window = observe_lkg_window_health(**inputs,
+                    run_bound_environment_identity=bootstrap.observed_environment_identity,
+                    source_run_id=_RUN_ID, source_run_binding_sha256=_BINDING_SHA)
+                core.assert_called_once()
+            self.assertEqual(canonical_json_bytes(bootstrap.observed_stable_environment_document),
+                             canonical_json_bytes(window.document["observed_stable_environment_document"]))
+            self.assertEqual(bootstrap.observed_environment_identity, window.document["observed_environment_identity"])
+            self.assertTrue(set(window.reason_codes) <= set(READINESS_REASON_CODES))
+            validate = lambda: validate_lkg_window_health_observation(window,
+                source_identity=LKG_HEALTH_OBSERVATION_SOURCE_IDENTITY,
+                source_run_id=_RUN_ID, source_run_binding_sha256=_BINDING_SHA,
+                run_bound_environment_identity=bootstrap.observed_environment_identity)
+            if retained_valid:
+                validate()
+            else:
+                with self.assertRaises(ContractViolation):
+                    validate()
+
+    def test_prechange_window_golden_digests_are_unchanged(self):
+        # Captured from base 6625bdd before this refactor, using these exact
+        # legacy fake inputs. Hashes pin the complete canonical evidence bytes.
+        for result, digest in (
+            (_observe(), "a034d2eaaa7885639be37b65f156f99b661ab53c84685b2c104c3c7785735025"),
+            (_observe(healthz=False), "a7b0217ee1662f4ed3702b6d7b47fe4f48006a8bd065b9d04e602ba9dfb2bd19"),
+            (_observe(container=lambda: _container(status="exited")), "0663b9c8e3bd7afa465c3c767038598e1b2a5be0dd7aa9ae4dfb32cf40e0d5a7"),
+            (_observe(_Reader(rows=9999)), "d39b108c8a998bf18179fea48dc34c258b0bd6405cf1b4050630d7acb2557a60"),
+            (_observe(identity="lkg-env-identity-v1:sha256:" + "1" * 64), "6665ccdcf9679b75dc30beead49a2ba7dc34a86b533af98b515f92f0b7a10a31"),
+        ):
+            self.assertEqual(result.digest, digest)
 
 
 class DeterministicIdentifierTests(unittest.TestCase):
@@ -785,9 +1417,53 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
         validator = validate_lkg_window_health_observation if health else validate_lkg_window_rollback_readiness
         return validator(result, **context)
 
+    def _rehashed_duplicate_health(
+        self, shared_container_id, *, entity_count_mismatch=False,
+        source_run_id=_RUN_ID, source_run_binding_sha256=_BINDING_SHA,
+    ):
+        import vdbench.lkg_window_readiness_observation as module
+
+        valid = _observe(
+            container_inspector=_distinct_container,
+            source_run_id=source_run_id,
+            source_run_binding_sha256=source_run_binding_sha256,
+        )
+        document = deepcopy(valid.document)
+        stable = document["observed_stable_environment_document"]
+        stable["containers"][1]["container_id"] = shared_container_id
+        stable["containers"][2]["container_id"] = shared_container_id
+        if entity_count_mismatch:
+            stable["data_plane"][0]["entity_count"] = 9999
+        _, stable_reasons = module._validate_lkg_stable_environment_document(stable)
+        expected_reasons = (
+            ("DUPLICATE_CONTAINER_IDENTITY", "ENTITY_COUNT_MISMATCH")
+            if entity_count_mismatch else ("DUPLICATE_CONTAINER_IDENTITY",)
+        )
+        self.assertEqual(stable_reasons, expected_reasons)
+        identity = lkg_environment_identity(stable)
+        recorded_reasons = (
+            ("ENTITY_COUNT_MISMATCH",) if entity_count_mismatch else ()
+        )
+        document.update(
+            observed_environment_identity=identity,
+            run_bound_environment_identity=identity,
+            environment_identity_matches=True,
+            reason_codes=list(recorded_reasons),
+        )
+        return replace(
+            valid,
+            document=document,
+            digest=hashlib.sha256(
+                LKG_HEALTH_OBSERVATION_DOMAIN + canonical_json_bytes(document)
+            ).hexdigest(),
+            passed=not recorded_reasons,
+            reason_codes=recorded_reasons,
+        )
+
     def test_canonical_results_accepted_as_exact_detached_preimages(self):
-        for result in (_observe(), _rollback(), _observe(healthz=False),
-                       _observe(_Reader(rows=9999)),
+        for result in (_observe(container_inspector=_distinct_container), _rollback(),
+                       _observe(healthz=False, container_inspector=_distinct_container),
+                       _observe(_Reader(rows=9999), container_inspector=_distinct_container),
                        _rollback(route_state_record=_route_record(RouteState.ACTIVATING)),
                        _rollback(baseline_search_configuration=None)):
             with self.subTest(reasons=result.reason_codes):
@@ -797,7 +1473,7 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
                 self.assertIsNot(rebuilt.document, result.document)
 
     def test_wrong_digest_reasons_verdict_and_result_types_refuse(self):
-        for original in (_observe(), _rollback()):
+        for original in (_observe(container_inspector=_distinct_container), _rollback()):
             verdict = "passed" if hasattr(original, "passed") else "ready"
             for changes in ({"digest": "0" * 64}, {"digest": "invalid"},
                             {"reason_codes": ("CONTAINER_UNHEALTHY",)},
@@ -818,17 +1494,18 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
             )
 
     def test_wrong_source_run_and_binding_identities_refuse(self):
-        for result in (_observe(), _rollback()):
+        for result in (_observe(container_inspector=_distinct_container), _rollback()):
             for change in ({"source_identity": "wrong"}, {"source_run_id": "other"},
                            {"source_run_binding_sha256": "b" * 64}):
                 with self.subTest(kind=type(result), change=change):
                     with self.assertRaises(ContractViolation):
                         self.validate(result, **change)
         with self.assertRaises(ContractViolation):
-            self.validate(_observe(), run_bound_environment_identity="lkg-env-identity-v1:sha256:" + "0" * 64)
+            self.validate(_observe(container_inspector=_distinct_container),
+                          run_bound_environment_identity="lkg-env-identity-v1:sha256:" + "0" * 64)
 
     def test_malformed_and_noncanonical_documents_refuse_even_with_rehashed_digest(self):
-        for original in (_observe(), _rollback()):
+        for original in (_observe(container_inspector=_distinct_container), _rollback()):
             domain = (b"vdbench.lkg-window-health-observation.v1\0" if hasattr(original, "passed")
                       else b"vdbench.lkg-window-rollback-readiness.v1\0")
             for change in ({"extra": 1}, {"reason_codes": ["UNKNOWN"]},
@@ -842,7 +1519,7 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
                         self.validate(result)
 
     def test_retained_environment_and_configuration_contradictions_refuse(self):
-        health = _observe()
+        health = _observe(container_inspector=_distinct_container)
         rollback = _rollback()
         cases = [
             (health, {"observed_environment_identity": "lkg-env-identity-v1:sha256:" + "0" * 64}),
@@ -865,9 +1542,119 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
                 with self.assertRaises(ContractViolation):
                     self.validate(replace(result, document=doc, digest=hashlib.sha256(domain + canonical_json_bytes(doc)).hexdigest()))
 
+    def test_rehashed_health_stable_semantic_matrix_refuses(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        valid = _observe(container_inspector=_distinct_container)
+        self.validate(valid)
+        cases = (
+            ("COLLECTION_IDENTITY_MISMATCH", lambda stable: stable["data_plane"][1].update(
+                collection_name=stable["data_plane"][0]["collection_name"]
+            )),
+            ("CONTAINER_IDENTITY_AMBIGUOUS", lambda stable: stable["containers"][0].update(
+                container_id=""
+            )),
+            ("DIMENSION_MISMATCH", lambda stable: stable.update(dimensions=64)),
+            ("INDEX_CONFIGURATION_MISMATCH", lambda stable: stable["data_plane"][0].update(
+                index_type="HNSW"
+            )),
+            ("METRIC_MISMATCH", lambda stable: stable.update(metric="COSINE")),
+        )
+        for expected_reason, mutate in cases:
+            document = deepcopy(valid.document)
+            stable = document["observed_stable_environment_document"]
+            mutate(stable)
+            _, stable_reasons = module._validate_lkg_stable_environment_document(stable)
+            self.assertEqual(stable_reasons, (expected_reason,))
+            identity = lkg_environment_identity(stable)
+            document.update(
+                observed_environment_identity=identity,
+                run_bound_environment_identity=identity,
+                environment_identity_matches=True,
+            )
+            forged = replace(
+                valid,
+                document=document,
+                digest=hashlib.sha256(
+                    LKG_HEALTH_OBSERVATION_DOMAIN + canonical_json_bytes(document)
+                ).hexdigest(),
+            )
+            with self.subTest(reason=expected_reason), self.assertRaises(ContractViolation):
+                self.validate(forged)
+
+    def test_historical_duplicate_fixture_refuses_current_validation(self):
+        fixture = _observe()
+        self.assertEqual(
+            fixture.digest,
+            "a034d2eaaa7885639be37b65f156f99b661ab53c84685b2c104c3c7785735025",
+        )
+        with self.assertRaises(ContractViolation):
+            self.validate(fixture)
+
+    def test_rehashed_duplicate_container_value_a_refuses(self):
+        with self.assertRaises(ContractViolation):
+            self.validate(self._rehashed_duplicate_health("a" * 64))
+
+    def test_rehashed_duplicate_container_value_b_refuses(self):
+        with self.assertRaises(ContractViolation):
+            self.validate(self._rehashed_duplicate_health("b" * 64))
+
+    def test_legacy_lookalike_caller_values_do_not_bypass_duplicate_refusal(self):
+        source_run_id = "legacy-evidence-run-1"
+        source_run_binding_sha256 = "c" * 64
+        duplicate = self._rehashed_duplicate_health(
+            "d" * 64,
+            source_run_id=source_run_id,
+            source_run_binding_sha256=source_run_binding_sha256,
+        )
+        with self.assertRaises(ContractViolation):
+            self.validate(
+                duplicate,
+                source_run_id=source_run_id,
+                source_run_binding_sha256=source_run_binding_sha256,
+            )
+
+    def test_duplicate_and_entity_count_mismatch_refuse(self):
+        duplicate = self._rehashed_duplicate_health(
+            "e" * 64, entity_count_mismatch=True
+        )
+        self.assertEqual(duplicate.reason_codes, ("ENTITY_COUNT_MISMATCH",))
+        self.assertFalse(duplicate.passed)
+        with self.assertRaises(ContractViolation):
+            self.validate(duplicate)
+
+    def test_rehashed_health_dimension_contradiction_refuses(self):
+        import vdbench.lkg_window_readiness_observation as module
+
+        valid = _observe(container_inspector=_distinct_container)
+        document = deepcopy(valid.document)
+        stable = document["observed_stable_environment_document"]
+        stable["dimensions"] = 64
+        _, stable_reasons = module._validate_lkg_stable_environment_document(stable)
+        self.assertIn("DIMENSION_MISMATCH", stable_reasons)
+        identity = lkg_environment_identity(stable)
+        document.update(
+            observed_environment_identity=identity,
+            run_bound_environment_identity=identity,
+            environment_identity_matches=True,
+        )
+        forged = replace(
+            valid,
+            document=document,
+            digest=hashlib.sha256(
+                LKG_HEALTH_OBSERVATION_DOMAIN + canonical_json_bytes(document)
+            ).hexdigest(),
+        )
+        with self.assertRaises(ContractViolation):
+            self.validate(forged)
+
     def test_health_recorded_causes_need_not_be_reconstructed_from_omitted_status(self):
-        stopped = _observe(container=lambda: _container(status="exited"))
-        unhealthy = _observe(container=lambda: _container(health="unhealthy"))
+        stopped = _observe(container_inspector=lambda name: _distinct_container(
+            name, status="exited"
+        ))
+        unhealthy = _observe(container_inspector=lambda name: _distinct_container(
+            name, health="unhealthy"
+        ))
         self.assertEqual(
             {k: v for k, v in stopped.document.items() if k != "reason_codes"},
             {k: v for k, v in unhealthy.document.items() if k != "reason_codes"},
@@ -899,13 +1686,16 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
                     (_SPEC.etcd_container, _SPEC.minio_container, _SPEC.milvus_container),
                     containers, strict=True,
                 ))
-                result = _observe(container_inspector=lambda name: _container(**by_name[name]))
+                result = _observe(container_inspector=lambda name: _distinct_container(
+                    name, **by_name[name]
+                ))
                 self.assertEqual(result.reason_codes, expected)
                 self.validate(result)
 
     def test_mixed_container_retained_reason_inconsistency_refuses(self):
         for cause in ({"status": "exited"}, {"health": "unhealthy"}):
-            original = _observe(container_inspector=lambda name: _container(
+            original = _observe(container_inspector=lambda name: _distinct_container(
+                name,
                 **({"oom": True} if name == _SPEC.etcd_container else
                    cause if name == _SPEC.minio_container else {})
             ))
@@ -928,7 +1718,7 @@ class RetainedEvidenceValidationTests(unittest.TestCase):
                         self.validate(malformed)
 
     def test_container_reasons_without_retained_failures_refuse(self):
-        original = _observe()
+        original = _observe(container_inspector=_distinct_container)
         for reason in ("CONTAINER_OOM_KILLED", "CONTAINER_NOT_RUNNING", "CONTAINER_UNHEALTHY"):
             with self.subTest(reason=reason):
                 doc = {**original.document, "reason_codes": [reason]}

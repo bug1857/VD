@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 from tests.test_lkg_window_readiness_observation import (
     _observe as _canonical_health, _rollback as _canonical_rollback,
-    _container, _route_record,
+    _container, _distinct_container, _route_record,
 )
 from vdbench.canary_route_state import RouteState
 
@@ -78,7 +78,9 @@ def _binding(**overrides) -> LkgRunBinding:
         "qualification_ordered_query_ids_sha256": _ordered_ids_sha256(),
         "qualification_query_array_sha256": "c" * 64,
         "qualification_expected_query_count": len(_ORDERED_QUERY_IDS),
-        "environment_identity": _canonical_health().document["observed_environment_identity"],
+        "environment_identity": _canonical_health(
+            container_inspector=_distinct_container
+        ).document["observed_environment_identity"],
         "source_revision": "1fbf66cc499cebfe1df85450d4c9f222c985a0c4",
     }
     fields.update(overrides)
@@ -89,7 +91,10 @@ def _health(passed=True, codes=()) -> LkgWindowHealthObservation:
     result = _canonical_health(
         source_run_binding_sha256=_binding().sha256,
         healthz="MILVUS_HEALTHZ_FAILED" not in codes,
-        container=lambda: _container(health="unhealthy" if "CONTAINER_UNHEALTHY" in codes else "healthy"),
+        container_inspector=lambda name: _distinct_container(
+            name,
+            health="unhealthy" if "CONTAINER_UNHEALTHY" in codes else "healthy",
+        ),
     )
     assert result.passed == passed and result.reason_codes == tuple(codes)
     return result
@@ -673,7 +678,8 @@ class RetainedPreimageTests(_Base):
         self.assertEqual(self.rows(), before)
 
     def test_mixed_container_retained_reason_inconsistency_cannot_persist(self):
-        health = _canonical_health(container_inspector=lambda name: _container(
+        health = _canonical_health(container_inspector=lambda name: _distinct_container(
+            name,
             oom=name == "milvus-etcd",
             health="unhealthy" if name == "milvus-minio" else "healthy",
         ))
@@ -704,6 +710,48 @@ class RetainedPreimageTests(_Base):
         with self.assertRaises(LkgWindowOperationalReadinessProviderError):
             self.provider(observer).lookup(readiness_check_id=self.check_id)
         self.assertEqual(self.rows(), [])
+
+    def test_duplicate_container_evidence_refuses_capture_and_reopen(self):
+        from vdbench.lkg_window_readiness import readiness_payload_document_digest
+
+        valid = _health()
+        document = json.loads(json.dumps(valid.document))
+        containers = document["observed_stable_environment_document"]["containers"]
+        containers[1]["container_id"] = containers[0]["container_id"]
+        duplicate = replace(
+            valid,
+            document=document,
+            digest=hashlib.sha256(
+                b"vdbench.lkg-window-health-observation.v1\0"
+                + canonical_json_bytes(document)
+            ).hexdigest(),
+        )
+        provider = self.provider(_Observer(health=duplicate))
+        with self.assertRaises(ContractViolation):
+            provider.capture_or_return(
+                readiness_check_id=self.check_id, **self.context()
+            )
+        self.assertEqual(self.rows(), [])
+
+        provider = self.provider(_Observer())
+        provider.capture_or_return(
+            readiness_check_id=self.check_id, **self.context()
+        )
+        payload = json.loads(self.rows()[0][0])
+        payload["health_evidence_source_digest"] = duplicate.digest
+        self._tamper(
+            "health_source_document_bytes", canonical_json_bytes(document)
+        )
+        self._tamper("payload_document", canonical_json_bytes(payload))
+        self._tamper(
+            "canonical_document_digest", readiness_payload_document_digest(payload)
+        )
+        before = self.path.read_bytes()
+        with self.assertRaises(LkgWindowOperationalReadinessProviderError):
+            provider.lookup(readiness_check_id=self.check_id)
+        with self.assertRaises(LkgWindowOperationalReadinessProviderError):
+            self.provider(_Observer())
+        self.assertEqual(self.path.read_bytes(), before)
 
     def _tamper(self, column, value):
         with closing(sqlite3.connect(self.path)) as connection:

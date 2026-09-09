@@ -1,6 +1,9 @@
 """ADR-020 first-LKG operational-readiness observation payloads.
 
 Purpose:
+    Also expose ADR-024's standalone, binding-free bootstrap environment
+    observation. Its immutable result is external observation evidence only;
+    it creates no run or authority and persists nothing.
     Give ADR-020's production readiness provider
     (``lkg_window_readiness_store.py``) the two zero-actuation evidence
     payloads its ``LkgWindowOperationalReadinessEvidence`` must cite --
@@ -57,13 +60,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Protocol, cast
 
 from .artifacts import canonical_json_bytes
-from .config import ContractViolation, HNSW_EF_SWEEP, Metric, SearchConfiguration, THRESHOLD_LABELS
+from .canonical_serialization import validate_strict_canonical_value
+from .config import (
+    ContractViolation, HNSW_EF_CONSTRUCTION, HNSW_EF_SWEEP, HNSW_M,
+    Metric, PRIMARY_FIELD, SearchConfiguration, THRESHOLD_LABELS, VECTOR_FIELD,
+)
 from .lkg_window_readiness import validate_rfc3339_utc
 from .search_configuration_digest import (
     search_configuration_document,
@@ -72,6 +81,8 @@ from .search_configuration_digest import (
 )
 
 __all__ = [
+    "LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION",
+    "LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY",
     "LKG_COLLECTION_SCHEMA_DOMAIN",
     "LKG_COLLECTION_SCHEMA_SCHEMA_VERSION",
     "LKG_ENVIRONMENT_IDENTITY_DOMAIN",
@@ -90,6 +101,7 @@ __all__ = [
     "LKG_ROLLBACK_VERIFICATION_MODE",
     "PROVIDER_IMPLEMENTATION_IDENTITY",
     "READINESS_REASON_CODES",
+    "LkgBootstrapEnvironmentObservation",
     "LkgEnvironmentObservationSpec",
     "LkgMetadataReader",
     "LkgWindowHealthObservation",
@@ -103,6 +115,7 @@ __all__ = [
     "lkg_environment_identity",
     "lkg_index_identity_document",
     "lkg_index_identity_sha256",
+    "observe_lkg_bootstrap_environment",
     "observe_lkg_window_health",
     "validate_lkg_window_health_observation",
     "validate_lkg_window_rollback_readiness",
@@ -115,6 +128,9 @@ __all__ = [
 LKG_ENVIRONMENT_IDENTITY_SCHEMA_VERSION = "lkg-environment-identity-v1"
 LKG_ENVIRONMENT_IDENTITY_DOMAIN = b"vdbench.lkg-environment-identity.v1\0"
 LKG_ENVIRONMENT_IDENTITY_PREFIX = "lkg-env-identity-v1"
+
+LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION = 1
+LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY = "vdbench.lkg-bootstrap-environment-observation.v1"
 
 # Amendment (ADR-020a): LKG-specific sub-digest identities. These are NEVER the
 # EXP-012 Gate-C collection-schema/index-identity values, whose domains this
@@ -162,11 +178,34 @@ READINESS_REASON_CODES = (
     "SERVING_CONFIGURATION_IDENTITY_MISMATCH",
 )
 
+_BOOTSTRAP_REASON_CODES = frozenset({
+    "COLLECTION_IDENTITY_MISMATCH",
+    "COLLECTION_NOT_LOADED",
+    "COLLECTION_SCHEMA_MISMATCH",
+    "CONTAINER_IDENTITY_AMBIGUOUS",
+    "CONTAINER_NOT_RUNNING",
+    "CONTAINER_OOM_KILLED",
+    "CONTAINER_UNHEALTHY",
+    "DIMENSION_MISMATCH",
+    "DUPLICATE_CONTAINER_IDENTITY",
+    "ENTITY_COUNT_MISMATCH",
+    "HNSW_EF_CONSTRUCTION_MISMATCH",
+    "HNSW_M_MISMATCH",
+    "INDEX_CONFIGURATION_MISMATCH",
+    "INDEX_METADATA_INVALID",
+    "INDEX_NOT_READY",
+    "METRIC_MISMATCH",
+    "MILVUS_HEALTHZ_FAILED",
+})
+
 _READINESS_SCHEMA_VERSION = 1
 _WINDOWS_PER_RUN = 12
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _RFC3339_UTC_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z"
+)
+_DOCKER_STARTED_AT_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z\Z"
 )
 _IDENTITY_RE = re.compile(
     rf"{re.escape(LKG_ENVIRONMENT_IDENTITY_PREFIX)}:sha256:[0-9a-f]{{64}}\Z"
@@ -339,6 +378,82 @@ class LkgEnvironmentObservationSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class LkgBootstrapEnvironmentObservation:
+    """Immutable ADR-024 observation snapshot, never execution authority.
+
+    Only canonical bytes are retained. Each document/mapping view is detached,
+    including nested lists, so caller mutation cannot change the observation.
+    Reading a view is O(n) time/space in the captured document size.
+    """
+
+    _document_bytes: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_bootstrap_observation_bytes(self._document_bytes)
+
+    @property
+    def document(self) -> dict[str, object]:
+        return json.loads(self._document_bytes)
+
+    @property
+    def observation_schema_version(self) -> int:
+        return cast(int, self.document["observation_schema_version"])
+
+    @property
+    def observation_source_identity(self) -> str:
+        return cast(str, self.document["observation_source_identity"])
+
+    @property
+    def observed_at_utc(self) -> str:
+        return cast(str, self.document["observed_at_utc"])
+
+    @property
+    def observed_stable_environment_document(self) -> dict[str, object]:
+        return cast(dict[str, object], self.document["observed_stable_environment_document"])
+
+    @property
+    def observed_environment_identity(self) -> str:
+        return cast(str, self.document["observed_environment_identity"])
+
+    @property
+    def container_health(self) -> dict[str, bool]:
+        return cast(dict[str, bool], self.document["container_health"])
+
+    @property
+    def milvus_healthz(self) -> bool:
+        return cast(bool, self.document["milvus_healthz"])
+
+    @property
+    def collection_readiness(self) -> dict[str, bool]:
+        return cast(dict[str, bool], self.document["collection_readiness"])
+
+    @property
+    def index_readiness(self) -> dict[str, bool]:
+        return cast(dict[str, bool], self.document["index_readiness"])
+
+    @property
+    def reason_codes(self) -> tuple[str, ...]:
+        return tuple(cast(list[str], self.document["reason_codes"]))
+
+    @property
+    def passed(self) -> bool:
+        return cast(bool, self.document["passed"])
+
+
+@dataclass(frozen=True, slots=True)
+class _LkgEnvironmentFacts:
+    """One shared observation, with separate initial-admission predicates.
+
+    Bootstrap eligibility must not expand the frozen ADR-020 window reason
+    vocabulary or change retained historical evidence semantics.
+    """
+
+    document: dict[str, object]
+    readiness_reason_codes: tuple[str, ...]
+    bootstrap_reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class LkgWindowHealthObservation:
     """One completed health observation: document, digest, verdict."""
 
@@ -451,66 +566,25 @@ def validate_lkg_window_health_observation(
     ):
         raise ContractViolation("health run-bound environment identity differs")
     validate_rfc3339_utc(doc["observed_at_utc"], field="observed_at_utc")
-    stable = _document_fields(doc["observed_stable_environment_document"], {
-        "schema_version": str, "endpoint": dict, "containers": list,
-        "data_plane": list, "expected_entity_count": int, "metric": str,
-        "dimensions": int,
-    })
-    if stable["schema_version"] != LKG_ENVIRONMENT_IDENTITY_SCHEMA_VERSION:
-        raise ContractViolation("stable environment schema differs")
-    _exact_int(stable["expected_entity_count"], field="expected_entity_count", minimum=1)
-    _exact_int(stable["dimensions"], field="dimensions", minimum=1)
-    _text(stable["metric"], field="metric")
+    stable, stable_reasons = _validate_lkg_stable_environment_document(
+        doc["observed_stable_environment_document"]
+    )
     if doc["expected_entity_count"] != stable["expected_entity_count"]:
         raise ContractViolation("health expected entity count differs")
-    endpoint = _document_fields(stable["endpoint"], {
-        "scheme": str, "host": str, "port": int, "transport_security": str,
-    })
-    if (
-        endpoint["scheme"] not in {"http", "https"} or not endpoint["host"]
-        or not 0 <= endpoint["port"] <= 65535
-        or endpoint["transport_security"] != (
-            "TLS" if endpoint["scheme"] == "https" else "PLAINTEXT"
-        )
-    ):
-        raise ContractViolation("health endpoint is invalid")
+    # ENTITY_COUNT_MISMATCH is the sole canonical retained health failure.
+    # Every stable semantic contradiction, including duplicate container IDs,
+    # refuses current retained-health authority.
+    if set(stable_reasons) - {"ENTITY_COUNT_MISMATCH"}:
+        raise ContractViolation("health stable environment semantics differ")
     for name, roles in (("container_health", _CONTAINER_ROLES),
                         ("collection_readiness", _DATA_PLANE_ROLES),
                         ("index_readiness", _DATA_PLANE_ROLES)):
         _document_fields(doc[name], dict.fromkeys(roles, bool))
-    if len(stable["containers"]) != 3 or len(stable["data_plane"]) != 2:
-        raise ContractViolation("health environment population differs")
-    for role, entry in zip(_CONTAINER_ROLES, stable["containers"], strict=True):
-        _document_fields(entry, {
-            "role": str, "container_name": str, "container_id": str,
-            "image_id": str, "repository_digests": list, "restart_count": int,
-            "oom_killed": bool, "started_at": str,
-        })
-        _text(entry["container_name"], field="container_name")
-        repos = entry["repository_digests"]
-        if (entry["role"] != role or not entry["image_id"]
-                or any(type(value) is not str for value in repos)
-                or repos != sorted(set(repos))
-                or (entry["oom_killed"] and doc["container_health"][role])):
+    for entry in stable["containers"]:
+        if (entry["role"] in doc["container_health"]
+                and entry["oom_killed"]
+                and doc["container_health"][entry["role"]]):
             raise ContractViolation("health container evidence is inconsistent")
-    for entry in stable["data_plane"]:
-        _document_fields(entry, {
-            "collection_name": str, "collection_schema_sha256": str,
-            "index_identity_sha256": str, "index_type": str,
-            "index_parameters": list, "metric": str,
-            "dimensions": (int, type(None)), "entity_count": int,
-        })
-        _text(entry["collection_name"], field="collection_name")
-        _text(entry["index_type"], field="index_type")
-        for name in ("collection_schema_sha256", "index_identity_sha256"):
-            _sha256_hex(entry[name], field=name)
-        if entry["metric"] != stable["metric"]:
-            raise ContractViolation("health collection metric differs")
-        for parameter in entry["index_parameters"]:
-            _document_fields(parameter, {"name": str, "value": str})
-        names = [item["name"] for item in entry["index_parameters"]]
-        if names != sorted(names):
-            raise ContractViolation("health index parameters are not canonical")
     identity = lkg_environment_identity(stable)
     if (doc["observed_environment_identity"] != identity
             or doc["environment_identity_matches"] != (identity == run_bound_environment_identity)):
@@ -763,6 +837,32 @@ def _normalize_index_parameters(index: Mapping[str, object]) -> list[dict[str, o
     return parameters
 
 
+def _pinned_hnsw_build_parameters(
+    index: Mapping[str, object],
+) -> tuple[object, object, bool]:
+    """Extract only PyMilvus 3.0.1's decoded ``params`` representation."""
+
+    params = index.get("params")
+    valid = type(params) is dict and params.keys() == {"M", "efConstruction"}
+    if not valid:
+        return None, None, False
+    return params["M"], params["efConstruction"], True
+
+
+def _pinned_load_state_name(value: object) -> str | None:
+    """Normalize the pinned PyMilvus enum without importing its client package."""
+
+    if type(value) is str:
+        return value
+    load_state_type = getattr(
+        sys.modules.get("pymilvus.client.types"), "LoadState", None
+    )
+    if load_state_type is None or type(value) is not load_state_type:
+        return None
+    name = getattr(value, "name", None)
+    return name if type(name) is str else None
+
+
 def lkg_collection_schema_document(
     *, collection_name: str, database_name: str, fields: Sequence[Mapping[str, object]]
 ) -> dict[str, object]:
@@ -870,7 +970,9 @@ def _normalize_data_plane(
     collection_name: str,
     spec: LkgEnvironmentObservationSpec,
     reader: LkgMetadataReader,
-) -> tuple[dict[str, object], bool, bool, list[str]]:
+    *,
+    role: str,
+) -> tuple[dict[str, object], bool, bool, list[str], list[str]]:
     """ADR-020 section 7 stable data-plane facts plus readiness bits."""
 
     code = "LKG_READINESS_COLLECTION_METADATA_UNAVAILABLE"
@@ -899,7 +1001,8 @@ def _normalize_data_plane(
         raise _error(invalid)
 
     reasons: list[str] = []
-    load_ready = str(load.get("state")) == "Loaded"
+    load_state = _pinned_load_state_name(load.get("state"))
+    load_ready = load_state == "Loaded"
     if not load_ready:
         reasons.append("COLLECTION_NOT_LOADED")
     index_ready = (
@@ -948,7 +1051,72 @@ def _normalize_data_plane(
         "dimensions": dimension,
         "entity_count": entity_count,
     }
-    return document, bool(load_ready), bool(index_ready), reasons
+    bootstrap_reasons = _bootstrap_data_plane_refusals(
+        collection_name=collection_name, role=role, spec=spec,
+        description=description, fields=fields, index=index, load_state=load_state,
+    )
+    return document, bool(load_ready), bool(index_ready), reasons, bootstrap_reasons
+
+
+def _bootstrap_data_plane_refusals(
+    *, collection_name: str, role: str, spec: LkgEnvironmentObservationSpec,
+    description: Mapping[str, object], fields: list[dict[str, object]],
+    index: Mapping[str, object], load_state: str | None,
+) -> list[str]:
+    """Initial-admission checks on the SAME facts, without renormalizing them.
+
+    These reasons are bootstrap-only; ADR-020 window evidence continues to
+    compare the observed identity against its already established authority.
+    Milvus INT64/FLOAT_VECTOR metadata encode as 5/101 in the existing schema.
+    """
+
+    reasons: list[str] = []
+    if (description.get("collection_name") != collection_name
+            or spec.flat_collection_name == spec.hnsw_collection_name):
+        reasons.append("COLLECTION_IDENTITY_MISMATCH")
+    expected_fields = sorted([
+        {"name": PRIMARY_FIELD, "data_type": "5", "is_primary": True, "dimension": None},
+        {"name": VECTOR_FIELD, "data_type": "101", "is_primary": False,
+         "dimension": spec.dimensions},
+    ], key=lambda item: str(item["name"]))
+    if (description.get("auto_id") is not False
+            or description.get("enable_dynamic_field") is not False
+            or fields != expected_fields or any(
+        type(entry.get("name")) is not str
+        or type(entry.get("is_primary", False)) is not bool
+        or ("type" in entry and "data_type" in entry
+            and str(entry["type"]) != str(entry["data_type"]))
+        for entry in cast(Sequence[Mapping[str, object]], description["fields"])
+    )):
+        reasons.append("COLLECTION_SCHEMA_MISMATCH")
+    if index.get("metric_type") != spec.metric:
+        reasons.append("METRIC_MISMATCH")
+    expected_index_fields = {
+        "field_name", "index_name", "index_type", "metric_type", "state",
+        "total_rows", "indexed_rows", "pending_index_rows",
+    }
+    if role == "hnsw":
+        expected_index_fields.add("params")
+    if (set(index) != expected_index_fields
+            or index.get("index_name") != spec.index_name
+            or index.get("field_name") != VECTOR_FIELD):
+        reasons.append("INDEX_CONFIGURATION_MISMATCH")
+    if role == "hnsw":
+        m, ef_construction, valid_params = _pinned_hnsw_build_parameters(index)
+        if not valid_params and "INDEX_CONFIGURATION_MISMATCH" not in reasons:
+            reasons.append("INDEX_CONFIGURATION_MISMATCH")
+        for value, expected, code in (
+            (m, HNSW_M, "HNSW_M_MISMATCH"),
+            (ef_construction, HNSW_EF_CONSTRUCTION, "HNSW_EF_CONSTRUCTION_MISMATCH"),
+        ):
+            if type(value) is not int or value != expected:
+                reasons.append(code)
+    if (load_state is None
+            or type(index.get("state")) is not str
+            or any(type(index.get(name)) is not int or cast(int, index[name]) < 0
+                   for name in ("total_rows", "pending_index_rows", "indexed_rows"))):
+        reasons.append("INDEX_METADATA_INVALID")
+    return reasons
 
 
 def build_lkg_stable_environment_document(
@@ -985,39 +1153,228 @@ def lkg_environment_identity(stable_environment_document: Mapping[str, object]) 
     return f"{LKG_ENVIRONMENT_IDENTITY_PREFIX}:sha256:{digest}"
 
 
-# -- health observation (ADR-020 sections 10-12) -----------------------
+def _validate_lkg_stable_environment_document(
+    value: object,
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    """Validate the frozen stable schema and derive its admission refusals."""
+
+    stable = _document_fields(value, {
+        "schema_version": str, "endpoint": dict, "containers": list,
+        "data_plane": list, "expected_entity_count": int, "metric": str,
+        "dimensions": int,
+    })
+    if stable["schema_version"] != LKG_ENVIRONMENT_IDENTITY_SCHEMA_VERSION:
+        raise ContractViolation("stable environment schema differs")
+    _exact_int(stable["expected_entity_count"], field="expected_entity_count", minimum=1)
+    _exact_int(stable["dimensions"], field="dimensions", minimum=1)
+    _text(stable["metric"], field="metric")
+
+    endpoint = _document_fields(stable["endpoint"], {
+        "scheme": str, "host": str, "port": int, "transport_security": str,
+    })
+    if (
+        endpoint["scheme"] not in {"http", "https"}
+        or not endpoint["host"]
+        or not 0 <= endpoint["port"] <= 65535
+        or endpoint["transport_security"] != (
+            "TLS" if endpoint["scheme"] == "https" else "PLAINTEXT"
+        )
+    ):
+        raise ContractViolation("stable environment endpoint is invalid")
+
+    containers = cast(list[dict[str, object]], stable["containers"])
+    data_plane = cast(list[dict[str, object]], stable["data_plane"])
+    if len(containers) != len(_CONTAINER_ROLES) or len(data_plane) != len(_DATA_PLANE_ROLES):
+        raise ContractViolation("stable environment population differs")
+
+    reasons: list[str] = []
+    for role, entry in zip(_CONTAINER_ROLES, containers, strict=True):
+        _document_fields(entry, {
+            "role": str, "container_name": str, "container_id": str,
+            "image_id": str, "repository_digests": list, "restart_count": int,
+            "oom_killed": bool, "started_at": str,
+        })
+        ambiguous = entry["role"] != role
+        try:
+            for name in ("container_name", "container_id", "image_id"):
+                _text(entry[name], field=name)
+            _exact_int(entry["restart_count"], field="restart_count")
+            started_at = _text(entry["started_at"], field="started_at")
+            if _DOCKER_STARTED_AT_RE.fullmatch(started_at) is None:
+                raise ValueError("invalid Docker start time")
+            datetime.fromisoformat(started_at)
+            repositories = cast(list[object], entry["repository_digests"])
+            for repository in repositories:
+                _text(repository, field="repository_digest")
+            if repositories != sorted(set(cast(list[str], repositories))):
+                ambiguous = True
+        except (ContractViolation, ValueError):
+            ambiguous = True
+        if ambiguous:
+            reasons.append("CONTAINER_IDENTITY_AMBIGUOUS")
+    if len({entry["container_id"] for entry in containers}) != len(_CONTAINER_ROLES):
+        reasons.append("DUPLICATE_CONTAINER_IDENTITY")
+
+    collection_names: list[str] = []
+    for expected_index_type, entry in zip(("FLAT", "HNSW"), data_plane, strict=True):
+        _document_fields(entry, {
+            "collection_name": str, "collection_schema_sha256": str,
+            "index_identity_sha256": str, "index_type": str,
+            "index_parameters": list, "metric": str,
+            "dimensions": (int, type(None)), "entity_count": int,
+        })
+        collection_names.append(_text(entry["collection_name"], field="collection_name"))
+        _text(entry["index_type"], field="index_type")
+        for name in ("collection_schema_sha256", "index_identity_sha256"):
+            _sha256_hex(entry[name], field=name)
+        parameters = cast(list[dict[str, object]], entry["index_parameters"])
+        for parameter in parameters:
+            _document_fields(parameter, {"name": str, "value": str})
+            _text(parameter["name"], field="index parameter name")
+            _text(parameter["value"], field="index parameter value")
+        names = [cast(str, parameter["name"]) for parameter in parameters]
+        if names != sorted(set(names)):
+            raise ContractViolation("stable index parameters are not canonical")
+        if entry["index_type"] != expected_index_type:
+            reasons.append("INDEX_CONFIGURATION_MISMATCH")
+        if entry["metric"] != stable["metric"]:
+            reasons.append("METRIC_MISMATCH")
+        if entry["dimensions"] != stable["dimensions"]:
+            reasons.append("DIMENSION_MISMATCH")
+        if entry["entity_count"] != stable["expected_entity_count"]:
+            reasons.append("ENTITY_COUNT_MISMATCH")
+    if len(set(collection_names)) != len(_DATA_PLANE_ROLES):
+        reasons.append("COLLECTION_IDENTITY_MISMATCH")
+    if stable["metric"] not in {metric.value for metric in Metric}:
+        reasons.append("METRIC_MISMATCH")
+    return stable, tuple(sorted(set(reasons)))
 
 
-def observe_lkg_window_health(
+def _json_object_without_duplicate_fields(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for name, value in pairs:
+        if name in document:
+            raise ContractViolation(f"duplicate bootstrap observation field: {name}")
+        document[name] = value
+    return document
+
+
+def _validate_bootstrap_observation_bytes(value: object) -> None:
+    """Enforce every invariant on public bootstrap snapshot construction."""
+
+    if type(value) is not bytes:
+        raise ContractViolation("bootstrap snapshot must be immutable bytes")
+    try:
+        document = json.loads(
+            value.decode("utf-8"), object_pairs_hook=_json_object_without_duplicate_fields
+        )
+    except ContractViolation:
+        raise
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ContractViolation("bootstrap snapshot is malformed") from exc
+    if type(document) is not dict or canonical_json_bytes(document) != value:
+        raise ContractViolation("bootstrap snapshot is not canonical JSON")
+    try:
+        validate_strict_canonical_value(document)
+    except ValueError as exc:
+        raise ContractViolation("bootstrap snapshot contains noncanonical values") from exc
+
+    doc = _document_fields(document, {
+        "observation_schema_version": int, "observation_source_identity": str,
+        "observed_at_utc": str, "observed_stable_environment_document": dict,
+        "observed_environment_identity": str, "container_health": dict,
+        "milvus_healthz": bool, "collection_readiness": dict,
+        "index_readiness": dict, "reason_codes": list, "passed": bool,
+    })
+    if doc["observation_schema_version"] != LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION:
+        raise ContractViolation("bootstrap observation schema differs")
+    if doc["observation_source_identity"] != LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY:
+        raise ContractViolation("bootstrap observation source differs")
+    validate_rfc3339_utc(doc["observed_at_utc"], field="observed_at_utc")
+
+    stable, stable_reasons = _validate_lkg_stable_environment_document(
+        doc["observed_stable_environment_document"]
+    )
+    for name, roles in (
+        ("container_health", _CONTAINER_ROLES),
+        ("collection_readiness", _DATA_PLANE_ROLES),
+        ("index_readiness", _DATA_PLANE_ROLES),
+    ):
+        _document_fields(doc[name], dict.fromkeys(roles, bool))
+    for entry in stable["containers"]:
+        if (entry["role"] in doc["container_health"]
+                and entry["oom_killed"]
+                and doc["container_health"][entry["role"]]):
+            raise ContractViolation("bootstrap container evidence is inconsistent")
+
+    identity = doc["observed_environment_identity"]
+    if (
+        _IDENTITY_RE.fullmatch(identity) is None
+        or identity != lkg_environment_identity(stable)
+    ):
+        raise ContractViolation("bootstrap observed environment identity differs")
+    reasons = doc["reason_codes"]
+    if (
+        any(type(code) is not str for code in reasons)
+        or not set(reasons) <= _BOOTSTRAP_REASON_CODES
+        or tuple(reasons) != tuple(sorted(set(reasons)))
+        or doc["passed"] != (not reasons)
+        or not set(stable_reasons) <= set(reasons)
+    ):
+        raise ContractViolation("bootstrap observation verdict or reasons differ")
+
+    predicates = {
+        "MILVUS_HEALTHZ_FAILED": not doc["milvus_healthz"],
+        "COLLECTION_NOT_LOADED": not all(doc["collection_readiness"].values()),
+        "INDEX_NOT_READY": not all(doc["index_readiness"].values()),
+        "ENTITY_COUNT_MISMATCH": any(
+            entry["entity_count"] != stable["expected_entity_count"]
+            for entry in stable["data_plane"]
+        ),
+        "CONTAINER_OOM_KILLED": any(
+            entry["oom_killed"] for entry in stable["containers"]
+        ),
+        "DUPLICATE_CONTAINER_IDENTITY": len({
+            entry["container_id"] for entry in stable["containers"]
+        }) != len(_CONTAINER_ROLES),
+    }
+    for code, failed in predicates.items():
+        if (code in reasons) != failed:
+            raise ContractViolation(f"bootstrap retained predicate disagrees with {code}")
+    if (
+        any(entry["dimensions"] != stable["dimensions"] for entry in stable["data_plane"])
+        and "DIMENSION_MISMATCH" not in reasons
+    ):
+        raise ContractViolation("bootstrap retained predicate disagrees with DIMENSION_MISMATCH")
+    container_codes = {
+        "CONTAINER_NOT_RUNNING", "CONTAINER_OOM_KILLED", "CONTAINER_UNHEALTHY"
+    }
+    if (
+        (not all(doc["container_health"].values()))
+        != bool(set(reasons) & container_codes)
+    ):
+        raise ContractViolation("bootstrap container verdict lacks a failure reason")
+
+
+# -- shared environment observation (ADR-020 / ADR-024) ----------------
+
+
+def _observe_lkg_environment_facts(
     *,
     spec: LkgEnvironmentObservationSpec,
-    run_bound_environment_identity: str,
-    source_run_id: str,
-    source_run_binding_sha256: str,
     metadata_reader: LkgMetadataReader,
     container_inspector: Callable[[str], object],
     image_inspector: Callable[[str], object],
     healthz_probe: Callable[[], bool],
-    observed_at_utc: str,
-) -> LkgWindowHealthObservation:
-    """Perform ONE metadata-only health observation for one window.
-
-    Returns an observed FAIL as real evidence. Raises
-    ``LkgWindowReadinessObservationError`` only when no trustworthy
-    observation could be made at all (ADR-020 section 26).
-    """
+) -> _LkgEnvironmentFacts:
+    """One binding-free metadata read; the sole normalization/hash pipeline."""
 
     if not isinstance(spec, LkgEnvironmentObservationSpec):
         raise ContractViolation("spec must be an LkgEnvironmentObservationSpec")
-    if _IDENTITY_RE.fullmatch(run_bound_environment_identity) is None:
-        raise ContractViolation(
-            "run_bound_environment_identity must be lkg-env-identity-v1:sha256:<64 hex>"
-        )
-    _text(source_run_id, field="source_run_id")
-    _sha256_hex(source_run_binding_sha256, field="source_run_binding_sha256")
-    _rfc3339_utc(observed_at_utc, field="observed_at_utc")
-
     reasons: list[str] = []
+    bootstrap_reasons: list[str] = []
 
     containers: list[dict[str, object]] = []
     container_health: dict[str, bool] = {}
@@ -1041,6 +1398,12 @@ def observe_lkg_window_health(
         image = _mapping(raw_image, code="LKG_READINESS_IMAGE_INVALID")
         normalized, ready = _normalize_container(role, name, container, image)
         containers.append(normalized)
+        state = cast(Mapping[str, object], container["State"])
+        health = state.get("Health")
+        if (("Id" in image and image["Id"] != image_id)
+                or ("Name" in container and container["Name"] not in (name, "/" + name))
+                or (isinstance(health, Mapping) and type(health.get("Status")) is not str)):
+            bootstrap_reasons.append("CONTAINER_IDENTITY_AMBIGUOUS")
         container_health[role] = ready
         if not ready:
             state = _mapping(container.get("State"), code="LKG_READINESS_CONTAINER_INVALID")
@@ -1069,13 +1432,14 @@ def observe_lkg_window_health(
         (spec.flat_collection_name, spec.hnsw_collection_name),
         strict=True,
     ):
-        document, load_ready, index_ready, role_reasons = _normalize_data_plane(
-            collection_name, spec, metadata_reader
+        document, load_ready, index_ready, role_reasons, admission_reasons = _normalize_data_plane(
+            collection_name, spec, metadata_reader, role=role,
         )
         data_plane.append(document)
         collection_readiness[role] = load_ready
         index_readiness[role] = index_ready
         reasons.extend(role_reasons)
+        bootstrap_reasons.extend(admission_reasons)
 
     stable_document = build_lkg_stable_environment_document(
         spec=spec,
@@ -1083,25 +1447,104 @@ def observe_lkg_window_health(
         containers=containers,
         data_plane=data_plane,
     )
+    _, stable_reasons = _validate_lkg_stable_environment_document(stable_document)
+    bootstrap_reasons.extend(stable_reasons)
     observed_identity = lkg_environment_identity(stable_document)
-    identity_matches = observed_identity == run_bound_environment_identity
-    if not identity_matches:
-        reasons.append("ENVIRONMENT_IDENTITY_MISMATCH")
-
-    reason_codes = _sorted_reason_codes(reasons)
     document = {
-        "observation_schema_version": LKG_HEALTH_OBSERVATION_SCHEMA_VERSION,
-        "source_run_id": source_run_id,
-        "source_run_binding_sha256": source_run_binding_sha256,
-        "run_bound_environment_identity": run_bound_environment_identity,
         "observed_environment_identity": observed_identity,
-        "environment_identity_matches": identity_matches,
         "observed_stable_environment_document": stable_document,
         "expected_entity_count": spec.expected_entity_count,
         "container_health": dict(sorted(container_health.items())),
         "milvus_healthz": healthz,
         "collection_readiness": dict(sorted(collection_readiness.items())),
         "index_readiness": dict(sorted(index_readiness.items())),
+    }
+    return _LkgEnvironmentFacts(
+        document=document,
+        readiness_reason_codes=_sorted_reason_codes(reasons),
+        bootstrap_reason_codes=tuple(sorted(set(reasons + bootstrap_reasons))),
+    )
+
+
+def observe_lkg_bootstrap_environment(
+    *,
+    spec: LkgEnvironmentObservationSpec,
+    metadata_reader: LkgMetadataReader,
+    container_inspector: Callable[[str], object],
+    image_inspector: Callable[[str], object],
+    healthz_probe: Callable[[], bool],
+    observed_at_utc: str,
+) -> LkgBootstrapEnvironmentObservation:
+    """Observe an initial environment without any run/binding or state access.
+
+    Observation evidence only: the caller owns external persistence and any
+    later authority decision. A completed refusal has ``passed=False``; invalid
+    input or unavailable/untrustworthy metadata raises. Each call observes
+    afresh; time is provenance, not a lease. No port can dispatch a search.
+    """
+
+    validate_rfc3339_utc(observed_at_utc, field="observed_at_utc")
+    facts = _observe_lkg_environment_facts(
+        spec=spec, metadata_reader=metadata_reader,
+        container_inspector=container_inspector, image_inspector=image_inspector,
+        healthz_probe=healthz_probe,
+    )
+    document = {
+        "observation_schema_version": LKG_BOOTSTRAP_OBSERVATION_SCHEMA_VERSION,
+        "observation_source_identity": LKG_BOOTSTRAP_OBSERVATION_SOURCE_IDENTITY,
+        **{key: value for key, value in facts.document.items() if key != "expected_entity_count"},
+        "observed_at_utc": observed_at_utc,
+        "reason_codes": list(facts.bootstrap_reason_codes),
+        "passed": not facts.bootstrap_reason_codes,
+    }
+    validate_strict_canonical_value(document)
+    return LkgBootstrapEnvironmentObservation(canonical_json_bytes(document))
+
+
+def observe_lkg_window_health(
+    *,
+    spec: LkgEnvironmentObservationSpec,
+    run_bound_environment_identity: str,
+    source_run_id: str,
+    source_run_binding_sha256: str,
+    metadata_reader: LkgMetadataReader,
+    container_inspector: Callable[[str], object],
+    image_inspector: Callable[[str], object],
+    healthz_probe: Callable[[], bool],
+    observed_at_utc: str,
+) -> LkgWindowHealthObservation:
+    """Observe one window against fixed run authority (ADR-020 sections 10-12).
+
+    Completed failures retain real evidence; provider inability raises and
+    persists nothing. ADR-024 shares facts, not bootstrap admission reasons:
+    this function preserves the existing window document/digest semantics.
+    """
+
+    if not isinstance(spec, LkgEnvironmentObservationSpec):
+        raise ContractViolation("spec must be an LkgEnvironmentObservationSpec")
+    if _IDENTITY_RE.fullmatch(run_bound_environment_identity) is None:
+        raise ContractViolation(
+            "run_bound_environment_identity must be lkg-env-identity-v1:sha256:<64 hex>"
+        )
+    _text(source_run_id, field="source_run_id")
+    _sha256_hex(source_run_binding_sha256, field="source_run_binding_sha256")
+    _rfc3339_utc(observed_at_utc, field="observed_at_utc")
+    facts = _observe_lkg_environment_facts(
+        spec=spec, metadata_reader=metadata_reader,
+        container_inspector=container_inspector, image_inspector=image_inspector,
+        healthz_probe=healthz_probe,
+    )
+    identity_matches = facts.document["observed_environment_identity"] == run_bound_environment_identity
+    reason_codes = _sorted_reason_codes(
+        facts.readiness_reason_codes + (() if identity_matches else ("ENVIRONMENT_IDENTITY_MISMATCH",))
+    )
+    document = {
+        "observation_schema_version": LKG_HEALTH_OBSERVATION_SCHEMA_VERSION,
+        "source_run_id": source_run_id,
+        "source_run_binding_sha256": source_run_binding_sha256,
+        "run_bound_environment_identity": run_bound_environment_identity,
+        "environment_identity_matches": identity_matches,
+        **facts.document,
         "observed_at_utc": observed_at_utc,
         "reason_codes": list(reason_codes),
     }

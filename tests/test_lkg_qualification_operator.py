@@ -21,12 +21,15 @@ import tempfile
 import threading
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.test_lkg_window_readiness_observation import (
-    _observe as _canonical_health, _rollback as _canonical_rollback,
+    _ChangedReader, _PinnedPyMilvusReader, _bootstrap_inputs,
     _container as _health_container,
+    _distinct_container, _image as _health_image,
+    _observe as _canonical_health, _rollback as _canonical_rollback,
 )
 
 import vdbench.lkg_qualification_operator as lkg_operator
@@ -73,13 +76,16 @@ from vdbench.lkg_window_readiness_observation import (
     LkgWindowHealthObservation,
     LkgWindowReadinessObservationError,
     LkgWindowRollbackReadiness,
+    observe_lkg_bootstrap_environment,
 )
 
 _FIRST_QUERY_ID = 10000
 _QUERY_COUNT = 2400
 _QUERY_IDS = tuple(range(_FIRST_QUERY_ID, _FIRST_QUERY_ID + _QUERY_COUNT))
 _REVISION = "a" * 40
-_ENVIRONMENT_IDENTITY = _canonical_health().document["observed_environment_identity"]
+_ENVIRONMENT_IDENTITY = _canonical_health(
+    container_inspector=_distinct_container
+).document["observed_environment_identity"]
 _MANIFEST_SHA = "1" * 64
 _QUERY_ID_ARRAY_SHA = "2" * 64
 _QUERY_ARRAY_SHA = "3" * 64
@@ -283,7 +289,9 @@ class _CountingRunner(LkgQualificationRunner):
 def _health(passed: bool = True, reasons: tuple[str, ...] = (), **context) -> LkgWindowHealthObservation:
     result = _canonical_health(
         **context, identity=_ENVIRONMENT_IDENTITY,
-        container=lambda: _health_container(health="healthy" if passed else "unhealthy"),
+        container_inspector=lambda name: _distinct_container(
+            name, health="healthy" if passed else "unhealthy"
+        ),
     )
     assert result.passed == passed and result.reason_codes == reasons
     return result
@@ -324,12 +332,24 @@ class _Recorder:
         self.observer_builds = 0
 
 
+class _ExecutionEnvironmentObservation:
+    """Only the two values consumed by the execute-time environment gate."""
+
+    __slots__ = ("observed_environment_identity", "passed")
+
+    def __init__(self, *, passed: bool, observed_environment_identity: str):
+        self.passed = passed
+        self.observed_environment_identity = observed_environment_identity
+
+
 def _dependencies(
     *,
     runner: _CountingRunner | None = None,
     observer: _CountingObserver | None = None,
     workload: LkgDataset003Workload | None = None,
     observed_environment_identity: str = _ENVIRONMENT_IDENTITY,
+    observed_environment_passed: bool = True,
+    environment_observation: object | None = None,
     source_verifier_error: Exception | None = None,
     recorder: _Recorder | None = None,
 ) -> tuple[LkgOperatorDependencies, _CountingRunner, _CountingObserver, _Recorder]:
@@ -337,6 +357,14 @@ def _dependencies(
     observer = observer or _CountingObserver()
     recorder = recorder or _Recorder()
     resolved_workload = workload if workload is not None else _workload()
+    resolved_environment_observation = (
+        environment_observation
+        if environment_observation is not None
+        else _ExecutionEnvironmentObservation(
+            passed=observed_environment_passed,
+            observed_environment_identity=observed_environment_identity,
+        )
+    )
     counter = {"ns": 0}
 
     def _workload_loader():
@@ -353,7 +381,7 @@ def _dependencies(
 
     def _environment(run_binding):
         recorder.environment_observations += 1
-        return observed_environment_identity
+        return resolved_environment_observation
 
     def _verify_source(expected_revision):
         recorder.source_verifications.append(expected_revision)
@@ -659,6 +687,7 @@ class LiveExecutionGateTests(_TempCase):
         dependencies, runner, observer, recorder = _dependencies(
             **{k: v for k, v in kwargs.items() if k in {
                 "runner", "observer", "workload", "observed_environment_identity",
+                "observed_environment_passed", "environment_observation",
                 "source_verifier_error",
             }}
         )
@@ -688,6 +717,10 @@ class LiveExecutionGateTests(_TempCase):
         self.assertEqual(caught.exception.code, code)
         self.assertEqual(runner.search_calls, 0, "refusal must precede every search")
         self.assertEqual(observer.calls, 0, "refusal must precede every observation")
+        self.assertEqual(recorder.runner_builds, 0)
+        self.assertEqual(recorder.observer_builds, 0)
+        self.assertFalse(Path(self.scope.scope_root).exists())
+        self.assertFalse(Path(self.run_root).exists())
         self.assertNoStores()
         return caught.exception
 
@@ -814,6 +847,129 @@ class LiveExecutionGateTests(_TempCase):
             "LKG_ENVIRONMENT_IDENTITY_MISMATCH",
             observed_environment_identity="lkg-env-identity-v1:sha256:" + "9" * 64,
         )
+
+    def test_execute_environment_gate_requires_verdict_and_identity(self) -> None:
+        cases = (
+            (False, _ENVIRONMENT_IDENTITY, "LKG_ENVIRONMENT_OBSERVATION_FAILED"),
+            (True, "lkg-env-identity-v1:sha256:" + "9" * 64,
+             "LKG_ENVIRONMENT_IDENTITY_MISMATCH"),
+            (False, "lkg-env-identity-v1:sha256:" + "9" * 64,
+             "LKG_ENVIRONMENT_OBSERVATION_FAILED"),
+        )
+        for passed, identity, code in cases:
+            with self.subTest(passed=passed, identity_matches=identity == _ENVIRONMENT_IDENTITY):
+                self._expect_refusal(
+                    code,
+                    observed_environment_passed=passed,
+                    observed_environment_identity=identity,
+                )
+
+    def test_passing_matching_observation_proceeds_beyond_environment_gate(self) -> None:
+        operands, plan, dependencies, _, _, recorder = self._execute()
+        marker = RuntimeError("past environment gate")
+        with patch.object(
+            lkg_operator, "ensure_deployment_scope_directory", side_effect=marker
+        ) as post_gate:
+            with self.assertRaisesRegex(RuntimeError, "past environment gate"):
+                execute_lkg_qualification(
+                    operands,
+                    dependencies=dependencies,
+                    confirm_live_lkg_qualification_searches=True,
+                    expected_prepared_authority_sha256=plan["prepared_authority_sha256"],
+                    governance_scope=self.scope,
+                )
+        post_gate.assert_called_once_with(self.scope)
+        self.assertEqual(recorder.environment_observations, 1)
+        self.assertEqual(recorder.runner_builds, 0)
+
+    def test_identity_stable_bootstrap_failures_refuse_before_effects(self) -> None:
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        cases = (
+            (
+                "auto_id",
+                observe_lkg_bootstrap_environment(**_bootstrap_inputs(
+                    metadata_reader=_ChangedReader(
+                        collection=lambda doc: {**doc, "auto_id": True}
+                    )
+                )),
+            ),
+            (
+                "enable_dynamic_field",
+                observe_lkg_bootstrap_environment(**_bootstrap_inputs(
+                    metadata_reader=_ChangedReader(
+                        collection=lambda doc: {**doc, "enable_dynamic_field": True}
+                    )
+                )),
+            ),
+            (
+                "healthz",
+                observe_lkg_bootstrap_environment(**_bootstrap_inputs(
+                    healthz_probe=lambda: False
+                )),
+            ),
+        )
+        for name, observation in cases:
+            with self.subTest(name=name):
+                self.assertFalse(observation.passed)
+                self.assertEqual(
+                    observation.observed_environment_identity,
+                    baseline.observed_environment_identity,
+                )
+                self._expect_refusal(
+                    "LKG_ENVIRONMENT_OBSERVATION_FAILED",
+                    operands=self.operands(
+                        environment_identity=baseline.observed_environment_identity
+                    ),
+                    environment_observation=observation,
+                )
+
+    def test_production_observer_preserves_failing_verdict_before_effects(self) -> None:
+        baseline = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        operands = self.operands(
+            environment_identity=baseline.observed_environment_identity
+        )
+        inspector = MagicMock()
+        inspector.inspect_container.side_effect = _distinct_container
+        inspector.inspect_image.side_effect = lambda image_id: _health_image()
+        response = MagicMock()
+        response.__enter__.return_value.status = 503
+        with (
+            patch(
+                "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client",
+                return_value=_PinnedPyMilvusReader(),
+            ) as client_builder,
+            patch(
+                "vdbench.gate_c_execution_environment.DockerExecutionMetadataInspector",
+                return_value=inspector,
+            ) as inspector_builder,
+            patch("urllib.request.urlopen", return_value=response) as health_probe,
+        ):
+            production = production_dependencies(operands, governance_scope=self.scope)
+            dependencies, runner, observer, recorder = _dependencies()
+            dependencies = replace(
+                dependencies,
+                environment_identity_observer=production.environment_identity_observer,
+            )
+            plan = build_lkg_qualification_plan(operands, governance_scope=self.scope)
+            with self.assertRaises(LkgQualificationOperatorError) as caught:
+                execute_lkg_qualification(
+                    operands,
+                    dependencies=dependencies,
+                    confirm_live_lkg_qualification_searches=True,
+                    expected_prepared_authority_sha256=plan["prepared_authority_sha256"],
+                    governance_scope=self.scope,
+                )
+        self.assertEqual(caught.exception.code, "LKG_ENVIRONMENT_OBSERVATION_FAILED")
+        client_builder.assert_called_once_with(operands.milvus_uri)
+        inspector_builder.assert_called_once_with()
+        health_probe.assert_called_once()
+        self.assertEqual(runner.search_calls, 0)
+        self.assertEqual(observer.calls, 0)
+        self.assertEqual(recorder.runner_builds, 0)
+        self.assertEqual(recorder.observer_builds, 0)
+        self.assertFalse(Path(self.scope.scope_root).exists())
+        self.assertFalse(Path(self.run_root).exists())
+        self.assertNoStores()
 
     def test_refusal_order_environment_continuity_is_checked_last_before_dispatch(self) -> None:
         operands, plan, dependencies, runner, observer, recorder = self._execute(
