@@ -828,6 +828,16 @@ def _normalize_index_parameters(index: Mapping[str, object]) -> list[dict[str, o
         "index_name", "index_type", "metric_type", "state",
         "pending_index_rows", "indexed_rows", "total_rows", "field_name",
     }
+    params = index.get("params")
+    if (
+        type(params) is dict
+        and params.keys() == {"M", "efConstruction"}
+        and all(type(value) is int for value in params.values())
+    ):
+        return sorted(
+            ({"name": name, "value": str(value)} for name, value in params.items()),
+            key=lambda item: item["name"],
+        )
     parameters = [
         {"name": str(key), "value": str(value)}
         for key, value in index.items()
@@ -835,6 +845,37 @@ def _normalize_index_parameters(index: Mapping[str, object]) -> list[dict[str, o
     ]
     parameters.sort(key=lambda item: item["name"])
     return parameters
+
+
+def _normalize_hnsw_index(index: Mapping[str, object]) -> dict[str, object]:
+    """Adapt one evidenced PyMilvus shape to the canonical ``params`` shape."""
+
+    normalized = dict(index)
+    outer_names = {"M", "efConstruction"} & normalized.keys()
+    if "params" in normalized and outer_names:
+        normalized.pop("M", None)
+        normalized.pop("efConstruction", None)
+        normalized["params"] = None
+        return normalized
+    if "params" in normalized:
+        return normalized
+
+    params: dict[str, object] = {}
+    for name in ("M", "efConstruction"):
+        value = normalized.pop(name, None)
+        if type(value) is int:
+            params[name] = value
+        elif (
+            type(value) is str
+            and value.isascii()
+            and value.isdecimal()
+            and (value == "0" or not value.startswith("0"))
+        ):
+            params[name] = int(value)
+        elif value is not None:
+            params[name] = value
+    normalized["params"] = params
+    return normalized
 
 
 def _pinned_hnsw_build_parameters(
@@ -991,6 +1032,8 @@ def _normalize_data_plane(
     index = _mapping(index, code=invalid)
     stats = _mapping(stats, code=invalid)
     load = _mapping(load, code=invalid)
+    if index.get("index_type") == "HNSW":
+        index = _normalize_hnsw_index(index)
 
     fields = _normalize_fields(description)
     dimension = next(

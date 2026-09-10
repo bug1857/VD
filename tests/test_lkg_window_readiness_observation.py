@@ -144,11 +144,10 @@ class _PinnedPyMilvusReader(_Reader):
         document = super().describe_index(
             collection_name=collection_name, index_name=index_name
         )
-        m = document.pop("M")
-        ef_construction = document.pop("efConstruction")
         document.update({"field_name": "vector", "total_rows": self._rows})
-        if document["index_type"] == "HNSW":
-            document["params"] = {"M": int(m), "efConstruction": int(ef_construction)}
+        if document["index_type"] == "FLAT":
+            document.pop("M")
+            document.pop("efConstruction")
         return document
 
 
@@ -228,6 +227,21 @@ class _ChangedReader(_PinnedPyMilvusReader):
 
 
 class BootstrapEnvironmentObservationTests(unittest.TestCase):
+    def test_real_pymilvus_flat_hnsw_shape_is_canonically_accepted(self):
+        result = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason_codes, ())
+        self.assertEqual(
+            result.observed_stable_environment_document["data_plane"][1][
+                "index_parameters"
+            ],
+            [
+                {"name": "M", "value": "16"},
+                {"name": "efConstruction", "value": "200"},
+            ],
+        )
+
     def test_canonical_metadata_passes_with_exact_output_contract(self):
         result = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
         self.assertIsInstance(result, LkgBootstrapEnvironmentObservation)
@@ -561,15 +575,33 @@ class BootstrapEnvironmentObservationTests(unittest.TestCase):
 
     def test_index_configuration_and_readiness_refusals(self):
         def hnsw_params(document, params):
-            return {**document, "params": params} if document["index_type"] == "HNSW" else document
+            if document["index_type"] != "HNSW":
+                return document
+            return {
+                **{
+                    name: value
+                    for name, value in document.items()
+                    if name not in {"M", "efConstruction"}
+                },
+                "params": params,
+            }
 
         def hnsw_outer(document, **changes):
             return {**document, **changes} if document["index_type"] == "HNSW" else document
 
+        def hnsw_dual(document, params):
+            return {**document, "params": params} if document["index_type"] == "HNSW" else document
+
+        def hnsw_without(document, name):
+            return (
+                {key: value for key, value in document.items() if key != name}
+                if document["index_type"] == "HNSW"
+                else document
+            )
+
         cases = (
             (lambda doc: hnsw_params(doc, {"M": 32, "efConstruction": 200}), "HNSW_M_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 100}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
-            (lambda doc: {name: value for name, value in doc.items() if name != "params"} if doc["index_type"] == "HNSW" else doc, "INDEX_CONFIGURATION_MISMATCH"),
             (lambda doc: hnsw_params(doc, []), "INDEX_CONFIGURATION_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"efConstruction": 200}), "HNSW_M_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"M": 16}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
@@ -579,10 +611,19 @@ class BootstrapEnvironmentObservationTests(unittest.TestCase):
             (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": "200"}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"M": 16.0, "efConstruction": 200}), "HNSW_M_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 200.0}), "HNSW_EF_CONSTRUCTION_MISMATCH"),
-            (lambda doc: hnsw_outer(doc, M=32), "INDEX_CONFIGURATION_MISMATCH"),
-            (lambda doc: hnsw_outer(doc, efConstruction=100), "INDEX_CONFIGURATION_MISMATCH"),
-            (lambda doc: hnsw_outer(doc, M=16, efConstruction=200), "INDEX_CONFIGURATION_MISMATCH"),
-            (lambda doc: {**{name: value for name, value in doc.items() if name != "params"}, "M": 16, "efConstruction": 200} if doc["index_type"] == "HNSW" else doc, "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=32), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, efConstruction=100), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=32, efConstruction=100), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=True), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, efConstruction=False), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M=16.0), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, efConstruction=200.0), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_without(doc, "M"), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_without(doc, "efConstruction"), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, M="016"), "HNSW_M_MISMATCH"),
+            (lambda doc: hnsw_outer(doc, efConstruction=" 200 "), "HNSW_EF_CONSTRUCTION_MISMATCH"),
+            (lambda doc: hnsw_dual(doc, {"M": 16, "efConstruction": 200}), "INDEX_CONFIGURATION_MISMATCH"),
+            (lambda doc: hnsw_dual(doc, {"M": 32, "efConstruction": 200}), "INDEX_CONFIGURATION_MISMATCH"),
             (lambda doc: hnsw_params(doc, {"M": 16, "efConstruction": 200, "unknown": 1}), "INDEX_CONFIGURATION_MISMATCH"),
             (lambda doc: hnsw_outer(doc, unknown=1), "INDEX_CONFIGURATION_MISMATCH"),
             (lambda doc: hnsw_outer(doc, index_type="IVF_FLAT"), "INDEX_CONFIGURATION_MISMATCH"),
@@ -602,6 +643,69 @@ class BootstrapEnvironmentObservationTests(unittest.TestCase):
                 self.assertFalse(result.passed)
                 self.assertIn(code, result.reason_codes)
 
+    def test_real_pymilvus_hnsw_scalar_malformations_fail_closed(self):
+        cases = (
+            ("M", True), ("M", 16.0), ("M", "16.0"), ("M", " 16 "),
+            ("M", "+16"), ("M", "016"), ("M", "abc"), ("M", ""),
+            ("M", None), ("M", []), ("M", (16,)), ("M", {"value": 16}),
+            ("efConstruction", False), ("efConstruction", 200.0),
+            ("efConstruction", "200.0"), ("efConstruction", " 200 "),
+            ("efConstruction", "+200"), ("efConstruction", "0200"),
+            ("efConstruction", "abc"), ("efConstruction", ""),
+            ("efConstruction", None), ("efConstruction", []),
+            ("efConstruction", (200,)),
+            ("efConstruction", {"value": 200}),
+        )
+        for name, value in cases:
+            reader = _ChangedReader(
+                index=lambda document, name=name, value=value: (
+                    {**document, name: value}
+                    if document["index_type"] == "HNSW"
+                    else document
+                )
+            )
+            result = observe_lkg_bootstrap_environment(
+                **_bootstrap_inputs(metadata_reader=reader)
+            )
+            with self.subTest(name=name, value=value):
+                self.assertFalse(result.passed)
+                self.assertIn(
+                    "HNSW_M_MISMATCH"
+                    if name == "M"
+                    else "HNSW_EF_CONSTRUCTION_MISMATCH",
+                    result.reason_codes,
+                )
+
+    def test_flat_and_canonical_nested_hnsw_shapes_share_identity(self):
+        flat = observe_lkg_bootstrap_environment(**_bootstrap_inputs())
+        nested = observe_lkg_bootstrap_environment(
+            **_bootstrap_inputs(
+                metadata_reader=_ChangedReader(
+                    index=lambda document: (
+                        {
+                            **{
+                                name: value
+                                for name, value in document.items()
+                                if name not in {"M", "efConstruction"}
+                            },
+                            "params": {"M": 16, "efConstruction": 200},
+                        }
+                        if document["index_type"] == "HNSW"
+                        else document
+                    )
+                )
+            )
+        )
+        self.assertTrue(flat.passed)
+        self.assertTrue(nested.passed)
+        self.assertEqual(
+            flat.observed_stable_environment_document,
+            nested.observed_stable_environment_document,
+        )
+        self.assertEqual(
+            flat.observed_environment_identity, nested.observed_environment_identity
+        )
+
     def test_real_pymilvus_load_state_members_follow_pinned_contract(self):
         from pymilvus.client.types import LoadState
 
@@ -619,7 +723,10 @@ class BootstrapEnvironmentObservationTests(unittest.TestCase):
             loaded.observed_stable_environment_document["data_plane"][1][
                 "index_parameters"
             ],
-            [{"name": "params", "value": "{'M': 16, 'efConstruction': 200}"}],
+            [
+                {"name": "M", "value": "16"},
+                {"name": "efConstruction", "value": "200"},
+            ],
         )
 
         not_loaded = observe_lkg_bootstrap_environment(
