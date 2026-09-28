@@ -8,9 +8,12 @@ service is contacted, and no real search is issued. The adapter's own
 from __future__ import annotations
 
 import ast
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -32,6 +35,7 @@ from vdbench.v2_milvus_shadow_capture import (
     V2MilvusShadowCaptureError,
     V2MilvusShadowCaptureExecutor,
     V2ShadowCaptureIdentityBinding,
+    build_readonly_milvus_client,
 )
 
 MODULE_PATH = (
@@ -333,6 +337,27 @@ class V2MilvusShadowCaptureTests(unittest.TestCase):
 
 
 class V2MilvusShadowCaptureGuardTests(unittest.TestCase):
+    def test_factory_binds_database_only_for_the_post_lkg_branch(self) -> None:
+        constructor = mock.Mock(side_effect=lambda **values: values)
+        fake = SimpleNamespace(MilvusClient=constructor)
+        with mock.patch.dict(sys.modules, {"pymilvus": fake}):
+            post_lkg = build_readonly_milvus_client(
+                "http://127.0.0.1:19530", database_name="default"
+            )
+            legacy = build_readonly_milvus_client("http://127.0.0.1:19530")
+        self.assertEqual(
+            post_lkg,
+            {"uri": "http://127.0.0.1:19530", "db_name": "default"},
+        )
+        self.assertEqual(legacy, {"uri": "http://127.0.0.1:19530"})
+
+    def test_factory_rejects_an_implicit_or_invalid_database_value(self) -> None:
+        for value in ("", 1, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                build_readonly_milvus_client(
+                    "http://127.0.0.1:19530", database_name=value
+                )
+
     def test_module_never_constructs_a_client_at_import_or_capture(self) -> None:
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"), filename=str(MODULE_PATH))
         # PyMilvus may only be imported inside the lazy factory.
@@ -381,7 +406,6 @@ class V2MilvusShadowCaptureGuardTests(unittest.TestCase):
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
-        self.assertNotIn("build_readonly_milvus_client", called)
         self.assertNotIn("MilvusClient", called)
         self.assertNotIn("connect", called)
 

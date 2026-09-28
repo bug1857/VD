@@ -15,6 +15,7 @@ import io
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,7 @@ import numpy as np
 import vdbench.exp010_gate_c_operator as gate_c_operator
 from tests.test_exp010_live_runner import DATASET001, _trace_for
 from vdbench.config import Metric
+from vdbench.deployment_governance import resolve_deployment_governance_scope
 from vdbench.exp010_gate_a_operator import (
     GATE_A_EVIDENCE_FILENAME,
     GATE_A_EVIDENCE_SUBDIRECTORY,
@@ -400,6 +402,68 @@ class OperandValidationTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
+    def test_post_lkg_authority_refuses_before_client_or_search(self) -> None:
+        with mock.patch(
+            "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client"
+        ) as client, mock.patch(
+            "vdbench.v2_milvus_shadow_capture.V2MilvusShadowCaptureExecutor"
+        ) as capture, self.assertRaises(Exp010GateCOperatorError) as raised:
+            main(
+                [
+                    "--expect-collection-authority-sha256",
+                    "f" * 64,
+                    "--mode",
+                    "execute",
+                    "--confirm-post-lkg-gate-c-shadow-searches",
+                ]
+            )
+        self.assertEqual(raised.exception.code, "GATE_C_POST_LKG_AUTHORITY_UNVERIFIED")
+        client.assert_not_called()
+        capture.assert_not_called()
+
+    def test_legacy_operands_cannot_enter_post_lkg_namespace_before_search(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            operands = load_operands(_write_operands(root))
+            scope = resolve_deployment_governance_scope(
+                canonical_root=root / "governance"
+            )
+            bypass = replace(
+                operands,
+                stream_id=f'post-lkg-v1/{"a" * 64}/legacy-bypass',
+                store_root=(
+                    Path(scope.campaigns_root) / "legacy-bypass" / "stores"
+                ),
+            )
+            with mock.patch(
+                "vdbench.exp010_gate_c_operator.load_operands",
+                return_value=bypass,
+            ) as loader, mock.patch(
+                "vdbench.exp010_gate_c_operator.Exp010LiveRunner"
+            ) as runner, mock.patch(
+                "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client"
+            ) as client, mock.patch(
+                "vdbench.v2_milvus_shadow_capture.V2MilvusShadowCaptureExecutor"
+            ) as capture, mock.patch(
+                "vdbench.deployment_governance.canonical_deployment_governance_scope",
+                return_value=scope,
+            ), self.assertRaises(Exp010GateCOperatorError) as raised:
+                main(
+                    [
+                        "--operands",
+                        str(root / "legacy-operands.json"),
+                        "--mode",
+                        "preflight",
+                    ]
+                )
+        self.assertEqual(raised.exception.code, "GATE_C_POST_LKG_AUTHORITY_REQUIRED")
+        loader.assert_called_once()
+        runner.assert_not_called()
+        client.assert_not_called()
+        capture.assert_not_called()
+
     def test_preflight_issues_zero_searches_and_zero_serves(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

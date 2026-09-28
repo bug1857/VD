@@ -214,6 +214,9 @@ class Exp010GateBOperands:
     deployment_identity: str
     data_identity: str
     gate_a_evidence_sha256: str
+    post_lkg_collection_authority_sha256: str | None = None
+    database_name: str | None = None
+    external_workload_producer_identity: str | None = None
 
     @property
     def store_root(self) -> Path:
@@ -537,6 +540,8 @@ def build_gate_b_plan(
 
     from .exp010_gate_a_operator import inspect_campaign_state
 
+    _reverify_post_lkg_operands(operands)
+
     _require_campaign_namespace(
         operands.campaign_root,
         accepted_scale_contract_sha256=accepted_scale_contract_sha256,
@@ -714,6 +719,23 @@ def run_gate_b_host_from_cli(
     window.
     """
 
+    _reverify_post_lkg_operands(operands)
+    if operands.post_lkg_collection_authority_sha256 is not None:
+        restart_plan = build_gate_b_plan(
+            operands,
+            accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+        )
+        if restart_plan["source_target"]["remaining"] == 0:
+            return {
+                "schema_version": GATE_B_PLAN_SCHEMA_VERSION,
+                "gate": "B",
+                "durable_source_records": operands.target_source_records,
+                "complete_windows": (
+                    operands.target_source_records // WINDOW_QUERY_COUNT
+                ),
+                "gate_c": restart_plan["gate_c"],
+            }
+
     from http.server import HTTPServer
 
     _require_campaign_namespace(
@@ -734,7 +756,13 @@ def run_gate_b_host_from_cli(
     configuration = operands.runner_configuration()
     serving = operands.serving_configuration()
 
-    client = build_readonly_milvus_client(str(authority["milvus_uri"]))
+    if operands.database_name is None:
+        client = build_readonly_milvus_client(str(authority["milvus_uri"]))
+    else:
+        client = build_readonly_milvus_client(
+            uri=str(authority["milvus_uri"]),
+            database_name=operands.database_name,
+        )
     stack_health_probe = DockerSocketHealthProbe(
         etcd_container=operands.etcd_container,
         minio_container=operands.minio_container,
@@ -803,7 +831,11 @@ def run_gate_b_host_from_cli(
         composition = runner.composition
         target = operands.target_source_records
         ingress = Exp010RequestIngress(
-            runner=runner, serving_configuration=serving
+            runner=runner,
+            serving_configuration=serving,
+            external_workload_producer_identity=(
+                operands.external_workload_producer_identity
+            ),
         )
         handler = Exp010StdlibSearchHandler.for_ingress(ingress)
         server = HTTPServer((operands.host_address, operands.host_port), handler)
@@ -838,13 +870,126 @@ def run_gate_b_host_from_cli(
 # --------------------------------------------------------------------------
 
 
+def _load_post_lkg_operands(authority_sha256: str) -> Exp010GateBOperands:
+    """Derive Gate-B state from one verified authority and its Gate-A child."""
+
+    from .deployment_governance import canonical_deployment_governance_scope
+    from .exp010_gate_a_operator import (
+        Exp010GateAOperatorError,
+        derive_downstream_authority,
+        load_verified_gate_a_evidence,
+    )
+    from .post_lkg_collection_authority import (
+        PostLkgCollectionAuthorityError,
+        load_verified_post_lkg_collection_authority,
+        verify_post_lkg_collection_authority_d2,
+    )
+
+    scope = canonical_deployment_governance_scope()
+    try:
+        verified = load_verified_post_lkg_collection_authority(
+            authority_sha256=authority_sha256,
+            governance_scope=scope,
+        )
+        verify_post_lkg_collection_authority_d2(
+            verified, governance_scope=scope
+        )
+        document = verified.document
+        campaign_root = Path(document["campaign"]["campaign_root"])
+        evidence = load_verified_gate_a_evidence(campaign_root)
+        downstream = derive_downstream_authority(campaign_root)
+    except PostLkgCollectionAuthorityError as exc:
+        raise _error("GATE_B_POST_LKG_AUTHORITY_UNVERIFIED", exc.code) from exc
+    except Exp010GateAOperatorError as exc:
+        raise _error("GATE_B_POST_LKG_GATE_A_UNVERIFIED", exc.code) from exc
+    if evidence.get("post_lkg_collection_authority_sha256") != verified.authority_sha256:
+        raise _error("GATE_B_POST_LKG_GATE_A_AUTHORITY_MISMATCH")
+    serving = document["serving"]
+    milvus = document["milvus"]
+    dataset = document["dataset"]
+    expected = {
+        "stream_id": document["campaign"]["stream_id"],
+        "configuration_identity": serving["configuration_identity"],
+        "source_revision": document["collection_execution_source_revision"],
+        "metric": serving["metric"],
+        "threshold_stratum": serving["threshold_stratum"],
+        "threshold_radius": serving["threshold_radius"],
+        "range_filter": serving["range_filter"],
+        "limit": serving["limit"],
+        "served_ef": serving["served_ef"],
+        "dimensions": serving["dimensions"],
+        "consistency_level": serving["consistency_level"],
+        "flat_binding_id": serving["flat_binding_id"],
+        "hnsw_binding_id": serving["hnsw_binding_id"],
+        "milvus_uri": milvus["uri"],
+        "flat_collection_name": milvus["flat_collection_name"],
+        "hnsw_collection_name": milvus["hnsw_collection_name"],
+        "dataset001_dir": dataset["dataset001_dir"],
+        "post_lkg_collection_authority_sha256": verified.authority_sha256,
+    }
+    if any(downstream.get(key) != value for key, value in expected.items()):
+        raise _error("GATE_B_POST_LKG_GATE_A_PROJECTION_MISMATCH")
+    if evidence["campaign"]["deployment_identity"] != document["canonical_lkg"][
+        "deployment_identity"
+    ]:
+        raise _error("GATE_B_POST_LKG_DEPLOYMENT_MISMATCH")
+    if evidence["dataset"]["data_identity"] != dataset["data_identity"]:
+        raise _error("GATE_B_POST_LKG_DATA_MISMATCH")
+    return Exp010GateBOperands(
+        campaign_root=campaign_root,
+        detector_seed=document["detector"]["seed"],
+        host_address=document["endpoint"]["host_address"],
+        host_port=document["endpoint"]["host_port"],
+        target_source_records=document["window_plan"]["target_source_records"],
+        etcd_container=document["containers"]["etcd_container"],
+        minio_container=document["containers"]["minio_container"],
+        authority=downstream,
+        deployment_identity=document["canonical_lkg"]["deployment_identity"],
+        data_identity=dataset["data_identity"],
+        gate_a_evidence_sha256=evidence["evidence_sha256"],
+        post_lkg_collection_authority_sha256=verified.authority_sha256,
+        database_name=milvus["database_name"],
+        external_workload_producer_identity=document["workload_producer"][
+            "external_workload_producer_identity"
+        ],
+    )
+
+
+def _reverify_post_lkg_operands(operands: Exp010GateBOperands) -> None:
+    digest = operands.post_lkg_collection_authority_sha256
+    if digest is None:
+        from .deployment_governance import canonical_deployment_governance_scope
+
+        canonical_root = Path(canonical_deployment_governance_scope().campaigns_root)
+        requested_root = Path(os.path.realpath(operands.campaign_root))
+        stream_id = operands.authority.get("stream_id")
+        if (
+            operands.database_name is not None
+            or "post_lkg_collection_authority_sha256" in operands.authority
+            or (
+                type(stream_id) is str
+                and stream_id.startswith("post-lkg-v1/")
+            )
+            or requested_root == canonical_root
+            or canonical_root in requested_root.parents
+        ):
+            raise _error("GATE_B_POST_LKG_AUTHORITY_REQUIRED")
+        return
+    if _load_post_lkg_operands(digest) != operands:
+        raise _error("GATE_B_POST_LKG_OPERANDS_MISMATCH")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    authority = parser.add_mutually_exclusive_group(required=True)
+    authority.add_argument(
         "--operands",
         type=Path,
-        required=True,
         help="Path to the exact-keyed Gate-B operand JSON file.",
+    )
+    authority.add_argument(
+        "--expect-collection-authority-sha256",
+        help="Exact immutable post-LKG collection-authority digest.",
     )
     parser.add_argument(
         "--mode",
@@ -866,6 +1011,11 @@ def _parser() -> argparse.ArgumentParser:
             "durable source membership."
         ),
     )
+    parser.add_argument(
+        "--confirm-post-lkg-gate-b-ingress",
+        action="store_true",
+        help="Required to bind ingress for the exact post-LKG authority.",
+    )
     return parser
 
 
@@ -874,14 +1024,28 @@ def main(argv: list[str] | None = None) -> int:
 
     args = _parser().parse_args(argv)
     try:
-        operands = load_operands(args.operands)
+        post_lkg = args.expect_collection_authority_sha256 is not None
+        if post_lkg and args.confirm_gate_b_ingress:
+            raise _error("GATE_B_AUTHORITY_BRANCH_MIXED")
+        if not post_lkg and args.confirm_post_lkg_gate_b_ingress:
+            raise _error("GATE_B_AUTHORITY_BRANCH_MIXED")
+        operands = (
+            _load_post_lkg_operands(args.expect_collection_authority_sha256)
+            if post_lkg
+            else load_operands(args.operands)
+        )
         plan = build_gate_b_plan(operands)
         if args.mode == "preflight":
             sys.stdout.write(
                 strict_canonical_json_bytes(plan).decode("utf-8") + os.linesep
             )
             return 0
-        if not args.confirm_gate_b_ingress:
+        confirmed = (
+            args.confirm_post_lkg_gate_b_ingress
+            if post_lkg
+            else args.confirm_gate_b_ingress
+        )
+        if not confirmed:
             raise _error(
                 "GATE_B_CONFIRMATION_REQUIRED",
                 "--mode execute requires --confirm-gate-b-ingress",

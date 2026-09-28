@@ -215,6 +215,8 @@ class Exp010GateCOperands:
     exp010_output_dir: Path
     etcd_container: str
     minio_container: str
+    post_lkg_collection_authority_sha256: str | None = None
+    database_name: str | None = None
 
     @property
     def serving_configuration(self) -> Exp010ServingConfiguration:
@@ -472,6 +474,7 @@ def build_gate_c_plan(
     happens before any Milvus client can exist.
     """
 
+    _reverify_post_lkg_operands(operands)
     _require_campaign_namespace(
         operands,
         accepted_scale_contract_sha256=accepted_scale_contract_sha256,
@@ -503,6 +506,13 @@ def build_gate_c_plan(
         # replaying the entire chain once per window during planning.
         source_head = composition.response_store.verified_source_head()
         complete_windows = source_head.source_count // WINDOW_QUERY_COUNT
+        if operands.post_lkg_collection_authority_sha256 is not None and (
+            source_head.source_count > 3 * WINDOW_QUERY_COUNT
+            or acknowledged > 3 * WINDOW_QUERY_COUNT
+            or complete_windows > 3
+            or next_window > 3
+        ):
+            raise _error("GATE_C_POST_LKG_CAMPAIGN_BOUNDS_EXCEEDED")
         plan: dict[str, object] = {
             "schema_version": GATE_C_PLAN_SCHEMA_VERSION,
             "canonical_entrypoint": (
@@ -596,10 +606,27 @@ def run_gate_c_execute_from_cli(
     tests prove preflight and mismatched state cannot reach the live seam.
     """
 
-    _require_campaign_namespace(
-        operands,
-        accepted_scale_contract_sha256=accepted_scale_contract_sha256,
-    )
+    _reverify_post_lkg_operands(operands)
+    post_lkg_plan = None
+    if operands.post_lkg_collection_authority_sha256 is None:
+        _require_campaign_namespace(
+            operands,
+            accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+        )
+    else:
+        # Direct callers receive the same pre-client store and Gate-A checks as
+        # the CLI, and a completed fixed campaign reopens read-only.
+        post_lkg_plan = build_gate_c_plan(
+            operands,
+            accepted_scale_contract_sha256=accepted_scale_contract_sha256,
+        )
+        observed = post_lkg_plan["observed"]
+        if (
+            observed["shadow_acknowledged_count"] == 3 * WINDOW_QUERY_COUNT
+            and observed["complete_source_windows"] == 3
+            and observed["next_window_sequence"] == 3
+        ):
+            return ()
 
     if execution_bound is not None:
         # Mechanical pre-construction interlock: a wrong durable start or
@@ -631,7 +658,13 @@ def run_gate_c_execute_from_cli(
         build_readonly_milvus_client,
     )
 
-    client = build_readonly_milvus_client(operands.milvus_uri)
+    if operands.database_name is None:
+        client = build_readonly_milvus_client(operands.milvus_uri)
+    else:
+        client = build_readonly_milvus_client(
+            uri=operands.milvus_uri,
+            database_name=operands.database_name,
+        )
     stack_health_probe = DockerSocketHealthProbe(
         etcd_container=operands.etcd_container,
         minio_container=operands.minio_container,
@@ -702,13 +735,78 @@ def _stream_key_for(configuration: Exp010OperatorConfiguration, operands):
     )
 
 
+def _load_post_lkg_operands(authority_sha256: str) -> Exp010GateCOperands:
+    """Derive Gate-C operands through the already-verified Gate-B projection."""
+
+    from .exp010_gate_b_operator import (
+        Exp010GateBOperatorError,
+        _load_post_lkg_operands as load_gate_b,
+    )
+
+    try:
+        gate_b = load_gate_b(authority_sha256)
+    except Exp010GateBOperatorError as exc:
+        raise _error("GATE_C_POST_LKG_AUTHORITY_UNVERIFIED", exc.code) from exc
+    authority = gate_b.authority
+    return Exp010GateCOperands(
+        stream_id=str(authority["stream_id"]),
+        metric=Metric(str(authority["metric"])),
+        threshold_stratum=str(authority["threshold_stratum"]),
+        threshold_radius=float(authority["threshold_radius"]),
+        range_filter=float(authority["range_filter"]),
+        limit=int(authority["limit"]),
+        served_ef=int(authority["served_ef"]),
+        dimensions=int(authority["dimensions"]),
+        consistency_level=str(authority["consistency_level"]),
+        configuration_identity=str(authority["configuration_identity"]),
+        flat_binding_id=str(authority["flat_binding_id"]),
+        hnsw_binding_id=str(authority["hnsw_binding_id"]),
+        source_revision=str(authority["source_revision"]),
+        environment_manifest_sha256=str(authority["environment_manifest_sha256"]),
+        detector_seed=gate_b.detector_seed,
+        milvus_uri=str(authority["milvus_uri"]),
+        flat_collection_name=str(authority["flat_collection_name"]),
+        hnsw_collection_name=str(authority["hnsw_collection_name"]),
+        store_root=gate_b.store_root,
+        dataset001_dir=Path(str(authority["dataset001_dir"])),
+        exp010_output_dir=gate_b.output_dir,
+        etcd_container=gate_b.etcd_container,
+        minio_container=gate_b.minio_container,
+        post_lkg_collection_authority_sha256=authority_sha256,
+        database_name=gate_b.database_name,
+    )
+
+
+def _reverify_post_lkg_operands(operands: Exp010GateCOperands) -> None:
+    digest = operands.post_lkg_collection_authority_sha256
+    if digest is None:
+        from .deployment_governance import canonical_deployment_governance_scope
+
+        canonical_root = Path(canonical_deployment_governance_scope().campaigns_root)
+        requested_root = Path(os.path.realpath(operands.store_root.parent))
+        if (
+            operands.database_name is not None
+            or operands.stream_id.startswith("post-lkg-v1/")
+            or requested_root == canonical_root
+            or canonical_root in requested_root.parents
+        ):
+            raise _error("GATE_C_POST_LKG_AUTHORITY_REQUIRED")
+        return
+    if _load_post_lkg_operands(digest) != operands:
+        raise _error("GATE_C_POST_LKG_OPERANDS_MISMATCH")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    authority = parser.add_mutually_exclusive_group(required=True)
+    authority.add_argument(
         "--operands",
         type=Path,
-        required=True,
         help="Path to the exact-keyed Gate-C operand JSON file.",
+    )
+    authority.add_argument(
+        "--expect-collection-authority-sha256",
+        help="Exact immutable post-LKG collection-authority digest.",
     )
     parser.add_argument(
         "--mode",
@@ -728,6 +826,11 @@ def _parser() -> argparse.ArgumentParser:
             "real FLAT and sentinel-ef searches will be issued."
         ),
     )
+    parser.add_argument(
+        "--confirm-post-lkg-gate-c-shadow-searches",
+        action="store_true",
+        help="Required for physical capture under the exact post-LKG authority.",
+    )
     return parser
 
 
@@ -741,13 +844,27 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = _parser().parse_args(argv)
-    operands = load_operands(args.operands)
+    post_lkg = args.expect_collection_authority_sha256 is not None
+    if post_lkg and args.confirm_physical_shadow_searches:
+        raise _error("GATE_C_AUTHORITY_BRANCH_MIXED")
+    if not post_lkg and args.confirm_post_lkg_gate_c_shadow_searches:
+        raise _error("GATE_C_AUTHORITY_BRANCH_MIXED")
+    operands = (
+        _load_post_lkg_operands(args.expect_collection_authority_sha256)
+        if post_lkg
+        else load_operands(args.operands)
+    )
     plan = build_gate_c_plan(operands)
     sys.stdout.write(strict_canonical_json_bytes(plan).decode("utf-8"))
 
     if args.mode == "preflight":
         return 0
-    if not args.confirm_physical_shadow_searches:
+    confirmed = (
+        args.confirm_post_lkg_gate_c_shadow_searches
+        if post_lkg
+        else args.confirm_physical_shadow_searches
+    )
+    if not confirmed:
         raise _error(
             "GATE_C_EXECUTION_NOT_CONFIRMED",
             "--mode execute requires --confirm-physical-shadow-searches",

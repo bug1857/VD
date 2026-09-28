@@ -18,6 +18,7 @@ from tests.test_exp010_live_runner import DATA_IDENTITY, _ShadowCapture
 from vdbench.config import Metric
 from vdbench.exp010_ingress import (
     PAYLOAD_FIELDS,
+    POST_LKG_PAYLOAD_FIELDS,
     Exp010IngressError,
     Exp010RequestIngress,
 )
@@ -211,7 +212,13 @@ class _Serving:
 
 
 class _IngressHarness:
-    def __init__(self, root: Path, *, serving_fails: bool = False) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        serving_fails: bool = False,
+        producer_identity: str | None = None,
+    ) -> None:
         configuration = _configuration()
         identity = derive_serving_configuration_identity(configuration)
         self.serving = _Serving(fail=serving_fails)
@@ -243,7 +250,9 @@ class _IngressHarness:
             shadow_captured_at_clock=self._shadow_clock,
         )
         self.ingress = Exp010RequestIngress(
-            runner=self.runner, serving_configuration=configuration
+            runner=self.runner,
+            serving_configuration=configuration,
+            external_workload_producer_identity=producer_identity,
         )
 
     def _shadow_clock(self) -> str:
@@ -262,6 +271,53 @@ def _payload(request_id, *, offset: float = 0.0):
 
 
 class Exp010IngressTests(unittest.TestCase):
+    def test_post_lkg_producer_identity_is_exact_and_precedes_serve(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            h = _IngressHarness(
+                Path(directory), producer_identity="external-producer-v1"
+            )
+            try:
+                for supplied in (None, "wrong-producer", 7):
+                    payload = _payload("producer-check")
+                    if supplied is not None:
+                        payload["external_workload_producer_identity"] = supplied
+                    with self.subTest(supplied=supplied), self.assertRaises(
+                        Exp010IngressError
+                    ):
+                        h.ingress.admit(payload)
+                self.assertEqual(h.serving.calls, 0)
+                self.assertEqual(
+                    h.runner.composition.response_store.poll(
+                        consumer_id="producer-probe", limit=5
+                    ),
+                    (),
+                )
+
+                payload = _payload("authorized-producer")
+                payload["external_workload_producer_identity"] = (
+                    "external-producer-v1"
+                )
+                h.ingress.admit(payload)
+                self.assertEqual(h.serving.calls, 1)
+            finally:
+                h.close()
+
+    def test_post_lkg_producer_constructor_rejects_noncanonical_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            h = _IngressHarness(Path(directory))
+            try:
+                for identity in ("", " producer", "producer\n", "e\u0301"):
+                    with self.subTest(identity=identity), self.assertRaises(
+                        Exp010IngressError
+                    ):
+                        Exp010RequestIngress(
+                            runner=h.runner,
+                            serving_configuration=_configuration(),
+                            external_workload_producer_identity=identity,
+                        )
+            finally:
+                h.close()
+
     def test_valid_request_reaches_serve_exactly_once_and_conserves_vector(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             h = _IngressHarness(Path(directory))
@@ -717,6 +773,16 @@ class IngressGuardTests(unittest.TestCase):
 
     def test_payload_surface_is_exactly_two_caller_fields(self) -> None:
         self.assertEqual(PAYLOAD_FIELDS, frozenset({"request_id", "query_vector"}))
+        self.assertEqual(
+            POST_LKG_PAYLOAD_FIELDS,
+            frozenset(
+                {
+                    "request_id",
+                    "query_vector",
+                    "external_workload_producer_identity",
+                }
+            ),
+        )
 
 
 if __name__ == "__main__":

@@ -19,12 +19,14 @@ import json
 import socket
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 import vdbench.exp010_gate_b_operator as gate_b_operator
 from tests.test_exp010_live_runner import DATASET001
 from vdbench.config import Metric
+from vdbench.deployment_governance import resolve_deployment_governance_scope
 from vdbench.exp010_gate_a_operator import (
     GATE_A_EVIDENCE_FILENAME,
     GATE_A_EVIDENCE_SUBDIRECTORY,
@@ -212,6 +214,69 @@ def _write_operands(root: Path, path: Path, **overrides: object) -> Path:
 
 class GateBAuthorityTests(unittest.TestCase):
     """Authority is inherited from Gate A, never asserted by an operator."""
+
+    def test_post_lkg_authority_refuses_before_endpoint_or_ingress(self) -> None:
+        with mock.patch(
+            "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client"
+        ) as client, mock.patch("http.server.HTTPServer") as server, contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            result = main(
+                [
+                    "--expect-collection-authority-sha256",
+                    "f" * 64,
+                    "--mode",
+                    "execute",
+                    "--confirm-post-lkg-gate-b-ingress",
+                ]
+            )
+        self.assertEqual(result, 2)
+        client.assert_not_called()
+        server.assert_not_called()
+
+    def test_legacy_operands_cannot_enter_post_lkg_namespace_before_endpoint(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "legacy"
+            _seed_gate_a_evidence(root)
+            operands = load_operands(
+                _write_operands(root, Path(raw) / "operands.json")
+            )
+            scope = resolve_deployment_governance_scope(
+                canonical_root=Path(raw) / "governance"
+            )
+            authority = dict(operands.authority)
+            authority["stream_id"] = f'post-lkg-v1/{"a" * 64}/legacy-bypass'
+            bypass = replace(
+                operands,
+                campaign_root=Path(scope.campaigns_root) / "legacy-bypass",
+                authority=authority,
+            )
+            with mock.patch(
+                "vdbench.exp010_gate_b_operator.load_operands",
+                return_value=bypass,
+            ) as loader, mock.patch(
+                "vdbench.exp010_gate_b_operator._endpoint_bindable"
+            ) as endpoint, mock.patch(
+                "http.server.HTTPServer"
+            ) as server, mock.patch(
+                "vdbench.deployment_governance.canonical_deployment_governance_scope",
+                return_value=scope,
+            ), contextlib.redirect_stderr(io.StringIO()):
+                result = main(
+                    [
+                        "--operands",
+                        str(Path(raw) / "legacy-operands.json"),
+                        "--mode",
+                        "execute",
+                        "--confirm-gate-b-ingress",
+                    ]
+                )
+        self.assertEqual(result, 2)
+        loader.assert_called_once()
+        endpoint.assert_not_called()
+        server.assert_not_called()
 
     def test_gate_a_evidence_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -32,6 +32,8 @@ from vdbench.deployment_governance import (
     DEPLOYMENT_NAMESPACE_DOMAIN,
     DEPLOYMENT_NAMESPACE_SCHEMA_VERSION,
     DEPLOYMENTS_DIRECTORY,
+    CAMPAIGNS_DIRECTORY,
+    COLLECTION_AUTHORITIES_DIRECTORY,
     LKG_AUTHORITY_STORE_FILENAME,
     ROUTE_STATE_FILENAME,
     RUNS_DIRECTORY,
@@ -77,6 +79,46 @@ class _TempRootCase(unittest.TestCase):
 
     def scope(self, **kwargs):
         return resolve_deployment_governance_scope(canonical_root=self.root, **kwargs)
+
+
+class PostLkgScopeTests(_TempRootCase):
+    def test_collection_authority_and_campaign_paths_are_derived_only(self) -> None:
+        scope = self.scope()
+        self.assertEqual(
+            scope.collection_authorities_root,
+            str(Path(scope.scope_root) / COLLECTION_AUTHORITIES_DIRECTORY),
+        )
+        self.assertEqual(
+            scope.campaigns_root,
+            str(Path(scope.scope_root) / CAMPAIGNS_DIRECTORY),
+        )
+        self.assertEqual(
+            scope.collection_authority_path("campaign-01", "a" * 64),
+            str(
+                Path(scope.scope_root)
+                / COLLECTION_AUTHORITIES_DIRECTORY
+                / "campaign-01"
+                / f'{"a" * 64}.json'
+            ),
+        )
+        self.assertEqual(
+            scope.campaign_root("campaign-01"),
+            str(Path(scope.scope_root) / CAMPAIGNS_DIRECTORY / "campaign-01"),
+        )
+        self.assertFalse(Path(scope.scope_root).exists())
+
+    def test_post_lkg_path_components_fail_closed(self) -> None:
+        scope = self.scope()
+        for campaign in ("", "../escape", "/absolute", "space value"):
+            with self.subTest(campaign=campaign), self.assertRaises(
+                DeploymentGovernanceError
+            ):
+                scope.collection_authority_campaign_root(campaign)
+        for digest in ("a" * 63, "A" * 64, "z" * 64):
+            with self.subTest(digest=digest), self.assertRaises(
+                DeploymentGovernanceError
+            ):
+                scope.collection_authority_path("campaign-01", digest)
 
 
 # ======================================================================

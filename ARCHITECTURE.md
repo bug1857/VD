@@ -7652,3 +7652,116 @@ normalization, insertion repair, or historical evidence rewrite is required.
 operand schema, Prepared Authority V2, and the readiness-store schema remain
 unchanged. A future machine-authorizing use of duplicate-container historical
 evidence requires a separately accepted authority contract.
+
+### ADR-025: Post-LKG collection authority and descendant evidence boundary
+
+Status: **ACCEPTED** (2026-09-12) for the implementation candidate only. Scope:
+**Core**. Risk: **CRITICAL**. Fresh independent exact-byte review, canonical
+full-suite verification, source freeze, push/remote convergence, and the source
+guard remain pending. This decision grants no runtime or actuation authority.
+
+**Purpose and authority document.** A post-LKG collection campaign is usable
+only when one inert, immutable authority descends from the verified latest D2.
+Its exact closed schema is `vd-post-lkg-collection-authority-v1`; its
+serialization contract is `vd-canonical-json-v2`; and its address is
+`strict_canonical_digest(b"VD::POST_LKG_COLLECTION_AUTHORITY::V1\0", body)`.
+The persisted file contains the canonical body bytes only, without an envelope
+or embedded digest. Every key and value participates in the digest preimage;
+unknown, missing, null, coerced, non-canonical, non-finite, or non-built-in
+values refuse. Preparation is read-only and deterministic: it verifies the
+latest D2 and pins DATASET-001, but writes nothing and contacts neither Docker
+nor Milvus. Materialization is a separate inert operation and is the sole
+authority-file writer.
+
+**D2 descendant invariant and revision split.** The authority binds the exact
+D2 sequence and record digest plus Checkpoint-C digest, source run ID and
+binding digest, evaluated `ef`, environment identity, deployment identity and
+namespace, HNSW collection/index identity, DATASET-001 identity, metric, and
+threshold stratum. Every Gate A/B/C and verified-evidence acquisition reloads
+and verifies latest D2; an older authority becomes unusable when a new D2 head
+exists. `canonical_lkg.lkg_execution_source_revision` records the source that
+created LKG. `collection_execution_source_revision` records the later frozen
+ADR-025 collection source. They are separate 40-lowercase-hex identities and
+need not be equal. An uncommitted candidate is never a real collection source
+identity.
+
+**Canonical scope and database identity.** The deployment governance scope is
+source-derived. Authority files live only at
+`collection_authorities/<campaign-id>/<authority-sha256>.json`; campaign state
+lives only at `campaigns/<campaign-id>`. The campaign ID is one lowercase safe
+component, and the stream is exactly
+`post-lkg-v1/<d2-record-sha256>/<campaign-id>`. No caller supplies a campaign
+root or stream in post-LKG mode. The database is explicitly bound as `default`,
+and every post-LKG read-only Milvus client receives `db_name="default"` through
+the keyword-only database seam. The legacy omitted-database construction stays
+unchanged and is never accepted as post-LKG proof.
+
+**Inert filesystem contract.** Authority root and campaign-authority directory
+are private `0700`; the authority file is an owned, single-link, non-symlink
+regular `0600` file. Creation uses exclusive no-replace `O_EXCL|O_NOFOLLOW`,
+exact-byte writes, file `fsync`, and parent-directory `fsync`, without rename.
+Same digest and same bytes is a read-only replay. Same digest with different
+bytes, a second digest for one campaign, an unsafe path, or an incomplete
+existing authority directory refuses. Materialization creates no campaign,
+admits no request, executes no search, and grants no policy capability.
+
+**Gate fail-before-effect boundaries and resume.** Post-LKG Gate A accepts only
+the exact authority digest, re-hashes the authority, verifies latest D2,
+canonical scope, campaign/stream, collection revision, collision state, and
+database before client construction. It adds only
+`post_lkg_collection_authority_sha256` to Gate-A evidence. An absent Gate A may
+start; a complete Gate A is read-only and is never replayed; incomplete or
+foreign state refuses. Gate B re-verifies authority, latest D2, Gate-A evidence,
+campaign/store/stream/configuration/database bindings, and the source ceiling
+before endpoint bind or ingress. Zero sources starts, 1..599 resumes, and 600 is
+read-only. Its post-LKG payload is exactly `request_id`, `query_vector`, and the
+authority-bound NFC printable external producer identity. A mismatch creates no
+source membership. Gate C repeats those checks plus source/window bounds and
+runtime identity/health before physical capture. Windows 0..2 advance once;
+partial state resumes; completed window 2 is read-only; and an ORPHANED attempt
+always refuses because physical outcome is unknown.
+
+**Descendant membership and verified policy evidence.** Existing source,
+shadow-attempt, finalization, detector, and attestation schemas remain
+unchanged. Membership is proven by the verified authority digest, its verified
+Gate-A manifest, exact campaign root, authority-derived stream, and the
+existing immutable store bindings and hash chains. No per-row authority column
+is added. `VerifiedPostLkgDetectorEvidence` is loader-issued only after the
+authority, latest D2, D1/D2 pair, Gate-A evidence, complete 600-source/three-
+window campaign, detector head at current window 2, and real attestation are
+verified. `evaluate_post_lkg_tuning_policy` accepts only that exact wrapper,
+rechecks its internal authority/LKG/stream/head binding, derives the threshold
+stratum, and delegates to the unchanged pure policy. A raw `DriftDecision`, a
+cross-campaign head, or evidence bound to another authority refuses.
+
+**Historical evidence and human authorization.** Gate-A evidence without the
+authority digest remains valid only for its historical EXP-007/008/010/012
+semantics and cannot enter the post-LKG policy boundary. Real future human
+authorization targets one exact collection-authority SHA-256, with campaign,
+deployment/D2/Checkpoint-C/revision, Milvus endpoint/database/collections,
+producer, window-plan, and search-budget context. Preparing or materializing the
+file is not that authorization. A future real run still requires the separately
+reviewed, frozen, converged source and explicit gate confirmations.
+
+**Implementation, verification, and rollback.** The selected implementation
+reuses the existing canonical serializer, deployment scope, D2 latest-head
+loader, Gate-A authority projection, immutable store bindings, detector
+attestation, and pure policy; duplicating those contracts or adding per-row
+authority columns was rejected because either path would create a second source
+of truth. Verification is offline and adversarial: exact golden bytes, D2 and
+campaign substitutions, malformed files, replay/resume boundaries, pre-effect
+refusals, explicit database propagation, and the complete temporary
+600-source/three-window detector chain are exercised without a real runtime.
+Manual verification is the three focused ADR-025 test commands plus exact diff,
+hash, and preservation checks. Before live use, rollback is a reviewed reversal
+of these candidate source bytes. After an inert authority has been materialized,
+it is never edited or deleted; rollback means withholding its digest from every
+gate and issuing no replacement without a separately reviewed authority.
+
+**Physical limitation and non-goals.** The logical budget is 600 foreground,
+600 FLAT-shadow, 600 HNSW-sentinel positions, and zero Milvus writes. Durable
+stores provide logical replay/resume safety, but do not prove physical
+exactly-once after a crash; ORPHANED remains the honest fail-closed outcome. This
+ADR adds no route mutation, candidate activation, canary, serving-`ef` mutation,
+Milvus write, D1 creation, D2 append, deployment, workload synthesis, store
+redesign, automatic authorization, or physical exactly-once claim.

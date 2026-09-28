@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import math
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +53,7 @@ from .host_window_lineage import HostResponseCommitError, V2VisibleResponse
 
 __all__ = [
     "PAYLOAD_FIELDS",
+    "POST_LKG_PAYLOAD_FIELDS",
     "Exp010IngressError",
     "Exp010RequestIngress",
     "Exp010StdlibSearchHandler",
@@ -60,6 +62,9 @@ __all__ = [
 
 #: The complete, closed set of keys an external caller may supply.
 PAYLOAD_FIELDS = frozenset({"request_id", "query_vector"})
+POST_LKG_PAYLOAD_FIELDS = frozenset(
+    {"request_id", "query_vector", "external_workload_producer_identity"}
+)
 
 #: Anything an application might try to send that would establish authority.
 _FORBIDDEN_PAYLOAD_FIELDS = frozenset(
@@ -101,12 +106,26 @@ class Exp010RequestIngress:
         *,
         runner: Exp010LiveRunner,
         serving_configuration: Exp010ServingConfiguration,
+        external_workload_producer_identity: str | None = None,
     ) -> None:
         if type(runner) is not Exp010LiveRunner:
             raise _error("INGRESS_RUNNER_INVALID")
         if type(serving_configuration) is not Exp010ServingConfiguration:
             raise _error("INGRESS_CONFIGURATION_INVALID")
+        if external_workload_producer_identity is not None and (
+            type(external_workload_producer_identity) is not str
+            or not 1 <= len(external_workload_producer_identity) <= 128
+            or external_workload_producer_identity
+            != external_workload_producer_identity.strip()
+            or external_workload_producer_identity
+            != unicodedata.normalize("NFC", external_workload_producer_identity)
+            or not external_workload_producer_identity.isprintable()
+        ):
+            raise _error("INGRESS_PRODUCER_IDENTITY_INVALID")
         self._runner = runner
+        self.external_workload_producer_identity = (
+            external_workload_producer_identity
+        )
         self.serving_configuration = serving_configuration
         self.configuration_identity = derive_serving_configuration_identity(
             serving_configuration
@@ -170,8 +189,19 @@ class Exp010RequestIngress:
             raise _error(
                 "INGRESS_IDENTITY_OVERRIDE_REFUSED", ",".join(sorted(intruders))
             )
-        if keys != PAYLOAD_FIELDS:
+        expected_fields = (
+            PAYLOAD_FIELDS
+            if self.external_workload_producer_identity is None
+            else POST_LKG_PAYLOAD_FIELDS
+        )
+        if keys != expected_fields:
             raise _error("INGRESS_PAYLOAD_FIELDS_INVALID", ",".join(sorted(keys)))
+        if self.external_workload_producer_identity is not None and (
+            type(payload["external_workload_producer_identity"]) is not str
+            or payload["external_workload_producer_identity"]
+            != self.external_workload_producer_identity
+        ):
+            raise _error("INGRESS_PRODUCER_IDENTITY_MISMATCH")
 
         request_id = payload["request_id"]
         if isinstance(request_id, bool) or type(request_id) not in (int, str):

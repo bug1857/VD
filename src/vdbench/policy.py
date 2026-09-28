@@ -31,6 +31,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from numbers import Integral
+from typing import TYPE_CHECKING
 
 from .config import THRESHOLD_LABELS, Metric
 from .drift import (
@@ -44,6 +45,9 @@ from .lkg_phase3_binding import (
     LkgPhase3AuthorityPair,
     bind_lkg_phase3_authority,
 )
+
+if TYPE_CHECKING:
+    from .post_lkg_collection_evidence import VerifiedPostLkgDetectorEvidence
 
 ACTUATION_LADDER = (200, 400, 800, 1600)
 RECALL_FLOOR = 0.95
@@ -1672,6 +1676,65 @@ def evaluate_tuning_policy(
     )
 
 
+def evaluate_post_lkg_tuning_policy(
+    evidence: VerifiedPostLkgDetectorEvidence,
+    *,
+    current_ef: int,
+    response_estimates: Mapping[int, ResponseEstimate],
+    pre_action: PreActionSafety,
+    canary_observation: CanaryObservation | None,
+    qualification_windows: Sequence[QualificationWindow] | None,
+    mode: PolicyMode,
+    audit_id: str,
+) -> PolicyDecision:
+    """Evaluate policy only from the fully verified post-LKG evidence chain."""
+
+    from .post_lkg_collection_evidence import VerifiedPostLkgDetectorEvidence
+
+    if type(evidence) is not VerifiedPostLkgDetectorEvidence:
+        raise TypeError("evidence must be VerifiedPostLkgDetectorEvidence")
+    document = evidence.collection_authority.document
+    lkg = document["canonical_lkg"]
+    reference = evidence.lkg_authority_pair.verified_latest_reference.reference
+    head = evidence.verified_real_detector_head.head
+    stream = head.stream_key
+    if (
+        reference.canonical_record_digest != lkg["d2_record_sha256"]
+        or reference.sequence_number != lkg["d2_sequence"]
+        or reference.source_run_id != lkg["source_run_id"]
+        or reference.source_run_binding_sha256
+        != lkg["source_run_binding_sha256"]
+        or reference.canonical_evaluation_digest != lkg["checkpoint_c_sha256"]
+        or stream.stream_id != document["campaign"]["stream_id"]
+        or stream.metric.value != document["serving"]["metric"]
+        or stream.threshold_stratum != document["serving"]["threshold_stratum"]
+        or stream.configuration_identity
+        != document["serving"]["configuration_identity"]
+        or stream.data_identity != document["dataset"]["data_identity"]
+        or stream.flat_binding_id != document["serving"]["flat_binding_id"]
+        or stream.hnsw_binding_id != document["serving"]["hnsw_binding_id"]
+        or evidence.drift_decision.state is not head.detector_state
+        or evidence.drift_decision.classification
+        is not head.detector_classification
+        or evidence.drift_decision.evidence_provenance
+        != head.detector_provenance
+    ):
+        raise ValueError("post-LKG evidence authority binding mismatch")
+    threshold_stratum = document["serving"]["threshold_stratum"]
+    return evaluate_tuning_policy(
+        evidence.drift_decision,
+        current_ef=current_ef,
+        response_estimates=response_estimates,
+        pre_action=pre_action,
+        canary_observation=canary_observation,
+        qualification_windows=qualification_windows,
+        mode=mode,
+        threshold_stratum=threshold_stratum,
+        audit_id=audit_id,
+        lkg_authority=evidence.lkg_authority_pair,
+    )
+
+
 __all__ = [
     "ABSOLUTE_LATENCY_CEILING_MS",
     "ACTUATION_LADDER",
@@ -1686,5 +1749,6 @@ __all__ = [
     "ResponseEstimate",
     "SafetyGateResult",
     "evaluate_tuning_policy",
+    "evaluate_post_lkg_tuning_policy",
     "qualify_last_known_good",
 ]

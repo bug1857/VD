@@ -13,9 +13,11 @@ import json
 import os
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vdbench.canonical_serialization import (
@@ -23,6 +25,7 @@ from vdbench.canonical_serialization import (
     strict_canonical_json_bytes,
 )
 from vdbench.config import INDEX_NAME, Metric
+from vdbench.deployment_governance import resolve_deployment_governance_scope
 from vdbench.exp010_gate_a_operator import (
     CAMPAIGN_ABSENT,
     CAMPAIGN_COMPLETE,
@@ -352,6 +355,147 @@ class GateAObservationTests(unittest.TestCase):
         self.assertEqual(client.searches, 0)
         self.assertFalse(any(call.startswith("search") for call in client.calls))
 
+    def test_post_lkg_observation_passes_the_explicit_database(self) -> None:
+        with TemporaryDirectory() as temporary:
+            operands = replace(
+                self._operands(Path(temporary)),
+                database_name="default",
+            )
+            with patch(
+                "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client",
+                return_value=_FakeMetadataClient(),
+            ) as factory, patch(
+                "vdbench.exp010_gate_a_operator._reverify_post_lkg_authority",
+                return_value=SimpleNamespace(authority_sha256="a" * 64),
+            ):
+                observe_environment(
+                    operands,
+                    container_inspector=_inspector(),
+                    revision_resolver=lambda: _REVISION,
+                    clock=_clock,
+                )
+        factory.assert_called_once_with(
+            uri=operands.milvus_uri, database_name="default"
+        )
+
+    def test_post_lkg_authority_refuses_before_runtime_construction(self) -> None:
+        with patch(
+            "vdbench.v2_milvus_shadow_capture.build_readonly_milvus_client"
+        ) as factory, self.assertRaises(Exp010GateAOperatorError) as raised:
+            main(
+                [
+                    "--expect-collection-authority-sha256",
+                    "f" * 64,
+                    "--mode",
+                    "preflight",
+                ]
+            )
+        self.assertEqual(raised.exception.code, "GATE_A_POST_LKG_AUTHORITY_UNVERIFIED")
+        factory.assert_not_called()
+
+    def test_legacy_operands_cannot_enter_post_lkg_namespace_before_runtime(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scope = resolve_deployment_governance_scope(
+                canonical_root=root / "governance"
+            )
+            observation = _observe(self._operands(root))
+            operands = replace(
+                self._operands(root),
+                campaign_root=Path(scope.campaigns_root) / "legacy-bypass",
+                stream_id=f'post-lkg-v1/{"a" * 64}/legacy-bypass',
+            )
+            caught = None
+            with patch(
+                "vdbench.exp010_gate_a_operator.load_operands",
+                return_value=operands,
+            ) as loader, patch(
+                "vdbench.exp010_gate_a_operator.observe_environment",
+                return_value=observation,
+            ) as observe, patch(
+                "vdbench.deployment_governance.canonical_deployment_governance_scope",
+                return_value=scope,
+            ), redirect_stdout(io.StringIO()):
+                try:
+                    main(
+                        [
+                            "--operands",
+                            str(root / "legacy-operands.json"),
+                            "--mode",
+                            "preflight",
+                        ]
+                    )
+                except Exp010GateAOperatorError as exc:
+                    caught = exc
+            self.assertEqual(loader.call_count, 1)
+            self.assertEqual(
+                observe.call_count,
+                0,
+                "legacy post-LKG namespace reached observe_environment",
+            )
+            self.assertIsNotNone(caught)
+            self.assertEqual(caught.code, "GATE_A_POST_LKG_AUTHORITY_REQUIRED")
+
+    def test_direct_api_forged_marker_is_refused_before_observation_or_evidence(
+        self,
+    ) -> None:
+        """A raw marker is an untrusted claim, never Gate-A authority."""
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scope = resolve_deployment_governance_scope(
+                canonical_root=root / "governance"
+            )
+            forged_marker = "f" * 64
+            forged = replace(
+                self._operands(root),
+                campaign_root=Path(scope.campaigns_root) / "forged-direct-api",
+                stream_id=f"post-lkg-v1/{forged_marker}/forged-direct-api",
+                post_lkg_collection_authority_sha256=forged_marker,
+                database_name=None,
+            )
+            client = _FakeMetadataClient()
+            caught = None
+            observation = None
+            with patch(
+                "vdbench.post_lkg_collection_authority."
+                "load_verified_post_lkg_collection_authority"
+            ) as load_authority, patch(
+                "vdbench.post_lkg_collection_authority."
+                "verify_post_lkg_collection_authority_d2"
+            ) as verify_d2, patch(
+                "vdbench.deployment_governance."
+                "canonical_deployment_governance_scope",
+                return_value=scope,
+            ):
+                try:
+                    observation = observe_environment(
+                        forged,
+                        metadata_reader=client,
+                        container_inspector=_inspector(),
+                        revision_resolver=lambda: _REVISION,
+                        clock=_clock,
+                    )
+                except Exp010GateAOperatorError as exc:
+                    caught = exc
+
+            evidence = (
+                None
+                if observation is None
+                else build_gate_a_evidence(forged, observation)
+            )
+            self.assertIsNotNone(caught)
+            self.assertEqual(load_authority.call_count, 0)
+            self.assertEqual(verify_d2.call_count, 0)
+            self.assertEqual(client.calls, [])
+            self.assertIsNone(
+                None
+                if evidence is None
+                else evidence.get("post_lkg_collection_authority_sha256")
+            )
+
     def test_the_metadata_reader_cannot_search_at_all(self) -> None:
         """Structural, not conventional: the wrapper defines no `search`."""
 
@@ -383,6 +527,29 @@ class GateAObservationTests(unittest.TestCase):
         self.assertEqual(
             evidence["environment_observation"]["source_revision"], _REVISION
         )
+
+    def test_post_lkg_gate_a_manifest_derives_the_verified_authority_digest(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operands = replace(
+                self._operands(root),
+                database_name="default",
+            )
+            authority = SimpleNamespace(authority_sha256="a" * 64)
+            with patch(
+                "vdbench.exp010_gate_a_operator._reverify_post_lkg_authority",
+                return_value=authority,
+            ):
+                evidence = build_gate_a_evidence(operands, _observe(operands))
+        field = "post_lkg_collection_authority_sha256"
+        self.assertIn(
+            field,
+            evidence,
+            f'"{field}" is absent from the current Gate-A evidence document.',
+        )
+        self.assertEqual(evidence[field], "a" * 64)
 
     def test_live_mismatches_are_each_rejected(self) -> None:
         cases = (

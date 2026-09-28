@@ -37,6 +37,7 @@ from vdbench.policy import (
     PreActionSafety,
     QualificationWindow,
     ResponseEstimate,
+    evaluate_post_lkg_tuning_policy,
     evaluate_tuning_policy,
     qualify_last_known_good,
 )
@@ -1295,6 +1296,21 @@ class ResponseProfileAuthorityTests(unittest.TestCase):
 
 
 class OfflineBoundaryTests(unittest.TestCase):
+    def test_post_lkg_entry_refuses_a_raw_drift_decision(self) -> None:
+        with self.assertRaisesRegex(
+            TypeError, "VerifiedPostLkgDetectorEvidence"
+        ):
+            evaluate_post_lkg_tuning_policy(
+                detector(),
+                current_ef=400,
+                response_estimates=quality_estimates(),
+                pre_action=pre_action(),
+                canary_observation=None,
+                qualification_windows=None,
+                mode=PolicyMode.DRY_RUN,
+                audit_id="raw-drift-refused",
+            )
+
     def test_policy_module_has_no_pymilvus_or_backend_adapter_import(self) -> None:
         source = (
             Path(__file__).resolve().parents[1] / "src" / "vdbench" / "policy.py"

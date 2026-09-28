@@ -81,6 +81,8 @@ __all__ = [
     "DEPLOYMENT_NAMESPACE_DOMAIN",
     "DEPLOYMENT_NAMESPACE_SCHEMA_VERSION",
     "DEPLOYMENTS_DIRECTORY",
+    "COLLECTION_AUTHORITIES_DIRECTORY",
+    "CAMPAIGNS_DIRECTORY",
     "LKG_AUTHORITY_STORE_FILENAME",
     "ROUTE_STATE_FILENAME",
     "RUNS_DIRECTORY",
@@ -123,6 +125,8 @@ DEPLOYMENT_NAMESPACE_DOMAIN = b"VD::DEPLOYMENT_GOVERNANCE_NAMESPACE::V1\x00"
 
 DEPLOYMENTS_DIRECTORY = "deployments"
 RUNS_DIRECTORY = "runs"
+COLLECTION_AUTHORITIES_DIRECTORY = "collection_authorities"
+CAMPAIGNS_DIRECTORY = "campaigns"
 ROUTE_STATE_FILENAME = "route_state.json"
 LKG_AUTHORITY_STORE_FILENAME = "lkg_authority.sqlite3"
 
@@ -268,6 +272,8 @@ class DeploymentGovernanceScope:
     route_state_path: str
     lkg_authority_store_path: str
     runs_root: str
+    collection_authorities_root: str
+    campaigns_root: str
 
     def run_root(self, source_run_id: str) -> str:
         """The one canonical run root for ``source_run_id`` in this scope."""
@@ -280,6 +286,39 @@ class DeploymentGovernanceScope:
                 "source_run_id must be one safe path component",
             )
         return str(Path(self.runs_root) / source_run_id)
+
+    def collection_authority_campaign_root(self, campaign_id: str) -> str:
+        """Canonical directory holding one campaign's immutable authority."""
+
+        self._require_path_component(campaign_id, code="DEPLOYMENT_CAMPAIGN_ID_INVALID")
+        return str(Path(self.collection_authorities_root) / campaign_id)
+
+    def collection_authority_path(
+        self, campaign_id: str, authority_sha256: str
+    ) -> str:
+        """Canonical digest-addressed authority file for one campaign."""
+
+        self._require_path_component(campaign_id, code="DEPLOYMENT_CAMPAIGN_ID_INVALID")
+        if type(authority_sha256) is not str or re.fullmatch(
+            r"[0-9a-f]{64}", authority_sha256
+        ) is None:
+            raise _error("DEPLOYMENT_AUTHORITY_DIGEST_INVALID")
+        return str(
+            Path(self.collection_authorities_root)
+            / campaign_id
+            / f"{authority_sha256}.json"
+        )
+
+    def campaign_root(self, campaign_id: str) -> str:
+        """Canonical post-LKG campaign root."""
+
+        self._require_path_component(campaign_id, code="DEPLOYMENT_CAMPAIGN_ID_INVALID")
+        return str(Path(self.campaigns_root) / campaign_id)
+
+    @staticmethod
+    def _require_path_component(value: object, *, code: str) -> None:
+        if type(value) is not str or _PATH_COMPONENT_RE.fullmatch(value) is None:
+            raise _error(code, "value must be one safe path component")
 
 
 def resolve_deployment_governance_scope(
@@ -325,6 +364,10 @@ def resolve_deployment_governance_scope(
         route_state_path=str(scope_root / ROUTE_STATE_FILENAME),
         lkg_authority_store_path=str(scope_root / LKG_AUTHORITY_STORE_FILENAME),
         runs_root=str(scope_root / RUNS_DIRECTORY),
+        collection_authorities_root=str(
+            scope_root / COLLECTION_AUTHORITIES_DIRECTORY
+        ),
+        campaigns_root=str(scope_root / CAMPAIGNS_DIRECTORY),
     )
 
 

@@ -85,7 +85,9 @@ def _error(code: str, message: str | None = None) -> V2MilvusShadowCaptureError:
     return V2MilvusShadowCaptureError(code, message)
 
 
-def build_readonly_milvus_client(uri: str) -> Any:
+def build_readonly_milvus_client(
+    uri: str, *, database_name: str | None = None
+) -> Any:
     """Lazily construct one real read-only PyMilvus client.
 
     Defined for a future authorized operator run; never called by this module
@@ -94,9 +96,15 @@ def build_readonly_milvus_client(uri: str) -> Any:
 
     if not isinstance(uri, str) or not uri:
         raise ValueError("uri must be a non-empty string")
+    if database_name is not None and (
+        type(database_name) is not str or not database_name
+    ):
+        raise ValueError("database_name must be None or a non-empty string")
     from pymilvus import MilvusClient
 
-    return MilvusClient(uri=uri)
+    if database_name is None:
+        return MilvusClient(uri=uri)
+    return MilvusClient(uri=uri, db_name=database_name)
 
 
 @dataclass(frozen=True, slots=True)

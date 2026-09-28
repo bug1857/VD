@@ -59,7 +59,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .canonical_serialization import (
     CANONICAL_JSON_SCHEMA_VERSION,
@@ -81,6 +81,9 @@ from .exp010_serving_configuration import (
     validate_governed_configuration_identity,
 )
 from .exp010_v2_host import pin_dataset001_identity
+
+if TYPE_CHECKING:
+    from .post_lkg_collection_authority import VerifiedPostLkgCollectionAuthority
 
 __all__ = [
     "CAMPAIGN_ABSENT",
@@ -223,6 +226,12 @@ class Exp010GateAOperands:
     etcd_container: str
     minio_container: str
     milvus_container: str
+    # Compatibility-only raw claim: every direct execution path refuses it.
+    post_lkg_collection_authority_sha256: str | None = None
+    verified_post_lkg_collection_authority: (
+        VerifiedPostLkgCollectionAuthority | None
+    ) = None
+    database_name: str | None = None
 
     @property
     def serving_configuration(self) -> Exp010ServingConfiguration:
@@ -663,6 +672,7 @@ def observe_environment(
     Every derived field is recomputed here; none is accepted from the operator.
     """
 
+    _reverify_post_lkg_authority(operands)
     resolver = revision_resolver or (
         lambda: _resolve_repository_revision(Path(__file__).resolve().parents[2])
     )
@@ -684,7 +694,13 @@ def observe_environment(
     if client is None:
         from .v2_milvus_shadow_capture import build_readonly_milvus_client
 
-        client = build_readonly_milvus_client(operands.milvus_uri)
+        if operands.database_name is None:
+            client = build_readonly_milvus_client(operands.milvus_uri)
+        else:
+            client = build_readonly_milvus_client(
+                uri=operands.milvus_uri,
+                database_name=operands.database_name,
+            )
     reader = _ReadOnlyMetadataReader(client)
 
     flat = _observe_collection(
@@ -766,6 +782,7 @@ def build_gate_a_evidence(
     has to trust this file's own summary.
     """
 
+    verified_authority = _reverify_post_lkg_authority(operands)
     evidence: dict[str, Any] = {
         "schema_version": GATE_A_EVIDENCE_SCHEMA_VERSION,
         "serialization_contract": CANONICAL_JSON_SCHEMA_VERSION,
@@ -826,6 +843,10 @@ def build_gate_a_evidence(
         "physical_searches_issued_by_gate_a": 0,
         "serve_calls_issued_by_gate_a": 0,
     }
+    if verified_authority is not None:
+        evidence["post_lkg_collection_authority_sha256"] = (
+            verified_authority.authority_sha256
+        )
     evidence["evidence_sha256"] = strict_canonical_digest(_EVIDENCE_DOMAIN, evidence)
     return evidence
 
@@ -983,7 +1004,7 @@ def derive_downstream_authority(
     evidence = load_verified_gate_a_evidence(campaign_root)
     serving = evidence["serving"]
     milvus = evidence["milvus"]
-    return {
+    authority = {
         "stream_id": evidence["campaign"]["stream_id"],
         "environment_manifest_sha256": evidence["environment_manifest_sha256"],
         "configuration_identity": serving["configuration_identity"],
@@ -1003,6 +1024,11 @@ def derive_downstream_authority(
         "hnsw_collection_name": milvus["hnsw_collection_name"],
         "dataset001_dir": evidence["dataset"]["dataset001_dir"],
     }
+    if "post_lkg_collection_authority_sha256" in evidence:
+        authority["post_lkg_collection_authority_sha256"] = evidence[
+            "post_lkg_collection_authority_sha256"
+        ]
+    return authority
 
 
 def build_gate_a_plan(
@@ -1226,6 +1252,7 @@ def initialize_v5_campaign(
     this operator. An operator must quarantine it explicitly and re-run.
     """
 
+    _reverify_post_lkg_authority(operands)
     root = operands.campaign_root
     _reject_unsafe_parent(root.parent)
 
@@ -1361,13 +1388,174 @@ def initialize_v5_campaign(
 # --------------------------------------------------------------------------
 
 
+def _load_post_lkg_operands(authority_sha256: str) -> Exp010GateAOperands:
+    """Resolve every post-LKG operand before any runtime-capable object exists."""
+
+    from .deployment_governance import canonical_deployment_governance_scope
+    from .post_lkg_collection_authority import (
+        PostLkgCollectionAuthorityError,
+        load_verified_post_lkg_collection_authority,
+        verify_post_lkg_collection_authority_d2,
+    )
+
+    scope = canonical_deployment_governance_scope()
+    try:
+        verified = load_verified_post_lkg_collection_authority(
+            authority_sha256=authority_sha256,
+            governance_scope=scope,
+        )
+        verify_post_lkg_collection_authority_d2(
+            verified, governance_scope=scope
+        )
+    except PostLkgCollectionAuthorityError as exc:
+        raise _error("GATE_A_POST_LKG_AUTHORITY_UNVERIFIED", exc.code) from exc
+    return _operands_from_verified_post_lkg_authority(verified)
+
+
+def _operands_from_verified_post_lkg_authority(
+    verified: VerifiedPostLkgCollectionAuthority,
+) -> Exp010GateAOperands:
+    """Derive all post-LKG Gate-A values from store-issued authority."""
+
+    document = verified.document
+    campaign = document["campaign"]
+    serving = document["serving"]
+    target = document["target"]
+    dataset = document["dataset"]
+    milvus = document["milvus"]
+    containers = document["containers"]
+    try:
+        return Exp010GateAOperands(
+            deployment_identity=document["canonical_lkg"]["deployment_identity"],
+            stream_id=campaign["stream_id"],
+            campaign_root=Path(campaign["campaign_root"]),
+            milvus_uri=milvus["uri"],
+            flat_collection_name=milvus["flat_collection_name"],
+            hnsw_collection_name=milvus["hnsw_collection_name"],
+            metric=Metric(serving["metric"]),
+            threshold_stratum=serving["threshold_stratum"],
+            threshold_radius=serving["threshold_radius"],
+            range_filter=serving["range_filter"],
+            limit=serving["limit"],
+            served_ef=serving["served_ef"],
+            dimensions=serving["dimensions"],
+            consistency_level=serving["consistency_level"],
+            configuration_identity=serving["configuration_identity"],
+            flat_binding_id=serving["flat_binding_id"],
+            hnsw_binding_id=serving["hnsw_binding_id"],
+            source_revision=document["collection_execution_source_revision"],
+            expected_row_count=target["expected_row_count"],
+            hnsw_m=target["hnsw_m"],
+            hnsw_ef_construction=target["hnsw_ef_construction"],
+            dataset001_dir=Path(dataset["dataset001_dir"]),
+            etcd_container=containers["etcd_container"],
+            minio_container=containers["minio_container"],
+            milvus_container=containers["milvus_container"],
+            verified_post_lkg_collection_authority=verified,
+            database_name=milvus["database_name"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _error("GATE_A_POST_LKG_AUTHORITY_MALFORMED", str(exc)) from exc
+
+
+def _reject_legacy_post_lkg_namespace(operands: Exp010GateAOperands) -> None:
+    """Keep legacy operands outside the canonical ADR-025 namespace."""
+
+    if operands.post_lkg_collection_authority_sha256 is not None:
+        raise _error("GATE_A_POST_LKG_UNTRUSTED_MARKER")
+    if operands.verified_post_lkg_collection_authority is not None:
+        return
+    from .deployment_governance import canonical_deployment_governance_scope
+
+    canonical_root = Path(canonical_deployment_governance_scope().campaigns_root)
+    requested_root = Path(os.path.realpath(operands.campaign_root))
+    if (
+        operands.database_name is not None
+        or operands.stream_id.startswith("post-lkg-v1/")
+        or requested_root == canonical_root
+        or canonical_root in requested_root.parents
+    ):
+        raise _error("GATE_A_POST_LKG_AUTHORITY_REQUIRED")
+
+
+def _reverify_post_lkg_authority(
+    operands: Exp010GateAOperands,
+) -> VerifiedPostLkgCollectionAuthority | None:
+    """Refuse raw claims; rederive post-LKG operands from current authority."""
+
+    _reject_legacy_post_lkg_namespace(operands)
+    supplied = operands.verified_post_lkg_collection_authority
+    if supplied is None:
+        return None
+    from .deployment_governance import canonical_deployment_governance_scope
+    from .post_lkg_collection_authority import (
+        PostLkgCollectionAuthorityError,
+        VerifiedPostLkgCollectionAuthority,
+        load_verified_post_lkg_collection_authority,
+        verify_post_lkg_collection_authority_d2,
+    )
+
+    if type(supplied) is not VerifiedPostLkgCollectionAuthority:
+        raise _error("GATE_A_POST_LKG_AUTHORITY_UNVERIFIED")
+    try:
+        scope = canonical_deployment_governance_scope()
+        verified = load_verified_post_lkg_collection_authority(
+            authority_sha256=supplied.authority_sha256,
+            governance_scope=scope,
+        )
+        verify_post_lkg_collection_authority_d2(
+            verified, governance_scope=scope
+        )
+    except (AttributeError, PostLkgCollectionAuthorityError) as exc:
+        raise _error("GATE_A_POST_LKG_AUTHORITY_UNVERIFIED", str(exc)) from exc
+    if _operands_from_verified_post_lkg_authority(verified) != operands:
+        raise _error("GATE_A_POST_LKG_OPERANDS_MISMATCH")
+    return verified
+
+
+def _load_completed_post_lkg_observation(
+    operands: Exp010GateAOperands,
+) -> Exp010GateAObservation:
+    """Rebuild and exactly compare completed evidence without live contact."""
+
+    verified_authority = _reverify_post_lkg_authority(operands)
+    if verified_authority is None:
+        raise _error("GATE_A_POST_LKG_AUTHORITY_UNVERIFIED")
+    evidence = load_verified_gate_a_evidence(operands.campaign_root)
+    if evidence.get("post_lkg_collection_authority_sha256") != (
+        verified_authority.authority_sha256
+    ):
+        raise _error("GATE_A_POST_LKG_AUTHORITY_MISMATCH")
+    observation = Exp010GateAObservation(
+        observed_at_utc=evidence["observed_at_utc"],
+        data_identity=evidence["dataset"]["data_identity"],
+        generation_manifest_sha256=evidence["dataset"][
+            "generation_manifest_sha256"
+        ],
+        base_vectors_sha256=evidence["dataset"]["base_vectors_sha256"],
+        dataset_version=evidence["dataset"]["version"],
+        flat=evidence["flat"]["live"],
+        hnsw=evidence["hnsw"]["live"],
+        containers=evidence["containers"],
+        environment_manifest_sha256=evidence["environment_manifest_sha256"],
+        environment_observation=evidence["environment_observation"],
+    )
+    if build_gate_a_evidence(operands, observation) != evidence:
+        raise _error("GATE_A_POST_LKG_EVIDENCE_PROJECTION_MISMATCH")
+    return observation
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    authority = parser.add_mutually_exclusive_group(required=True)
+    authority.add_argument(
         "--operands",
         type=Path,
-        required=True,
         help="Path to the exact-keyed Gate-A operand JSON file.",
+    )
+    authority.add_argument(
+        "--expect-collection-authority-sha256",
+        help="Exact immutable post-LKG collection-authority digest.",
     )
     parser.add_argument(
         "--mode",
@@ -1387,6 +1575,11 @@ def _parser() -> argparse.ArgumentParser:
             "new campaign root and immutable Gate-A evidence will be created."
         ),
     )
+    parser.add_argument(
+        "--confirm-post-lkg-gate-a",
+        action="store_true",
+        help="Required to initialize the exact verified post-LKG campaign.",
+    )
     return parser
 
 
@@ -1399,17 +1592,40 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = _parser().parse_args(argv)
-    operands = load_operands(args.operands)
-    observation = observe_environment(operands)
+    post_lkg = args.expect_collection_authority_sha256 is not None
+    if post_lkg and args.confirm_initialize_v5:
+        raise _error("GATE_A_AUTHORITY_BRANCH_MIXED")
+    if not post_lkg and args.confirm_post_lkg_gate_a:
+        raise _error("GATE_A_AUTHORITY_BRANCH_MIXED")
+    operands = (
+        _load_post_lkg_operands(args.expect_collection_authority_sha256)
+        if post_lkg
+        else load_operands(args.operands)
+    )
+    _reject_legacy_post_lkg_namespace(operands)
+    campaign_state = inspect_campaign_state(operands.campaign_root)
+    if post_lkg and campaign_state == CAMPAIGN_COMPLETE:
+        observation = _load_completed_post_lkg_observation(operands)
+    else:
+        if post_lkg and campaign_state != CAMPAIGN_ABSENT:
+            raise _error(_STATE_REFUSALS[campaign_state])
+        if post_lkg:
+            _reject_unsafe_parent(operands.campaign_root.parent)
+        observation = observe_environment(operands)
     plan = build_gate_a_plan(operands, observation)
     sys.stdout.write(strict_canonical_json_bytes(plan).decode("utf-8"))
 
-    if args.mode == "preflight":
+    if args.mode == "preflight" or (
+        post_lkg and campaign_state == CAMPAIGN_COMPLETE
+    ):
         return 0
-    if not args.confirm_initialize_v5:
+    confirmed = (
+        args.confirm_post_lkg_gate_a if post_lkg else args.confirm_initialize_v5
+    )
+    if not confirmed:
         raise _error(
             "GATE_A_INITIALIZATION_NOT_CONFIRMED",
-            "--mode execute requires --confirm-initialize-v5",
+            "--mode execute requires its branch-specific confirmation",
         )
     evidence = initialize_v5_campaign(operands, observation)
     summary = {
