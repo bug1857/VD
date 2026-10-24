@@ -970,12 +970,35 @@ class LkgPhase3AuthorityReferenceStore:
         authority: LkgPhase3Authority,
         *,
         persisted_at_utc: str,
+        expected_predecessor_sequence_number: int | None = None,
+        expected_predecessor_digest: str | None = None,
     ) -> LkgPhase3AuthorityAppendResult:
         """Append once or return the exact existing reference idempotently."""
 
         # Deliberately outside BEGIN IMMEDIATE: authority projection must never
         # cause upstream ledger work while the D2 write lock is held.
         identity = _authority_identity_document(authority)
+        # A rematerialized lineage requires ADR-026 control admission. Legacy
+        # D1/D2 paths cannot turn an offline construction receipt into authority.
+        if str(identity["source_run_id"]).startswith("lkg-remat-v1-") or str(
+            identity["collection_name"]
+        ).startswith("vd_remat_"):
+            raise LkgPhase3PersistenceError(
+                "controlled rematerialization admission is not established",
+                code="LKG_CONTROLLED_ADMISSION_REQUIRED",
+            )
+        cas_requested = (expected_predecessor_sequence_number is not None
+                         or expected_predecessor_digest is not None)
+        if cas_requested and not (
+            type(expected_predecessor_sequence_number) is int
+            and expected_predecessor_sequence_number >= 0
+            and isinstance(expected_predecessor_digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", expected_predecessor_digest)
+        ):
+            raise LkgPhase3PersistenceError(
+                "both predecessor sequence and digest are required",
+                code="LKG_PHASE3_PREDECESSOR_INVALID",
+            )
         timestamp = _rfc3339_utc(persisted_at_utc, field="persisted_at_utc")
         connection = self._require_connection()
         self._verify_file_hardening()
@@ -983,6 +1006,16 @@ class LkgPhase3AuthorityReferenceStore:
             connection.execute("BEGIN IMMEDIATE;")
             self._verify_schema()
             references = self._load_all_locked()
+            # Compare the exact pair under the final write lock, including
+            # before an idempotent return. Never rebase stale caller evidence.
+            if cas_requested and (not references or (
+                references[-1].sequence_number != expected_predecessor_sequence_number
+                or references[-1].canonical_record_digest != expected_predecessor_digest
+            )):
+                raise LkgPhase3PersistenceError(
+                    "expected predecessor is not the current D2 head",
+                    code="LKG_PHASE3_PREDECESSOR_CHANGED",
+                )
             for reference in references:
                 if (
                     reference.canonical_evaluation_digest
@@ -1100,6 +1133,14 @@ class LkgPhase3AuthorityReferenceStore:
             connection.execute("BEGIN;")
             self._verify_schema()
             references = self._load_all_locked()
+            if references and (
+                references[-1].source_run_id.startswith("lkg-remat-v1-")
+                or references[-1].collection_name.startswith("vd_remat_")
+            ):
+                raise LkgPhase3PersistenceError(
+                    "controlled head lacks a completed journal and continuous control owner",
+                    code="LKG_CONTROLLED_HEAD_NOT_APPLICABLE",
+                )
             verified_latest = (
                 None
                 if not references
