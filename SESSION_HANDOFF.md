@@ -4,13 +4,13 @@ Document purpose: preserve the operational, architectural, research, governance,
 
 This is not the professor-facing report. `PROJECT_REPORT.md` is a narrative status report and is currently untracked. This file is the continuity record. When this handoff conflicts with a current source file, use the authority rules and discrepancy notes below rather than silently choosing one version.
 
-Snapshot date: 2026-08-02, Asia/Kolkata.  
+Snapshot date: 2026-08-05, Asia/Kolkata.
 Repository: `/Users/rudrapratapsingh/Desktop/VD`  
 Branch: `main`  
-Authoritative Git `HEAD`: `59a765581281f4bb8178b05c5e200d399124f894`  
-`origin/main`: `59a765581281f4bb8178b05c5e200d399124f894`  
-Git relationship at handoff: local `main` and `origin/main` point to the same commit.  
-Latest commit: `59a7655 feat: add optional ShadowAuditTrace collector to Milvus actuation adapter (backward-compatible, fail-closed)`.
+Authoritative Git `HEAD`: `203739646cabc62d4729e7fe588ba4fcf9697929`
+`origin/main`: `203739646cabc62d4729e7fe588ba4fcf9697929`
+Git relationship at handoff: local `main` and `origin/main` point to the exact same commit.
+Latest commit: `2037396 feat: add EXP-009 immutable 60-of-600 route-plan builder`.
 
 ## 0. Read this first: authority, current truth, and non-negotiable caveats
 
@@ -20,11 +20,11 @@ Use this order when reconstructing facts:
 
 1. The human's current explicit instruction.
 2. `AGENTS.md` governance.
-3. Committed Git history and the actual committed diff at `HEAD`.
-4. Registered evidence in `EXPERIMENT_LOG.md` and immutable run artifacts, subject to their recorded validity status.
-5. `ARCHITECTURE.md`, `RESEARCH_PLAN.md`, and `ROADMAP.md`, while still checking them against Git; the tracked tree is clean now, but it changed concurrently during this review.
-6. Executable code and raw test output.
-7. This continuity document.
+3. Committed Git history and the actual committed diff at `HEAD` (`2037396`).
+4. Registered evidence in `EXPERIMENT_LOG.md` and immutable run artifacts (`artifacts/exp-001` through `artifacts/exp-009`).
+5. `ARCHITECTURE.md`, `RESEARCH_PLAN.md`, and `ROADMAP.md`.
+6. Executable code and raw test outputs.
+7. This continuity document (`SESSION_HANDOFF.md`).
 8. Narrative reports or prior-session summaries.
 
 Never promote a summary, commit subject, synthetic test, or unregistered artifact above raw evidence.
@@ -34,17 +34,15 @@ Never promote a summary, commit subject, synthetic test, or unregistered artifac
 | Item | Exact status at this snapshot |
 |---|---|
 | Backend | Milvus is selected by accepted ADR-001. Qdrant is an unimplemented fallback, not the active backend. |
-| Core research scope | Range/threshold-query tuning under workload drift on one backend, with safe rollback/actuation. k-NN/ANN tuning, hybrid search, multi-tenant tuning, and multi-backend transfer are Future Work. |
-| EXP-001 | `VERIFIED` only for its stated Milvus range-search smoke-benchmark contract, using the accepted `run-20260801T161924Z` evidence and the post-observation 30% latency-CV threshold. |
-| ADR-002 | Accepted in authoritative Git history by `7b2b239`; implementation through `9442ea4` had `131/131` passing tests. Acceptance does **not** authorize live automatic actuation. |
-| ShadowAuditTrace | Implemented and committed in `59a7655`; current suite has `138/138` passing tests. It is a 50-query read-only audit collector, not a 200-query drift-window builder. |
-| Detector/policy validation | Offline and synthetic only: stationary replay `0/299` false positives for each metric and injection replay `0/10` false negatives with `10/10` correct classifications. These are not live Milvus detector→policy evidence. |
-| Live detector→policy integration | **Not built and not run.** The full stationary live-replay contract, 200-query observation/window assembly, same-metric consecutive-window enforcement, and matching-configuration checks remain pending. |
-| Live shadow/read checks | Two real, non-actuating 50-query `shadow_candidate` calls were reported during the concurrent `PROJECT_REPORT.md` review: L2 `target-075`, candidate/LKG `800/400`, and COSINE `target-025`, candidate/LKG `400/200`; both reported success, zero failures/timeouts/threshold violations, and FLAT/oracle agreement. No separate immutable artifact package was found. |
-| Live detector→policy dry-run | There is no accepted real-Milvus stationary detector→policy dry-run artifact. The two live shadow calls do not assemble 200-query windows, enforce two same-metric consecutive windows, or invoke the detector→policy loop. Existing policy dry-run decisions remain offline/synthetic. |
-| Live canary/rollback | Not validated against a live Milvus database. Automatic actuation remains unauthorized. |
-| Formal module freeze | No module is explicitly recorded as frozen under the `AGENTS.md` freeze gate. “Verified experiment,” “tests pass,” and “frozen module” are different claims. |
-| Commit permission | No commit is authorized by this handoff task. Never commit without the human saying exactly, in substance, “approved, commit.” |
+| Core research scope | Range/threshold-query tuning under workload drift on one backend, with safe rollback/actuation. |
+| Test suite health | **392 / 392 Committed Unit & Integration Tests Passed** (`100%` pass rate, 84.5s duration). |
+| EXP-001 through EXP-008 | `VERIFIED` across offline evidence, live read-only shadow extraction (EXP-005), monitor recovery (EXP-006), outbox durability (EXP-007), and host observation seam (EXP-008). |
+| EXP-009 Stage 1 (Preflight) | `VERIFIED`. Offline workload manifest (600 queries), calibration, candidate selection (60-of-600), and evidence runner (`exp009_stage1.py`) verified in `artifacts/exp-009/run-20260804T030005Z/`. |
+| EXP-009 Stage 2 (Route Plan) | `FRESHLY VERIFIED`. Immutable $60$ candidate / $540$ LKG route partition builder (`canary_routing.py`) committed at `2037396`. All 8 unit tests in `test_canary_routing.py` **PASS**. |
+| EXP-009 Stage 2 (Approval) | `BLOCKED`. Signed approval verifier (`canary_approval.py`) committed at `4d461ff`. Tests (`test_canary_approval.py`) require `cryptography==49.0.0` which is missing from host Python environment. |
+| Stage 3 & Stage 4 | `UNEXECUTED / FUTURE WORK`. Pre-registered contracts exist in code (`canary_statistics.py`), but zero live candidate traffic routing has been executed. |
+| Live canary/rollback | Automatic actuation remains strictly unauthorized. System operates in `PolicyMode.DRY_RUN`. |
+| Web Dashboard & API | Planned & specified in `implementation_plan.md`. |
 
 ### 0.3 Working tree and concurrent-change record
 

@@ -1,5 +1,15 @@
 # README — Adaptive Vector DB Tuning Project Docs
 
+## Source checkpoint — 24 October 2026
+
+This checkpoint preserves local source and governance updates. ADR-026 remains
+**PARTIAL / native admission BLOCKED**; it is not runtime-ready and does not
+authorize live actuation. See `ARCHITECTURE.md` and `ROADMAP.md` for its limits.
+
+`SESSION_HANDOFF.md`, `PROJECT_REPORT.md`, `SYSTEM_DESIGN.md`, and `DIAGRAMS.md`
+retain historical snapshots or proposed designs. Their test counts and status
+claims apply to their original scope, not this checkpoint.
+
 Start here. `AGENTS.md` is the only file Codex loads automatically — the other six are reference files you or Codex read explicitly when a task touches them. Don't duplicate content between files; if something feels like it belongs in two places, put it in the more specific one and cross-reference.
 
 ## Files

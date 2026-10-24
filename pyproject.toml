@@ -21,3 +21,23 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Type-checking configuration. Import resolution only -- no strictness is
+# relaxed here, and no repository rule is disabled. Without this section mypy
+# cannot map `src/vdbench` to the `vdbench` package or `tests/` to the `tests`
+# namespace package, and it aborts with "Source file found twice under
+# different module names" before checking anything.
+[tool.mypy]
+# `python_version` is deliberately not pinned: mypy then follows the
+# interpreter it is run against. Pinning it to 3.11 makes NumPy's own bundled
+# stubs fail to parse, because they use the 3.12+ `type` statement.
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+# PyMilvus ships no stubs and no `py.typed` marker. This is the single
+# third-party boundary the project depends on that mypy cannot see through;
+# the ignore is scoped to that distribution and nothing else.
+[[tool.mypy.overrides]]
+module = ["pymilvus.*"]
+ignore_missing_imports = true

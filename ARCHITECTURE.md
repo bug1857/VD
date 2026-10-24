@@ -7765,3 +7765,280 @@ exactly-once after a crash; ORPHANED remains the honest fail-closed outcome. Thi
 ADR adds no route mutation, candidate activation, canary, serving-`ef` mutation,
 Milvus write, D1 creation, D2 append, deployment, workload synthesis, store
 redesign, automatic authorization, or physical exactly-once claim.
+
+## ADR-026 — Prospective controlled canonical rematerialization
+
+**Status:** accepted semantic contract; repository implementation authorized on
+2026-10-05. The retained partial foundation passed independent diff review and
+focused offline checks; full native control/admission remains BLOCKED as
+recorded in the implementation checkpoint below. Runtime
+preparation, rematerialization, qualification, governed-state writes and every
+ADR-025 gate remain separately unauthorized. **Scope:** Core safety and evidence
+validity. **Risk:** CRITICAL. Prospective conclusions are INFERRED; pinned source
+behavior is SUPPORTED, not an EXP measurement.
+
+### Accepted claim and preserved history
+
+For accepted generation `g`, expected PK `p`, and qualification snapshot `T`,
+`V_g(p,T)` is nonempty and a subset of `{C(p)}`, where `C(p)` is the exact
+DATASET-001 user value. Identical native copies are permitted. This ADR makes
+no claim about physical duplicate absence, row multiplicity, physical
+exactly-once, historical storage continuity or historical graph continuity.
+The selected schema has only non-auto INT64 `id` and FLOAT_VECTOR `vector`
+(128 components), no functions, nullable fields, dynamic fields or extra scalars.
+
+Historical first-LKG evidence remains immutable. Historical D2 sequence 0 has
+digest `bb9c6c28611de3fb5c85c38ab39615e09e0f5ce288e6b7b0def3a23783f4d514`;
+its Checkpoint-C digest is
+`e00a86ff705dde4c5b208963e5fe16a3393a0f8e29c128f76f837b9fda1f6cf8`.
+`ENV-001-exp010-l2-v1` retains its source-derived governance namespace while
+physical storage, runtime, collections, index/build and environment identities
+are fresh. The first-LKG operator and readiness refusal are preserved.
+
+### Implementation choice and alternatives
+
+| Option | Correctness and research support | Operations, scale and latency | Maintenance, security and scope | Decision |
+| --- | --- | --- | --- | --- |
+| A: repair historical storage or reconcile native copies | Cannot derive fresh origin from an empty or deduplicated read; stronger physical claim lacks an accepted observable | Unbounded storage analysis and historical mutation risk | Second evidence source, recovery complexity and scope expansion | Reject |
+| B: fresh canonical construction with durable application ownership, absorbing invalidation and existing qualification/D1/D2 | Matches accepted logical invariant and pinned replay payload preservation | Twenty serial 1,000-row inserts; bounded input, journals and complete logical reads; gateway latency remains measured | Standard-library durable state, existing evidence formats, least-privilege temporary writer and continuous control | Select |
+| C: weaken verification, reuse the resumable producer or migrate D2 | Can admit ambiguity, stale provenance or a moving predecessor | Smaller initial change but unsafe acceptance and recovery | Breaks reviewed semantics or adds an unnecessary schema | Reject |
+
+New rematerialization state lives below a source-derived `rematerializations`
+directory in the existing deployment scope. An exclusive generation registry
+reserves fresh generation/storage/runtime identities and generated collection
+names before effects. A private append-only hash-chained construction journal
+records generation reservation, create intents/acknowledgements, unique
+`(target-generation, PK)` ownership, exact ordered batch membership and binary32
+payload digest, dispatch intents, validated acknowledgements, transition,
+receipt, run consumption and faults. Evidence loading is read-only; an existing
+generation is never reopened for construction. An interrupted intent is
+ineligible even if the server later completed it. INVALID is absorbing.
+Incomplete/unsafe/corrupt journals refuse. Evidence is retained, never repaired
+or deleted. One exclusive owner serializes each generation.
+
+The immutable generation manifest binds namespace, fresh allocation evidence,
+storage/runtime origins, database, both names and native collection IDs, exact
+DATASET-001 manifest/artifact hashes, schema, L2/dimension/index configuration,
+materializer revision, SDK/server pins, controlled profile and ordered request
+manifest. The input loader checks pinned bytes before loading immutable arrays,
+then independently checks `<i8` IDs `0..9999`, uniqueness, finite `<f4` vectors
+of shape `(10000,128)`, and batch partitioning before any effect.
+
+Construction uses only ordinary ORM columnar `Collection.insert([ids,vectors])`
+on a fresh alias with explicit database and fixed gateway. Every RPC has
+`timeout=None`, `retry_times=0`, `retry_on_rate_limit=False`, `_async=False`;
+connection policy is `keep_alive=False`, `grpc_options={"grpc.enable_retries":0}`.
+Managed `MilvusClient`, row insert, fallback and reconnect are excluded.
+Installed SDK critical source bytes must match pinned PyMilvus revision
+`abf720abc64f57cea4cbc05292a802f9fd73c4c8` (3.0.1). Backend/source pins include
+Milvus `f46a0328558be155d11266a1a2b90602ccc9b366` (3.0.0).
+A supervisor enforces a monotonic process deadline; expiry kills the worker,
+invalidates the generation and requires writer revocation. Numeric SDK
+timeouts cannot be substituted. Creation, inserts, flush, index and load
+ambiguity stop the generation; there is no retry, repair or resume API.
+
+### Controls and transition
+
+P1-A is unchanged: three internal IPv4 networks with exactly the reviewed
+members; zero host publications; fixed NGINX OSS 1.30.5 stream/access gateways;
+literal front listeners/source allowlists/upstreams; failover disabled;
+effective forwarding disabled and IPv6 disabled per interface; audited native
+RBAC; unprivileged read-only containers without Docker/host namespaces,
+privileged capabilities, service credentials or deployment-volume access.
+Only the temporary construction identity can mutate the two new targets.
+Construction uses the existing qualification front and its fixed Milvus
+gateway, as selected in the accepted rematerialization contract. The worker
+network slot has two mutually exclusive phases: first a materializer process
+with a separate temporary writer principal, then a read-only qualification
+process with its own principal. No qualification process/session runs during
+construction or receives the writer credential. The profile binds that worker
+slot, each phase's process/principal and the gateway endpoint. Materializer
+and qualification retain the same reviewed front-network membership and IP;
+their principals, processes and sessions are distinct and never coexist.
+Materializer termination, closed gateway/SDK sessions and writer revocation precede the
+qualification process and fresh observation; uncertainty prevents transition.
+No fourth network, extra gateway, administrator ingress or concurrent worker is
+introduced by this sequential role choice.
+Raw native control observations and denial probes must correspond to the
+profile and current runtime; asserted flags or profile hashes alone are
+insufficient. Trusted root/Docker-admin bypass remains outside the threat model.
+Preparation/observation/revocation ports are explicit injected boundaries;
+this implementation does not configure or launch Docker or infer live proof
+from a fake port.
+
+P1-B resolves effective M/K/Q roots using Go-compatible path joining and byte
+prefix ranges, including Q without a trailing-slash narrowing. Overlap is
+normalized. Fixed-revision complete snapshots, watches from the next revision
+with previous values, processed progress for every range, and final barriers
+are required. All Q events (including same-value and change/restore) fail.
+Unknown M/K events and uncertain classification fail. Source-attributed task
+observations and current collection/partition/segment/index/build/version/file/
+channel/resident mappings must establish target-specific quiescence and
+stability. Five effective settings remain false: `dataCoord.enableCompaction`,
+`dataCoord.autoUpgradeSegmentIndex`, `dataCoord.forceRebuildSegmentIndex`,
+`dataCoord.forceRebuildScalarSegmentIndex`, `dataCoord.enableGarbageCollection`.
+Settings alone cannot prove quiescence. Aggregate limits remain 100,000 keys /
+128 MiB snapshot, 16,384 events / 32 MiB pending, 256 MiB journal, one-second
+progress requests and a ten-second processed-progress deadline. Gaps,
+disconnect, compaction, cancel, malformed/fragmented revision, missing previous
+values, overflow, owner loss or control drift latch permanent invalidation.
+Raw secret values are hashed, not logged. No reconnect/resume path exists.
+
+After all durable insert acknowledgements, require flush/visibility completion,
+canonical FLAT/L2 and HNSW/L2 (`M=16`, `efConstruction=200`) build/load completion,
+materializer termination and connection closure, capability revocation and
+effective RBAC/network/session denial before fresh environment/current-build
+observation. Only then perform read-only Strong, unlimited, all-partition
+`id < 0`, `id >= 0` domain reads and an exact-PK read for every expected PK.
+Omit limit/offset/partition restrictions; do not use an iterator. Compare exact
+canonical binary32 bytes and declared schema/types. Missing/extra/wrong or
+malformed values, response errors, deadlines and control uncertainty refuse.
+Native entity counts may exceed 10,000; they are operational observations,
+not logical cardinality or multiplicity evidence. Every native copy eligible
+under the provenance/source argument has canonical payload, so native tie
+selection does not strengthen the claim.
+
+### Qualification and descendant admission
+
+The sealed construction receipt derives
+`lkg-remat-v1-<32hex nonce>-<64hex receipt digest>` as the fresh run ID.
+Admission verifies exact journal/receipt bytes and native correspondence,
+including source, dataset, schema, collection IDs, runtime, controls, index and
+current-build baseline. An opaque digest is insufficient. A durable exclusive
+run claim precedes dispatch; crash, transport uncertainty or failure consumes
+the run and prohibits resumption. Reuse the existing runner, Phase-1/2 seal,
+Checkpoint-C evaluator and ordinary D1 projection, with a controlled read-only
+readiness adapter. Every v1 readiness aggregate's source identities and digests
+must derive deterministically from retained exact controlled source receipts.
+D1 admission and controlled-head loading replay all twelve context/source
+receipt mappings and the ordinary Phase-1/2/C chains; aggregate booleans alone
+are insufficient. Keep 2,400 ordered positions, twelve windows of 200, two
+epochs of 1,200, `ef=400`, epoch mean capped recall >=0.95 and nearest-rank p95
+<=10 ms. No gateway latency subtraction or historical timing-equivalence claim.
+
+D2 retains schema v1 and its immutable history. The controlled descendant path
+requires a loader-issued admission binding fresh D1/C/run/receipt/control
+evidence and the expected predecessor sequence AND digest. Final M/K/Q
+snapshot/progress synchronization and a durable barrier receipt precede append.
+Inside the existing `BEGIN IMMEDIATE`, verify the whole chain, compare both
+predecessor fields before idempotence, insert the ordinary row, and recheck the
+fault latch and exclusive control ownership immediately before COMMIT.
+Mismatch refuses without rebase. The rematerialization run namespace cannot
+bypass this boundary through legacy append. A post-commit synchronized control
+check gates current applicability; failure preserves the committed row, latches
+ineligibility, returns no applicable authority and does not retry/delete/rebase.
+No atomic etcd/SQLite transaction is claimed. Loading an affected controlled
+head must also respect permanent ineligibility centrally in D2's
+`load_verified_latest`, including for unchanged downstream callers. An absent
+current continuous control owner refuses. A committed row without a durable
+post-commit PASS remains permanently ineligible after restart; no completion or
+resume API can repair it. Legacy head loading remains unchanged.
+
+Only a future fresh accepted D2 head can support a NEW ADR-025 campaign and
+authority, fresh exact-byte review/materialization and new human exact-digest
+authorization for A/B/C. This implementation triggers none of them.
+
+### Verification, failures and rollback
+
+Focused offline tests must falsify duplicate input and overlapping ownership,
+altered payload, malformed/native schema, reused origin/name, concurrent owner,
+lost acknowledgement/process death, journal durability failure, resume,
+competing writer/stale session, incomplete index, logical missing/extra/type/
+value/truncation failures, identical-copy acceptance, M/K/Q prefix/page/progress
+races and faults, and predecessor/concurrent append/pre-/post-commit failures.
+Use real temporary SQLite/files/subprocesses plus injected native responses;
+do not mistake mocked services for live control evidence. Check existing
+qualification/D1/D2/readiness behavior and frozen v1 bytes, inspect the diff,
+run `git diff --check`, and compare pre-existing worktree, index, source refs
+and governed file hashes. Manual offline verification uses these focused unittest
+commands and preservation checks. Authorized isolated native integration remains
+necessary before any runtime claim; it is outside this authorization.
+
+Before live use rollback withholds the candidate source from execution and
+reverts only its reviewed local diff. After effects, failure retains journals,
+invalidates the generation/run, terminates the worker, closes sessions and
+revokes the writer without dropping/rebuilding/repairing collections. Revocation
+failure remains a permanent fault, never a success. After D2 commit never remove
+or rewrite the row or restore an older head as current.
+
+### Implementation checkpoint — PARTIAL / native admission BLOCKED (2026-10-05)
+
+The independent pre-implementation design gate accepted the semantic contract.
+Subsequent independent inspection of the pinned native schedulers discovered a
+missing source-closed P1-B quiescence proof. This is not an observed violation of
+`V_g(p,T) ⊆ {C(p)}` and does not reinstate native-version uniqueness. It prevents
+completion of the reviewed control/admission boundary under the current proof.
+
+At Milvus `f46a0328558be155d11266a1a2b90602ccc9b366`, QueryCoord
+`checkers/balance_checker.go:473-480` asynchronously submits tasks;
+`task/scheduler.go:663-690` adds them to in-memory waiting, segment/channel and
+task maps; `task/executor.go:278-288` directly sends LoadSegments without a
+preceding M/K catalog mutation. `checkers/segment_checker.go:103-139,211-252`
+independently enqueues target load, reopen and release/reduction work, including
+on a singleton deployment. Complete load percentage, a fixed snapshot/watch,
+or repeated resident observations do not enumerate already waiting work.
+The stock `tasks_all` observer returns `taskStats.Values()`
+(`task/scheduler.go:1013-1020`), a 256-entry, fifteen-minute LRU initialized at
+line 615, rather than the complete active queues/executors. Suspending balance
+does not drain them. The five accepted DataCoord settings do not close these
+QueryCoord paths. These conclusions are SUPPORTED by the pinned source and
+independently rechecked locally; no native experiment was performed.
+
+Native admission remains unissuable pending an independently reviewed complete
+target queue/executor observation, or a source-closed prevention/drain argument
+covering every relevant enqueue and execution path. No profile, empty catalog,
+recent-task cache, boolean `quiescent` assertion, or offline fake may substitute
+for that proof. Any change to native instrumentation/source pins requires its
+own design and review before dependent implementation.
+
+The current patch contains the exact immutable DATASET-001 loader, closed
+generation plans, consumed-origin registry, private append-only construction
+journal, one-owner columnar request/ACK replay, absorbing failure and no-resume
+checks, logical domain/exact-PK verification allowing identical canonical
+copies, closed profile parsing and gap-intolerant snapshot/watch checks.
+The pinned SDK adapter uses explicit non-retrying ancillary polls; the SDK's
+ordinary flush/index/load wait helpers lose retry options internally and are
+not used. The Connect handshake's numeric transport timeout is not an
+application mutation. The executor refuses the native adapter until the
+supervisor and native control boundary exist; offline ports issue no authority.
+
+The shared D2 append now optionally compares an exact sequence/digest pair
+inside `BEGIN IMMEDIATE`, before idempotence, with the ordinary v1 schema and
+bytes unchanged. Legacy append refuses controlled run/collection namespaces,
+and verified-head issuance centrally refuses such a head without completed
+control admission. There is no alternate controlled append or guard issuer.
+
+Still unimplemented: source-complete baseline/catalog and queue interpretation,
+live control transport/provenance, external native process deadline/revocation
+proof, construction receipt admission, fresh no-resume 2,400-position producer,
+controlled readiness-source replay through D1, typed pre-/post-commit D2 guard
+and continuous applicability. Therefore the prospective contract implementation
+is PARTIAL, not runtime-ready or accepted as complete. The first-LKG path and
+historical evidence remain unchanged; no new ADR-025 campaign is authorized.
+
+The current watch processor deliberately refuses every M/K change. This has a
+known liveness ceiling: RootCoord persists `K/gid/timestamp` approximately every
+three seconds (`rootcoord/root_coord.go:441-451`,
+`tso/global_allocator.go:73-79`, `tso/tso.go:200-203`). A future source-bound event
+classifier must distinguish attributable clock progress from protected work;
+unknown events and every Q PUT/DELETE still invalidate. This limitation grants
+no weaker acceptance. Manual offline checks are
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p test_controlled_rematerialization.py -v`
+and the existing `test_lkg_phase3_persistence.py` suite. These tests validate
+repository behavior and temporary evidence only.
+
+The retained partial diff passed a fresh independent CRITICAL source review
+after fixes to session-close invalidation, faulted snapshot access, WAL refusal
+before SQLite sidecar creation, coherent construction replay, and binary32 SDK
+decoding. The final foundation suite ran **24 tests in 13.400 seconds: OK**.
+Focused adjacent D1/D2, first-LKG operator, collection authority and readiness
+tests contributed **325 passing tests**; their combined run with the earlier
+22-test foundation had **347 tests in 513.320 seconds: OK**. No full-project or
+native suite was run under the focused-testing authorization. These are
+repository checks, not VERIFIED native control, qualification or EXP results.
+Hash comparison preserved all **1,889 unrelated pre-existing repository files
+and symlink targets** and **194 governed files**, with no unexpected new files.
+HEAD and staged contents are unchanged; all 995 index entries still match HEAD.
+Git inspection refreshed index metadata, so the index file itself is not
+byte-identical to its initial snapshot. The scoped candidate diff has no
+whitespace errors; the pre-existing SESSION_HANDOFF whitespace remains intact.

@@ -10,6 +10,146 @@ start of every session. Running state and evidence live in the companion files:
 
 # Autonomous Development Directive
 
+## Quality before token efficiency
+
+Correctness, research validity, reproducibility, security, reliability, and
+maintainability are acceptance requirements. Token savings are a tie-breaker
+between approaches that meet the same requirements; never lower the quality
+bar to fit a token, time, context, or quota target. Use the model, reasoning
+depth, complete relevant context, and verification needed for the actual risk.
+No model is assumed adequate from its name or price; judge the returned work
+against the contract and independently verified evidence.
+
+Never omit critical findings, mathematical derivations, failure paths, required
+tests, raw proof, or cross-module invariants to shorten an answer. If a transport
+or model limit prevents a complete review, use coherent parts with a coverage
+and boundary map, or report PARTIAL/BLOCKED. Do not claim completion from a
+trimmed packet, a smaller test set, a weaker model, or exhausted quota. Preserve
+required checks; defer optional work or wait for adequate capacity instead.
+
+Efficiency comes from reuse, focused searches, batching independent reads,
+avoiding duplicate implementation, and reducing unnecessary back-and-forth.
+Independent review is not expendable overhead when it provides a required
+correctness or research-validity check. For HIGH/CRITICAL work, independently
+challenge the relevant invariants, statistics, identity/evidence boundaries,
+and failure behavior before acceptance. Reviewers must inspect source/raw
+evidence independently; agreement between agents is not proof.
+
+## Token-aware autonomous execution
+
+For an explicit user request, own the task end to end without routine approval,
+but keep the request as the scope boundary. Do not continue into the next backlog
+item unless the user explicitly asks for ongoing/backlog work. Infer low-risk
+details from repository evidence; ask only when ambiguity could materially alter
+behavior, architecture, safety, data, public interfaces, or research claims.
+
+Use **Ponytail Full** for coding work: first question necessity, then reuse
+existing code, then prefer the standard library/native platform, then an
+installed dependency, and finally write the smallest correct implementation.
+Do not add speculative abstractions, dependencies, compatibility layers, or
+unrequested documentation. Never simplify away validation, rollback, security,
+evidence, accessibility, calibration, or data-loss protection.
+Ponytail does not cap tests at one check or override VD's required design,
+review, integration/restart, or empirical-evidence gates. Necessary modularity,
+dependencies, documentation, and review depth are not speculative complexity.
+
+Load context on demand instead of reading every companion document on every
+task. Root and applicable nested `AGENTS.md` files are always authoritative;
+inspect the code, callers, and tests touched by the request. Use targeted search
+and relevant sections rather than rereading or summarizing whole documents:
+
+- `ROADMAP.md`: task selection, status, scope classification, or debt.
+- `ARCHITECTURE.md`: components, interfaces, configuration, dependencies, ADRs,
+  backend compatibility, or actuation.
+- `SRS.md`: requirements, acceptance criteria, safety, or public behavior.
+- `RESEARCH_PLAN.md`: research scope, literature, novelty, or publication claims.
+- `EXPERIMENT_LOG.md`: experiments, benchmarks, empirical claims, or prior runs.
+- `README.md`: setup, commands, or user-facing workflow.
+- `HANDOFF_TEMPLATE.md`: only when a handoff/delegation is actually requested.
+
+Read additional documents only when the task or a referenced rule requires
+them; expand the read whenever callers, invariants, or evidence cross the
+initial boundary. Full-project audits require their complete declared coverage.
+Reuse already-read context within the session. Verify proportionately:
+run the smallest focused checks that can falsify the change, then broader gates
+only when risk, affected surface, or repository policy requires them. Report
+only the outcome, verification, deliberate omissions, and unresolved risk.
+
+## Codex + Antigravity coordination
+
+For the user's authorized VD tasks, Codex owns scope, architecture, difficult
+decisions, verification, and integration. **Default to Codex directly** for
+ordinary work, small fixes, routine coding, and broad-context debugging.
+Antigravity remains available selectively as the independent reviewer/proposal
+worker described in `ANTIGRAVITY_REVIEWER_PLAYBOOK.md`.
+
+Delegate only when a required independent review calls for it, or a substantial,
+self-contained task has a concrete benefit after context preparation, dispatch,
+verification, and correction overhead. State that reason in the brief. Optional
+delegation should replace a useful portion of Codex's work; do not have both
+agents produce the same implementation or repeat the whole investigation merely
+to move token usage between accounts. Required HIGH/CRITICAL independent review
+remains required with complete relevant evidence, regardless of token cost.
+Each required design, diff, research, or safety gate still applies separately.
+
+Batch related work and continue independent Codex work while a worker runs when
+the dependencies permit. Do not edit the same module concurrently. For related
+follow-ups, send unresolved findings, changed evidence/paths, and all necessary
+caller/invariant context; re-review affected boundaries rather than restarting
+an unchanged full review. Expand coverage when new evidence requires it, and
+honor explicitly requested full or fresh independent audits. If repeated worker
+errors make delegation unproductive, retain optional work in Codex; mandatory
+review needs an adequate independent reviewer or a PARTIAL/BLOCKED result.
+No arbitrary round cap may waive acceptance conditions.
+
+The local shared setup is at:
+`/Users/rudrapratapsingh/Documents/Codex/2026-10-04/new-chat/outputs/vd-agent-desk/README.md`.
+Launch its VD dashboard with:
+`python3 /Users/rudrapratapsingh/Documents/Codex/2026-10-04/new-chat/outputs/vd-agent-desk/start.py`.
+It uses port 8766 and VD-only worker history. From a VD Codex chat it selects
+that chat's rollout; otherwise it uses the saved VD session. The original
+projectless dashboard remains on port 8765.
+
+For a worker, use the existing bridge:
+`python3 /Users/rudrapratapsingh/Documents/Codex/2026-10-04/new-chat/outputs/vd-agent-desk/delegate.py /absolute/path/brief.md --context /absolute/path/excerpts.txt --kind coding --risk MEDIUM`.
+Use the actual task type and an explicit model override when justified; a
+larger context allowance need not mean higher reasoning effort. For related
+corrections, resume the specific conversation ID; never an unrelated worker.
+Use fresh reviewer context when the gate requires fresh independence.
+
+Each brief states VD scope classification, risk, source revision and relevant
+working-tree differences, objective, constraints, expected output, and acceptance
+checks. Attach only necessary excerpts and caller/invariant context. Preserve
+the claim/evidence labels. Define the worker's deliverable, Codex's remaining
+work, and the verification boundary. `HANDOFF_TEMPLATE.md` applies to implementation
+proposals, but the bridge returns proposals rather than editing VD or running
+tests. Never present proposed verification commands as executed results.
+
+VD uses a quality-first policy: default at least Balanced, with strong/high
+reasoning review for HIGH/CRITICAL work. Economy is restricted to LOW-risk
+mechanical summaries/extraction, not code, research inference, or safety review.
+State risk explicitly; task type, relevant invariants, and acceptance checks
+must substantiate it. The dashboard/VD runner enforce the stated-risk minimum,
+but cannot infer or prove the actual risk or model adequacy. Codex must raise
+the setting or retain work when the actual task requires more. Never silently
+fall back to a weaker model after quota, access, or validation failure. VD
+worker reports have no preset word target; all necessary proof takes priority.
+Apply compact Ponytail coding principles under the quality rules above. Keep
+raw token usage, cache, thinking, account quota, and accepted-result quality
+distinct. No exact savings or hard reasoning-token ceiling is established.
+Distinguish per-call usage from cumulative resumed-conversation totals; never
+sum overlapping cumulative totals. Record worker time separately from end-to-end
+time. Claim token, quota, cost, or speed savings only from a comparable measured
+baseline, and label unmeasured expectations as estimates.
+Codex reviews the returned brief, answer, and diagnostics before acceptance.
+
+This setup grants no new VD runtime authority: no Docker/Milvus contact, live
+configuration changes, Gate A/B/C execution, governed-evidence writes, or
+promotion of historical evidence. Existing task-specific design-only and
+research/actuation gates remain in force. Such work needs its own authorized
+scope and satisfied project gates. Do not start a backlog task just because
+coordination is configured.
+
 ## Engineering discipline — non-negotiable
 
 Autonomy accelerates high-quality engineering; it never permits unsupported
@@ -47,10 +187,10 @@ security, accessibility, documentation, testing, developer experience, and
 meaningful technical novelty. Quality and reproducibility outrank delivery
 speed.
 
-Continue through the logical Core backlog rather than waiting for approval after
-routine choices. Do not stop merely because one requested feature is finished;
-continue until a genuine human-only blocker or a safe terminal milestone is
-reached.
+For explicitly requested work, stop at its verified terminal state. Continue
+through the logical Core backlog only when the user requests autonomous backlog
+execution; then proceed through routine choices until a genuine human-only
+blocker or safe terminal milestone is reached.
 
 ## Project-specific mission and scope
 
@@ -143,10 +283,11 @@ validation, and architecture review. Reopen it only for new evidence, a
 correctness/security defect, or a superseding ADR—never through a silent
 redesign.
 
-At the start of a fresh session, rebuild state from the companion files and
-actual code: current phase; verified/in-progress/blocked modules; accepted ADRs;
-pending EXPs; technical debt; unverified assumptions; and the next Core task.
-Treat prior summaries as leads, not proof.
+At the start of a fresh session, rebuild only the state needed for the current
+request using the document-routing rules above. When selecting or continuing
+backlog work, also recover the current phase, module status, accepted ADRs,
+pending EXPs, technical debt, unverified assumptions, and next Core task. Treat
+prior summaries as leads, not proof.
 
 Maintain versioned deliverables for architecture, design, implementation,
 benchmarks, documentation, research report, publication draft, and demo. Do

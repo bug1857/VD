@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import dataclasses
 import json
 import sqlite3
 import tempfile
@@ -145,6 +146,104 @@ def _canonical_digest(document: dict[str, object]) -> str:
 
 
 class LkgPhase3PersistenceTests(unittest.TestCase):
+    def test_exact_predecessor_cas_precedes_idempotence_and_preserves_v1_genesis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                first = store.append(_authority(1), persisted_at_utc=_TIMESTAMP_1).reference
+                original = first.canonical_record_digest
+                second = store.append(_authority(2), persisted_at_utc=_TIMESTAMP_2,
+                    expected_predecessor_sequence_number=0, expected_predecessor_digest=original)
+                self.assertEqual(second.reference.sequence_number, 1)
+                self.assertEqual(second.reference.previous_record_digest, original)
+                # Even the same evaluation must not silently accept stale head evidence.
+                with self.assertRaises(LkgPhase3PersistenceError) as error:
+                    store.append(_authority(2), persisted_at_utc=_TIMESTAMP_2,
+                        expected_predecessor_sequence_number=0, expected_predecessor_digest=original)
+                self.assertEqual(error.exception.code, "LKG_PHASE3_PREDECESSOR_CHANGED")
+                self.assertEqual(store.load_all()[0], first)
+                self.assertEqual(len(store.load_all()), 2)
+                connection = sqlite3.connect(path)
+                try:
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+                finally:
+                    connection.close()
+
+    def test_cas_checks_both_fields_and_requires_the_complete_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with LkgPhase3AuthorityReferenceStore(Path(directory) / "phase3-authority.db") as store:
+                first = store.append(_authority(), persisted_at_utc=_TIMESTAMP_1).reference
+                for sequence, digest_value, code in (
+                    (0, "f" * 64, "LKG_PHASE3_PREDECESSOR_CHANGED"),
+                    (1, first.canonical_record_digest, "LKG_PHASE3_PREDECESSOR_CHANGED"),
+                    (None, first.canonical_record_digest, "LKG_PHASE3_PREDECESSOR_INVALID"),
+                    (0, None, "LKG_PHASE3_PREDECESSOR_INVALID"),
+                    (False, first.canonical_record_digest, "LKG_PHASE3_PREDECESSOR_INVALID"),
+                ):
+                    with self.subTest(sequence=sequence, digest=digest_value):
+                        with self.assertRaises(LkgPhase3PersistenceError) as error:
+                            store.append(_authority(2), persisted_at_utc=_TIMESTAMP_2,
+                                expected_predecessor_sequence_number=sequence,
+                                expected_predecessor_digest=digest_value)
+                        self.assertEqual(error.exception.code, code)
+                self.assertEqual(store.load_all(), (first,))
+
+    def test_concurrent_same_predecessor_has_one_winner_without_rebase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                first = store.append(_authority(), persisted_at_utc=_TIMESTAMP_1).reference
+            barrier = threading.Barrier(2)
+            authorities = [_authority(2), _authority(3)]
+            def append(authority):
+                with LkgPhase3AuthorityReferenceStore(path) as store:
+                    barrier.wait(timeout=10)
+                    try:
+                        return store.append(authority, persisted_at_utc=_TIMESTAMP_2,
+                            expected_predecessor_sequence_number=0,
+                            expected_predecessor_digest=first.canonical_record_digest).appended
+                    except LkgPhase3PersistenceError as error:
+                        return error.code
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(append, authorities))
+            self.assertCountEqual(results, [True, "LKG_PHASE3_PREDECESSOR_CHANGED"])
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                self.assertEqual(len(store.load_all()), 2)
+                self.assertEqual(store.load_all()[0], first)
+
+    def test_legacy_append_refuses_controlled_run_or_collection_namespace(self) -> None:
+        from vdbench import lkg_phase3_persistence as persistence
+        authority = _authority()
+        actual = persistence._authority_identity_document(authority)
+        with tempfile.TemporaryDirectory() as directory:
+            with LkgPhase3AuthorityReferenceStore(Path(directory) / "phase3-authority.db") as store:
+                for field, value in (("source_run_id", "lkg-remat-v1-" + "a" * 32 + "-" + "b" * 64),
+                                     ("collection_name", "vd_remat_" + "a" * 32 + "_hnsw")):
+                    with mock.patch.object(persistence, "_authority_identity_document", return_value={**actual, field: value}):
+                        with self.assertRaises(LkgPhase3PersistenceError) as error:
+                            store.append(authority, persisted_at_utc=_TIMESTAMP_1)
+                        self.assertEqual(error.exception.code, "LKG_CONTROLLED_ADMISSION_REQUIRED")
+                self.assertEqual(store.load_all(), ())
+
+    def test_verified_latest_cannot_issue_controlled_head_without_continuous_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "phase3-authority.db"
+            with LkgPhase3AuthorityReferenceStore(path) as store:
+                reference = store.append(_authority(), persisted_at_utc=_TIMESTAMP_1).reference
+                document = dataclasses.asdict(reference)
+                document.pop("canonical_record_digest")
+                document["source_run_id"] = "lkg-remat-v1-" + "a" * 32 + "-" + "b" * 64
+                document["collection_name"] = "vd_remat_" + "a" * 32 + "_hnsw"
+                _raw_mutate_preserving_triggers(path,
+                    f"UPDATE {_TABLE} SET source_run_id=?,collection_name=?,record_document_json=?,canonical_record_digest=?",
+                    (document["source_run_id"], document["collection_name"],
+                     canonical_json_bytes(document).decode(), _canonical_digest(document)))
+                # Raw v1 record inspection stays possible. Applicable authority does not.
+                self.assertEqual(store.load_latest().source_run_id, document["source_run_id"])
+                with self.assertRaises(LkgPhase3PersistenceError) as error:
+                    store.load_verified_latest()
+                self.assertEqual(error.exception.code, "LKG_CONTROLLED_HEAD_NOT_APPLICABLE")
+
     def test_verified_latest_empty_ledger_returns_none(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "phase3-authority.db"
